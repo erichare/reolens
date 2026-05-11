@@ -204,9 +204,12 @@ struct MultiChannelGridView: View {
     /// area.
     @ViewBuilder
     private func grid(preset: GridPreset, richViewerOpen: Bool) -> some View {
-        if preset == .adaptive {
+        switch preset {
+        case .adaptive:
             adaptiveGrid(richViewerOpen: richViewerOpen)
-        } else {
+        case .spotlight:
+            spotlightGrid(richViewerOpen: richViewerOpen)
+        default:
             fixedGrid(preset: preset, richViewerOpen: richViewerOpen)
         }
     }
@@ -252,6 +255,72 @@ struct MultiChannelGridView: View {
                     }
                 }
                 .padding(spacing)
+            }
+        }
+    }
+
+    /// Spotlight layout: one primary tile occupies the top-left 75% × 75%
+    /// of the visible area; the remaining cameras appear as thumbnails
+    /// along the right strip (25% width × full height) and the bottom
+    /// strip (75% width × 25% height under the primary). Dragging a
+    /// thumbnail onto the primary swaps them, since our `reorder` API
+    /// inserts the source before the target — the dropped thumbnail
+    /// becomes the new first entry in the persisted order.
+    private func spotlightGrid(richViewerOpen: Bool) -> some View {
+        return GeometryReader { geo in
+            let spacing: CGFloat = 8
+            let primaryFraction: CGFloat = 0.75
+            let primaryWidth = max(0, (geo.size.width - 2 * spacing) * primaryFraction)
+            let primaryHeight = max(0, (geo.size.height - 2 * spacing) * primaryFraction)
+            let rightStripWidth = max(0, geo.size.width - primaryWidth - 2 * spacing)
+            let bottomStripHeight = max(0, geo.size.height - primaryHeight - 2 * spacing)
+
+            let channels = visibleChannels
+            if let primary = channels.first {
+                let thumbnails = Array(channels.dropFirst())
+                // Slightly favor the right strip on odd counts — its taller
+                // aspect lets the extra tile breathe more than squeezing
+                // another column into the bottom strip would.
+                let rightCount = (thumbnails.count + 1) / 2
+                let rightThumbs = Array(thumbnails.prefix(rightCount))
+                let bottomThumbs = Array(thumbnails.dropFirst(rightCount))
+
+                let rightTileHeight = rightThumbs.isEmpty
+                    ? 0
+                    : (geo.size.height - CGFloat(rightThumbs.count + 1) * spacing) / CGFloat(rightThumbs.count)
+                let bottomTileWidth = bottomThumbs.isEmpty
+                    ? 0
+                    : (primaryWidth - CGFloat(max(0, bottomThumbs.count - 1)) * spacing) / CGFloat(max(1, bottomThumbs.count))
+
+                VStack(spacing: spacing) {
+                    HStack(alignment: .top, spacing: spacing) {
+                        tile(for: primary, richViewerOpen: richViewerOpen)
+                            .frame(width: primaryWidth, height: primaryHeight)
+                        VStack(spacing: spacing) {
+                            ForEach(rightThumbs) { ch in
+                                tile(for: ch, richViewerOpen: richViewerOpen)
+                                    .frame(width: rightStripWidth, height: rightTileHeight)
+                            }
+                            if rightThumbs.isEmpty {
+                                Color.clear.frame(width: rightStripWidth, height: 0)
+                            }
+                        }
+                        .frame(width: rightStripWidth, height: geo.size.height - 2 * spacing)
+                    }
+                    HStack(spacing: spacing) {
+                        ForEach(bottomThumbs) { ch in
+                            tile(for: ch, richViewerOpen: richViewerOpen)
+                                .frame(width: bottomTileWidth, height: bottomStripHeight)
+                        }
+                        if bottomThumbs.isEmpty {
+                            Color.clear.frame(height: bottomStripHeight)
+                        }
+                    }
+                    .frame(width: primaryWidth, height: bottomStripHeight, alignment: .leading)
+                }
+                .padding(spacing)
+            } else {
+                Color.clear
             }
         }
     }
