@@ -214,6 +214,23 @@ public final class CameraSession {
         case .other:
             break
         }
+        // Fan the event out to the shared notification gateway. The
+        // notifier itself decides whether to actually post (enabled,
+        // permission, throttle, per-kind preferences) — we always hand it
+        // the event so the user only has to configure once and every
+        // device with a session forwards into the same pipeline.
+        let channelID = Int(event.channelID)
+        let cameraName = channels.first(where: { $0.channel == channelID })?.name
+            ?? "Camera \(channelID + 1)"
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let snap = await self.snapshotURL(channel: channelID)
+            await EventNotifier.shared.notify(
+                event: event,
+                cameraName: cameraName,
+                snapshotURL: snap
+            )
+        }
     }
 
     public func ptz(channel: Int, op: PtzOp, speed: Int = 32, presetID: Int? = nil) async {

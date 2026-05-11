@@ -36,6 +36,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.activate(ignoringOtherApps: true)
+        // Refresh the notifier's authorization-status mirror. On first
+        // launch this also drives the SwiftUI permission row in Settings
+        // → Notifications to show "Request permission". We don't auto-
+        // prompt at launch — users get to choose whether to opt in
+        // (and from where) via the Settings UI.
+        Task { @MainActor in
+            await EventNotifier.shared.refreshPermissionStatus()
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
