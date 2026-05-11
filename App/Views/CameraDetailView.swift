@@ -271,43 +271,66 @@ struct MultiChannelGridView: View {
     /// Spotlight layout: primary tile fills 75% × 75% of the top-left.
     /// Below it sit TWO "sub-spotlight" tiles side-by-side (the bottom
     /// strip is split in half, regardless of how many cameras the device
-    /// has — when there's only one sub-spotlight to fill the bottom
-    /// strip we let it take the full bottom width; when there are none
-    /// we collapse the strip). The right column holds the remaining
-    /// thumbnails in a vertical stack. Channel order in
-    /// `CameraStore.channelOrder` drives slot assignment:
-    ///   [0] primary, [1, 2] sub-spotlights, [3+] right-column thumbnails.
-    /// Drag-to-rearrange and the "Make primary" action both promote
-    /// channels into these slots without any layout-specific code.
+    /// Spotlight layout — surfaces eight cameras around one big primary:
+    ///
+    ///   ┌────────────────────────┬───────┐
+    ///   │                        │ [1]   │
+    ///   │                        ├───────┤
+    ///   │       PRIMARY [0]      │ [2]   │
+    ///   │                        ├───────┤
+    ///   │                        │ [3]   │
+    ///   │                        ├───────┤
+    ///   │                        │ [4]   │
+    ///   ├────────────┬───────────┴───────┤
+    ///   │   [5]      │   [6]    │  [7]   │
+    ///   └────────────┴──────────┴────────┘
+    ///
+    /// Slot assignment from the persisted `channelOrder`:
+    ///   [0]      → primary, top-left (main stream — sharp at full size)
+    ///   [1..4]   → 4 thumbnails in the right column (top 75% of height)
+    ///   [5..7]   → 3 LARGER tiles spanning the full window width along
+    ///              the bottom 25%
+    ///   [8+]     → not rendered (the user can drag-reorder or use
+    ///              "Make primary" to bring any camera into view)
+    ///
+    /// When fewer than 8 cameras exist, the missing slots are simply
+    /// skipped and adjacent slots take their space:
+    ///   - No right thumbnails → primary stretches to the full window
+    ///     width (the bottom strip still spans the same full width).
+    ///   - No bottom tiles → the top section expands to the full height.
     private func spotlightGrid(richViewerOpen: Bool) -> some View {
         return GeometryReader { geo in
             let spacing: CGFloat = 8
-            let primaryFraction: CGFloat = 0.75
-            let primaryWidth = max(0, (geo.size.width - 2 * spacing) * primaryFraction)
-            let primaryHeight = max(0, (geo.size.height - 2 * spacing) * primaryFraction)
-            let rightStripWidth = max(0, geo.size.width - primaryWidth - 2 * spacing)
-            let bottomStripHeight = max(0, geo.size.height - primaryHeight - 2 * spacing)
+            let W = geo.size.width
+            let H = geo.size.height
+            // 75 / 25 vertical split for the top section vs. bottom strip,
+            // with one spacing gap between them eating from the H budget.
+            let topRowH = max(0, (H - spacing) * 0.75)
+            let bottomH = max(0, (H - spacing) * 0.25)
+            // 75 / 25 horizontal split for the primary vs. right column.
+            let primaryW = max(0, (W - spacing) * 0.75)
+            let rightColW = max(0, (W - spacing) * 0.25)
 
             let channels = visibleChannels
             if let primary = channels.first {
-                // Slot assignment from the channel order:
-                //   [0]    → primary
-                //   [1, 2] → sub-spotlights (bottom strip, side by side)
-                //   [3+]   → right-column thumbnails
-                let subSpotlights = Array(channels.dropFirst().prefix(2))
-                let rightThumbs = Array(channels.dropFirst(1 + subSpotlights.count))
+                let rightTiles = Array(channels.dropFirst(1).prefix(4))
+                let bottomTiles = Array(channels.dropFirst(1 + rightTiles.count).prefix(3))
 
-                let subWidth = subSpotlights.isEmpty
+                // Each tile height in the right column accounts for the
+                // gaps BETWEEN them (count - 1 spacings).
+                let rightTileH = rightTiles.isEmpty
                     ? 0
-                    : (primaryWidth - CGFloat(max(0, subSpotlights.count - 1)) * spacing) / CGFloat(max(1, subSpotlights.count))
-                // Right column must be the SAME height as the primary
-                // (not the full geo height) — otherwise the VStack below
-                // tries to lay out top-row height = max(primary, full)
-                // and there's no vertical room left for the bottom strip.
-                // Tile count divides primaryHeight, not geo height.
-                let rightTileHeight = rightThumbs.isEmpty
+                    : (topRowH - CGFloat(max(0, rightTiles.count - 1)) * spacing) / CGFloat(max(1, rightTiles.count))
+                // Bottom strip spans the FULL window width — three tiles
+                // divide (W - 2 spacings).
+                let bottomTileW = bottomTiles.isEmpty
                     ? 0
-                    : (primaryHeight - CGFloat(max(0, rightThumbs.count - 1)) * spacing) / CGFloat(max(1, rightThumbs.count))
+                    : (W - CGFloat(max(0, bottomTiles.count - 1)) * spacing) / CGFloat(max(1, bottomTiles.count))
+
+                // Let the primary absorb empty space when adjacent slots
+                // collapse, so we never leave dead pixels in the layout.
+                let effPrimaryW = rightTiles.isEmpty ? W : primaryW
+                let effTopH = bottomTiles.isEmpty ? H : topRowH
 
                 VStack(spacing: spacing) {
                     HStack(alignment: .top, spacing: spacing) {
@@ -317,30 +340,27 @@ struct MultiChannelGridView: View {
                         // hubs only allow one concurrent main-stream
                         // session at a time on most paired channels.
                         tile(for: primary, stream: .main, richViewerOpen: richViewerOpen)
-                            .frame(width: primaryWidth, height: primaryHeight)
-                        if rightThumbs.isEmpty {
-                            EmptyView()
-                        } else {
+                            .frame(width: effPrimaryW, height: effTopH)
+                        if !rightTiles.isEmpty {
                             VStack(spacing: spacing) {
-                                ForEach(rightThumbs) { ch in
+                                ForEach(rightTiles) { ch in
                                     tile(for: ch, stream: .sub, richViewerOpen: richViewerOpen)
-                                        .frame(width: rightStripWidth, height: rightTileHeight)
+                                        .frame(width: rightColW, height: rightTileH)
                                 }
                             }
-                            .frame(width: rightStripWidth, height: primaryHeight)
+                            .frame(width: rightColW, height: effTopH)
                         }
                     }
-                    if !subSpotlights.isEmpty {
+                    if !bottomTiles.isEmpty {
                         HStack(spacing: spacing) {
-                            ForEach(subSpotlights) { ch in
+                            ForEach(bottomTiles) { ch in
                                 tile(for: ch, stream: .sub, richViewerOpen: richViewerOpen)
-                                    .frame(width: subWidth, height: bottomStripHeight)
+                                    .frame(width: bottomTileW, height: bottomH)
                             }
                         }
-                        .frame(width: primaryWidth, height: bottomStripHeight, alignment: .leading)
+                        .frame(width: W, height: bottomH)
                     }
                 }
-                .padding(spacing)
             } else {
                 Color.clear
             }
