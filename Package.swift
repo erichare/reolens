@@ -41,7 +41,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "Reolens",
-            dependencies: ["ReolinkAPI", "ReolinkStreaming"],
+            dependencies: ["ReolinkAPI", "ReolinkStreaming", "ReolinkBaichuan"],
             path: "App",
             exclude: ["Info.plist", "Reolens.entitlements"],
             swiftSettings: [
@@ -58,6 +58,11 @@ let package = Package(
             name: "ReolinkStreamingTests",
             dependencies: ["ReolinkStreaming"],
             path: "Tests/ReolinkStreamingTests"
+        ),
+        .testTarget(
+            name: "ReolinkBaichuanTests",
+            dependencies: ["ReolinkBaichuan"],
+            path: "Tests/ReolinkBaichuanTests"
         )
     ]
 )

@@ -1,6 +1,9 @@
 import SwiftUI
 import AVKit
+import OSLog
 import ReolinkAPI
+
+private let log = Logger(subsystem: "com.reolens.app", category: "recordings")
 
 /// Browses recordings stored on the Reolink Home Hub / NVR for a given channel.
 /// Date picker → Search query → list of files → AVPlayer for playback.
@@ -14,6 +17,10 @@ struct RecordingsView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var nowPlaying: PlayableRecording?
+    @State private var rawResponse: String?
+    @State private var showRawResponse = false
+    @State private var eventLog: [HubEvent] = []
+    @State private var eventsUnsupported = false
 
     private let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -26,6 +33,16 @@ struct RecordingsView: View {
             controls
             Divider()
             content
+            if !files.isEmpty
+                && eventsUnsupported
+                && files.allSatisfy({ $0.triggers.isEmpty })
+                && session.aiEventLog.isEmpty {
+                Divider()
+                aiUnavailableFooter
+            } else if !session.aiEventLog.isEmpty && files.contains(where: { !effectiveDetections(for: $0).isEmpty }) {
+                Divider()
+                baichuanActiveFooter
+            }
         }
         .task(id: TaskKey(date: selectedDate, stream: streamType)) {
             await reload()
@@ -33,6 +50,35 @@ struct RecordingsView: View {
         .sheet(item: $nowPlaying) { recording in
             RecordingPlayerSheet(recording: recording)
         }
+    }
+
+    private var aiUnavailableFooter: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "info.circle")
+                .foregroundStyle(.secondary)
+            Text("AI tags aren't being delivered from this camera. CGI Search doesn't expose them, and the Baichuan event channel hasn't reported any events yet for this session — tags will appear here as new motion/AI events are pushed by the hub.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.background.tertiary)
+    }
+
+    private var baichuanActiveFooter: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "antenna.radiowaves.left.and.right")
+                .foregroundStyle(.green)
+            Text("AI detection tags are matched against Baichuan events received this session (\(session.aiEventLog.count) in the log).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.background.tertiary)
     }
 
     private struct TaskKey: Equatable {
@@ -53,6 +99,17 @@ struct RecordingsView: View {
             Spacer()
             if isLoading {
                 ProgressView().controlSize(.small)
+            }
+            if rawResponse != nil {
+                Button {
+                    showRawResponse = true
+                } label: {
+                    Label("Raw JSON", systemImage: "curlybraces")
+                }
+                .help("Show the raw JSON response from the camera. Useful for diagnosing why detection icons don't match.")
+                .popover(isPresented: $showRawResponse) {
+                    RawResponseView(text: rawResponse ?? "")
+                }
             }
             Button {
                 Task { await reload() }
@@ -110,9 +167,17 @@ struct RecordingsView: View {
         .padding(.vertical, 4)
     }
 
+    /// Detection tag pipeline:
+    ///   1. First check `file.triggers` (the `Search`-response bitfield). On
+    ///      firmware that doesn't populate it (e.g. Home Hub Pro continuous
+    ///      recordings), this is empty.
+    ///   2. Fall back to events from `GetEvents` matched to this file by time
+    ///      overlap — captures AI events on hubs that surface them through
+    ///      that command.
+    ///   3. If both are empty, render nothing (we don't fake data).
     @ViewBuilder
     private func detectionTags(for file: SearchFile) -> some View {
-        let detections = file.triggers
+        let detections = effectiveDetections(for: file)
         if !detections.isEmpty {
             HStack(spacing: 6) {
                 ForEach(detections, id: \.self) { d in
@@ -124,6 +189,34 @@ struct RecordingsView: View {
                 }
             }
         }
+    }
+
+    private func effectiveDetections(for file: SearchFile) -> [DetectionType] {
+        if !file.triggers.isEmpty { return file.triggers }
+
+        var matches: [DetectionType] = []
+        var seen = Set<DetectionType>()
+        if let start = file.startDate, let end = file.endDate {
+            // 1. Match against Baichuan-delivered live AI events on this channel.
+            //    Only events whose timestamp falls inside the recording's range
+            //    AND match the right channel count.
+            for event in session.aiEventLog
+                where event.channelID == channel.channel
+                && event.timestamp >= start
+                && event.timestamp <= end {
+                if let d = event.detectionType, seen.insert(d).inserted {
+                    matches.append(d)
+                }
+            }
+            // 2. Fall back to the GetEvents probe results if Baichuan didn't
+            //    catch anything (e.g., events that predate this app session).
+            for entry in eventLog where entry.overlaps(start: start, end: end) {
+                for d in entry.detectionTypes where seen.insert(d).inserted {
+                    matches.append(d)
+                }
+            }
+        }
+        return matches
     }
 
     private func tint(for detection: DetectionType) -> Color {
@@ -167,23 +260,79 @@ struct RecordingsView: View {
         let start = cal.startOfDay(for: selectedDate)
         guard let end = cal.date(byAdding: .day, value: 1, to: start)?.addingTimeInterval(-1) else { return }
 
+        let command = Commands.search(
+            channel: channel.channel,
+            onlyStatus: false,
+            streamType: streamType,
+            start: start,
+            end: end
+        )
         do {
-            let env = try await session.client.send(
-                Commands.search(
-                    channel: channel.channel,
-                    onlyStatus: false,
-                    streamType: streamType,
-                    start: start,
-                    end: end
-                ),
-                as: SearchEnvelope.self
-            )
-            let result = env.SearchResult.File ?? []
+            // Capture raw bytes for diagnostics — useful when detection icons
+            // don't show because firmware uses a field name we don't know yet.
+            let raw = try await session.client.sendCapturingRaw(command)
+            let pretty = prettyPrint(raw) ?? String(data: raw, encoding: .utf8) ?? "<binary>"
+            rawResponse = pretty
+            log.info("Search raw response (channel=\(self.channel.channel)):\n\(pretty, privacy: .public)")
+
+            let envelopes = try JSONDecoder().decode([CGIResponse<SearchEnvelope>].self, from: raw)
+            guard let firstValue = envelopes.first?.value else {
+                files = []
+                errorMessage = "Empty response from camera"
+                return
+            }
+            let result = firstValue.SearchResult.File ?? []
             files = result.sorted { ($0.startDate ?? .distantPast) > ($1.startDate ?? .distantPast) }
         } catch {
             errorMessage = "\(error)"
             files = []
         }
+
+        // Once per day-load, probe for AI events through `GetEvents`. Reolink
+        // Home Hub Pro's `Search` response doesn't include trigger metadata,
+        // but some firmware exposes it via this separate endpoint. Capture
+        // whatever shape comes back — `HubEvent` decodes permissively.
+        if !eventsUnsupported {
+            await loadEvents(start: start, end: end)
+        }
+    }
+
+    private func loadEvents(start: Date, end: Date) async {
+        let cmd = Commands.getEvents(channel: channel.channel, start: start, end: end)
+        do {
+            let raw = try await session.client.sendCapturingRaw(cmd)
+            log.info("GetEvents raw response (channel=\(self.channel.channel)):\n\(String(data: raw, encoding: .utf8) ?? "<binary>", privacy: .public)")
+            let envelopes = (try? JSONDecoder().decode([CGIResponse<HubEventEnvelope>].self, from: raw)) ?? []
+            if let firstError = envelopes.first?.error,
+               firstError.rspCode == CGIErrorCode.notSupport.rawValue {
+                log.info("GetEvents not supported on this firmware; falling back to no AI metadata.")
+                eventsUnsupported = true
+                eventLog = []
+                return
+            }
+            // Home Hub Pro returns current alarm state under `value.ai`,
+            // `value.md`, `value.visitor` — NOT a historical event list.
+            // Our `HubEventEnvelope` decoder only finds events when one of its
+            // candidate top-level keys is present (EventList, Events, …).
+            // If no events came back, mark unsupported so the UI footer shows.
+            let decoded = envelopes.first?.value?.events ?? []
+            eventLog = decoded
+            if decoded.isEmpty {
+                log.info("GetEvents returned current-state only (not a historical event log). Marking unsupported.")
+                eventsUnsupported = true
+            }
+        } catch {
+            log.debug("GetEvents probe failed: \(error.localizedDescription, privacy: .public)")
+            eventsUnsupported = true
+        }
+    }
+
+    private func prettyPrint(_ data: Data) -> String? {
+        guard let obj = try? JSONSerialization.jsonObject(with: data, options: .allowFragments) else { return nil }
+        guard let pretty = try? JSONSerialization.data(
+            withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]
+        ) else { return nil }
+        return String(data: pretty, encoding: .utf8)
     }
 
     private func play(_ file: SearchFile) {
@@ -315,6 +464,39 @@ struct RecordingPlayerSheet: View {
         let f = ByteCountFormatter()
         f.countStyle = .file
         return f
+    }
+}
+
+/// Popover that shows the raw JSON response from the camera and lets the
+/// user copy it. Use to diagnose why detection icons don't match.
+struct RawResponseView: View {
+    let text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Raw Search response").font(.headline)
+                Spacer()
+                Button {
+                    let pb = NSPasteboard.general
+                    pb.clearContents()
+                    pb.setString(text, forType: .string)
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+            }
+            ScrollView([.vertical, .horizontal]) {
+                Text(text)
+                    .font(.system(size: 11, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+            }
+            .frame(minWidth: 560, idealWidth: 720, minHeight: 360, idealHeight: 480)
+            .background(.background.tertiary)
+            .clipShape(.rect(cornerRadius: 6))
+        }
+        .padding(12)
     }
 }
 

@@ -89,4 +89,29 @@ public enum Commands {
     public static func getHddInfo() -> CGICommand<EmptyParam> {
         CGICommand(cmd: "GetHddInfo", action: .get, param: EmptyParam())
     }
+
+    /// Speculative probe for an alarm-event log endpoint. Reolink's official
+    /// CGI docs don't mention this command, but some newer NVR/hub firmware
+    /// implements it. Returns -9 (not supported) on hubs that don't.
+    public static func getEvents(
+        channel: Int,
+        start: Date,
+        end: Date
+    ) -> CGICommand<EventsParam> {
+        CGICommand(
+            cmd: "GetEvents",
+            action: .get,
+            param: EventsParam(
+                channel: channel,
+                StartTime: ReolinkTime(date: start),
+                EndTime: ReolinkTime(date: end)
+            )
+        )
+    }
+
+    public struct EventsParam: Encodable, Sendable {
+        public let channel: Int
+        public let StartTime: ReolinkTime
+        public let EndTime: ReolinkTime
+    }
 }

@@ -8,6 +8,7 @@ struct ChannelSettingsView: View {
     let channel: ChannelStatus
 
     @State private var osd: OsdSettings?
+    @State private var supportedAITypes: [DetectionType] = []
     @State private var isLoading = false
     @State private var isSaving = false
     @State private var errorMessage: String?
@@ -25,10 +26,27 @@ struct ChannelSettingsView: View {
                     Text("No OSD configuration available.").font(.caption).foregroundStyle(.secondary)
                 }
             }
+            if !supportedAITypes.isEmpty {
+                Section("AI Detection") {
+                    Text("This channel can detect:").font(.caption).foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        ForEach(supportedAITypes, id: \.self) { d in
+                            Label(d.label, systemImage: d.systemImage)
+                                .labelStyle(.titleAndIcon)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(.tint.tertiary, in: .capsule)
+                                .font(.caption)
+                        }
+                    }
+                }
+            }
             Section("Channel") {
                 LabeledContent("Name", value: channel.name ?? "—")
                 LabeledContent("Type", value: channel.typeInfo ?? "—")
                 LabeledContent("Status", value: channel.isOnline ? (channel.isAsleep ? "Sleeping" : "Online") : "Offline")
+                LabeledContent("Battery powered", value: channel.isBatteryPowered ? "Yes" : "No")
+                LabeledContent("Dual lens", value: channel.isDualLens ? "Yes" : "No")
             }
             if let info = session.deviceInfo {
                 Section("Device") {
@@ -39,7 +57,43 @@ struct ChannelSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .task { await loadOsd() }
+        .task {
+            await loadOsd()
+            await loadSupportedAITypes()
+        }
+    }
+
+    /// Reolink's `GetEvents` command on Home Hub Pro returns the channel's
+    /// current AI alarm state, with `support: 0|1` per category indicating
+    /// which detection types this specific camera supports. Surface that as
+    /// informational capability tags.
+    private func loadSupportedAITypes() async {
+        let now = Date()
+        let cmd = Commands.getEvents(channel: channel.channel, start: now.addingTimeInterval(-60), end: now)
+        do {
+            let raw = try await session.client.sendCapturingRaw(cmd)
+            guard let obj = try JSONSerialization.jsonObject(with: raw) as? [[String: Any]],
+                  let value = obj.first?["value"] as? [String: Any] else { return }
+            var supported: [DetectionType] = []
+            if let ai = value["ai"] as? [String: Any] {
+                for (key, sub) in ai {
+                    if let dict = sub as? [String: Any],
+                       (dict["support"] as? Int) == 1,
+                       let d = DetectionType.fromReolinkString(key) {
+                        supported.append(d)
+                    }
+                }
+            }
+            if let md = value["md"] as? [String: Any], (md["support"] as? Int) == 1 {
+                supported.append(.motion)
+            }
+            if let visitor = value["visitor"] as? [String: Any], (visitor["support"] as? Int) == 1 {
+                supported.append(.visitor)
+            }
+            supportedAITypes = supported.sorted { $0.rawValue < $1.rawValue }
+        } catch {
+            // Probe failure isn't fatal — just leave the section hidden.
+        }
     }
 
     @ViewBuilder

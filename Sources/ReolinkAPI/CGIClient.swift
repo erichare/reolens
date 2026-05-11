@@ -110,6 +110,14 @@ public actor CGIClient {
         _ = try await self.send(command, as: EmptyResult.self)
     }
 
+    /// Send a single command and return the raw response body bytes. Useful for
+    /// diagnostics when the typed model doesn't match a particular firmware's
+    /// JSON shape — you can inspect/log the actual fields.
+    public func sendCapturingRaw<P: Encodable & Sendable>(_ command: CGICommand<P>) async throws -> Data {
+        let activeToken = try await login()
+        return try await postRaw(commands: [AnyEncodable(command)], token: activeToken.name)
+    }
+
     /// Send a batch of homogeneous commands and decode each value as `T`.
     public func sendBatch<P: Encodable & Sendable, T: Decodable & Sendable>(
         _ commands: [CGICommand<P>]
