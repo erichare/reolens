@@ -2,47 +2,29 @@ import SwiftUI
 import ReolinkAPI
 import ReolinkBaichuan
 
-/// Full-window single-camera viewer with Live / Recordings / Settings tabs.
+/// Modal sheet wrapper around `ChannelDetailContent`, used when a grid
+/// tile is clicked. The same camera UI renders inline (without the sheet
+/// chrome) when a channel is selected in the sidebar — see
+/// `ChannelDetailContent` for the underlying view.
 struct RichViewerSheet: View {
     let session: CameraSession
     let channel: ChannelStatus
 
     @Environment(\.dismiss) private var dismiss
-    @Environment(CameraStore.self) private var store
-    @State private var tab: Tab = .live
-
-    enum Tab: String, Hashable, CaseIterable, Identifiable {
-        case live, recordings, settings
-        var id: String { rawValue }
-        var label: String {
-            switch self {
-            case .live: "Live"
-            case .recordings: "Recordings"
-            case .settings: "Settings"
-            }
-        }
-        var icon: String {
-            switch self {
-            case .live: "dot.radiowaves.left.and.right"
-            case .recordings: "rectangle.stack.badge.play"
-            case .settings: "gearshape"
-            }
-        }
-    }
+    /// The sheet sits on top of the existing detail pane, so the fullscreen
+    /// toggle inside `ChannelDetailContent` has nothing meaningful to
+    /// collapse here. We pass a local dummy binding so the toggle is a
+    /// no-op when this content is hosted in a sheet rather than inline.
+    @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
 
     var body: some View {
         VStack(spacing: 0) {
             header
-            Picker("", selection: $tab) {
-                ForEach(Tab.allCases) { t in
-                    Label(t.label, systemImage: t.icon).tag(t)
-                }
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            Divider()
-            content
+            ChannelDetailContent(
+                session: session,
+                channel: channel,
+                columnVisibility: $columnVisibility
+            )
         }
         .frame(minWidth: 920, minHeight: 600, idealHeight: 760)
     }
@@ -89,54 +71,6 @@ struct RichViewerSheet: View {
         if !channel.isOnline {
             Label("Offline", systemImage: "wifi.slash")
                 .foregroundStyle(.red).font(.caption)
-        }
-    }
-
-    @ViewBuilder
-    private var content: some View {
-        switch tab {
-        case .live:
-            liveTab
-        case .recordings:
-            RecordingsView(session: session, channel: channel)
-        case .settings:
-            ChannelSettingsView(session: session, channel: channel)
-        }
-    }
-
-    private var liveTab: some View {
-        VStack(spacing: 0) {
-            LiveCameraTile(session: session, channel: channel, stream: .main)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(.black)
-            Divider()
-            controlBar
-        }
-    }
-
-    private var controlBar: some View {
-        HStack(spacing: 16) {
-            PTZControlBar(session: session, channel: channel.channel)
-            Spacer()
-            TalkbackButton(session: session, channelID: UInt8(channel.channel))
-            rotationControls
-        }
-        .padding(12)
-    }
-
-    private var rotationControls: some View {
-        // The rich viewer renders the MAIN stream, so its rotate control
-        // adjusts the main-stream rotation only. The grid preview (sub)
-        // has its own persisted rotation independently.
-        let current = store.rotation(for: session.entry.id, channel: channel.channel, stream: .main)
-        return HStack(spacing: 6) {
-            Text("\(current)°").font(.caption).foregroundStyle(.secondary).monospacedDigit()
-            Button {
-                store.rotateClockwise(deviceID: session.entry.id, channel: channel.channel, stream: .main)
-            } label: {
-                Label("Rotate", systemImage: "rotate.right")
-            }
-            .help("Rotate the main feed 90° clockwise")
         }
     }
 }

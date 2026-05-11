@@ -6,13 +6,23 @@ import UniformTypeIdentifiers
 struct CameraDetailView: View {
     let session: CameraSession
     let focusedChannel: Int?
+    @Binding var columnVisibility: NavigationSplitViewVisibility
 
     @State private var didStart = false
 
+    /// True when the user has collapsed the sidebar via the fullscreen
+    /// toggle. We don't navigate into a separate "fullscreen" view —
+    /// instead, hiding the sidebar via the `NavigationSplitView` binding
+    /// expands the detail pane to fill the window, which is what users
+    /// actually want from "fullscreen for camera feeds" inside the app.
+    /// (Native macOS fullscreen via the green window button works on top
+    /// of this and is the right tool for a kiosk-style display.)
+    private var isSidebarHidden: Bool {
+        columnVisibility == .detailOnly
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            headerBar
-            Divider()
             content
         }
         .task(id: session.entry.id) {
@@ -22,22 +32,30 @@ struct CameraDetailView: View {
         }
         .navigationTitle(titleLine)
         .navigationSubtitle(session.deviceInfo?.model ?? session.entry.host)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                statusBadge
-            }
-        }
     }
 
     @ViewBuilder
     private var content: some View {
         if let focusedChannel,
            let channel = session.channels.first(where: { $0.channel == focusedChannel }) {
-            SingleChannelView(session: session, channel: channel)
+            // Sidebar selecting a channel now opens the SAME detailed view
+            // that clicking a grid tile opens — Live / Recordings / Settings
+            // tabs + PTZ + rotate + talkback + fullscreen toggle. Single
+            // source of UX so users don't need to remember which entry
+            // points expose which controls.
+            ChannelDetailContent(
+                session: session,
+                channel: channel,
+                columnVisibility: $columnVisibility
+            )
         } else if session.channels.count > 1 {
-            MultiChannelGridView(session: session)
+            MultiChannelGridView(session: session, columnVisibility: $columnVisibility)
         } else if let channel = session.channels.first {
-            SingleChannelView(session: session, channel: channel)
+            ChannelDetailContent(
+                session: session,
+                channel: channel,
+                columnVisibility: $columnVisibility
+            )
         } else {
             ContentUnavailableView("Connecting…", systemImage: "bolt.horizontal")
         }
@@ -50,88 +68,11 @@ struct CameraDetailView: View {
         }
         return session.entry.displayName
     }
-
-    private var headerBar: some View {
-        HStack(spacing: 12) {
-            if let info = session.deviceInfo {
-                Label(info.model ?? "Unknown", systemImage: "video.fill")
-                if let fw = info.firmVer {
-                    Text(fw).font(.caption).foregroundStyle(.secondary)
-                }
-            } else {
-                Text(session.entry.host).font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer()
-            if case let .error(msg) = session.status {
-                Label(msg, systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red)
-                    .font(.caption)
-                    .lineLimit(1)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-    }
-
-    /// Compact connection-status pill for the toolbar. The toolbar renders
-    /// `Label` with both icon and text full-size, which looks heavy next to
-    /// the title; switching to a tinted capsule with a small dot keeps the
-    /// information density without the visual weight.
-    @ViewBuilder
-    private var statusBadge: some View {
-        switch session.status {
-        case .connected:
-            statusPill(text: "Connected", color: .green)
-        case .connecting:
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.small)
-                Text("Connecting…")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-            }
-        case .error(let msg):
-            statusPill(text: "Disconnected", color: .red)
-                .help(msg)
-        case .disconnected:
-            Button {
-                Task { await session.connect() }
-            } label: {
-                Label("Connect", systemImage: "play.fill")
-            }
-            .controlSize(.small)
-        }
-    }
-
-    private func statusPill(text: String, color: Color) -> some View {
-        HStack(spacing: 6) {
-            Circle().fill(color).frame(width: 7, height: 7)
-            Text(text)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(color.opacity(0.12), in: .capsule)
-    }
-}
-
-struct SingleChannelView: View {
-    let session: CameraSession
-    let channel: ChannelStatus
-
-    var body: some View {
-        VStack(spacing: 0) {
-            LiveCameraTile(session: session, channel: channel, stream: .main)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            Divider()
-            PTZControlBar(session: session, channel: channel.channel)
-                .padding(8)
-        }
-    }
 }
 
 struct MultiChannelGridView: View {
     let session: CameraSession
+    @Binding var columnVisibility: NavigationSplitViewVisibility
     @Environment(CameraStore.self) private var store
     @State private var richViewerChannel: ChannelStatus?
     /// Channel ID currently being dragged. Drives the dim-while-dragging
@@ -186,6 +127,19 @@ struct MultiChannelGridView: View {
             Text("\(visibleChannels.count) camera\(visibleChannels.count == 1 ? "" : "s")")
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
+            Button {
+                toggleSidebar()
+            } label: {
+                Label(
+                    columnVisibility == .detailOnly ? "Show sidebar" : "Hide sidebar",
+                    systemImage: columnVisibility == .detailOnly
+                        ? "sidebar.left"
+                        : "rectangle.expand.vertical"
+                )
+            }
+            .help(columnVisibility == .detailOnly
+                  ? "Show the camera list"
+                  : "Hide the camera list and fill the window with the grid")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -196,6 +150,12 @@ struct MultiChannelGridView: View {
             get: { store.gridPreset(for: session.entry.id) },
             set: { store.setGridPreset($0, for: session.entry.id) }
         )
+    }
+
+    private func toggleSidebar() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            columnVisibility = (columnVisibility == .detailOnly) ? .automatic : .detailOnly
+        }
     }
 
     /// The actual grid. Adaptive preset uses SwiftUI's adaptive `GridItem`
