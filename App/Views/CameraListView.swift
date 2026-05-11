@@ -161,6 +161,24 @@ struct ChannelSidebarRow: View {
                     .font(.caption2)
             }
         }
+        // Make the sidebar row a drag source carrying the same
+        // `ChannelDragPayload` the grid tiles use. Dropping it onto any
+        // grid tile reorders the persisted `channelOrder` via the
+        // existing `reorder(deviceID:source:before:allChannels:)` helper,
+        // so the dragged camera lands at the target slot. Works for any
+        // layout (Adaptive / Spotlight / fixed) without per-layout glue.
+        .draggable(ChannelDragPayload(channel: channel.channel)) {
+            HStack(spacing: 6) {
+                Image(systemName: "video.fill")
+                    .foregroundStyle(.white)
+                Text(channel.name ?? "Channel \(channel.channel + 1)")
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.black.opacity(0.85), in: .rect(cornerRadius: 6))
+        }
     }
 }
 
