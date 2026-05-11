@@ -174,7 +174,8 @@ public final class EventNotifier {
         // strict-concurrency checker. The callback fires on the
         // notification queue, never inspects the request from another
         // isolation context, and just hands us back an optional error.
-        let postError: Error? = await withCheckedContinuation { (cont: CheckedContinuation<Error?, Never>) in
+        // `(any Error)?` because the target uses `ExistentialAny`.
+        let postError: (any Error)? = await withCheckedContinuation { (cont: CheckedContinuation<(any Error)?, Never>) in
             UNUserNotificationCenter.current().add(request) { error in
                 cont.resume(returning: error)
             }
