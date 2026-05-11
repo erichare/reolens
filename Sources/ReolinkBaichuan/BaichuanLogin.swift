@@ -96,7 +96,34 @@ extension BaichuanClient {
         let replyXML = String(data: modernReply.body, encoding: .utf8) ?? ""
         let deviceName = BcXmlBody.firstTagContent(in: replyXML, tag: "name") ?? ""
         log.info("Baichuan login OK device=\(deviceName, privacy: .public)")
+
+        // Sanity probe: send a simple no-body command (Version, msg_id=80)
+        // AS the first AES-encoded outbound message. If this fails, we know
+        // outbound AES encryption is producing ciphertext the camera can't
+        // decrypt — and findAlarmVideo (~600 byte body) has no hope.
+        await runAESSanityProbe()
+
         return deviceName
+    }
+
+    private func runAESSanityProbe() async {
+        let header = BcHeader(
+            msgID: BcMessageID.version,
+            bodyLength: 0,
+            channelID: 0,
+            streamType: 0,
+            msgNum: nextMessageNumber(),
+            responseCode: 0,
+            msgClass: BcConstants.classModernWithOffset,
+            payloadOffset: 0
+        )
+        let probe = BcMessage(header: header, body: Data())
+        do {
+            let reply = try await sendAndAwait(probe, timeout: 4, stage: "version-probe")
+            log.info("AES sanity probe (msg_id=80 Version) reply code=\(reply.header.responseCode) bodyLen=\(reply.body.count)")
+        } catch {
+            log.error("AES sanity probe failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func looksLikeXML(_ data: Data) -> Bool {

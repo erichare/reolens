@@ -7,6 +7,8 @@ struct SettingsView: View {
         TabView {
             generalTab
                 .tabItem { Label("General", systemImage: "gearshape") }
+            developerTab
+                .tabItem { Label("Developer", systemImage: "hammer") }
             aboutTab
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
@@ -21,6 +23,19 @@ struct SettingsView: View {
             Text("Settings UI is a placeholder. Camera-specific options will move here (snapshot interval, polling cadence, preferred stream).")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        }
+        .formStyle(.grouped)
+    }
+
+    private var developerTab: some View {
+        @Bindable var store = store
+        return Form {
+            Section {
+                Toggle("Developer mode", isOn: $store.developerMode)
+                Text("Surfaces diagnostic UI for debugging: Raw JSON popovers in the recordings view and other low-level inspection tools. Off by default.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
     }

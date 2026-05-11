@@ -1,5 +1,6 @@
 import SwiftUI
 import ReolinkAPI
+import ReolinkBaichuan
 
 /// Per-channel settings — currently OSD (on-screen display) toggles for the
 /// camera-name and time overlays the camera bakes into the video stream.
@@ -7,6 +8,7 @@ struct ChannelSettingsView: View {
     let session: CameraSession
     let channel: ChannelStatus
 
+    @Environment(CameraStore.self) private var store
     @State private var osd: OsdSettings?
     @State private var supportedAITypes: [DetectionType] = []
     @State private var isLoading = false
@@ -45,8 +47,30 @@ struct ChannelSettingsView: View {
                 LabeledContent("Name", value: channel.name ?? "—")
                 LabeledContent("Type", value: channel.typeInfo ?? "—")
                 LabeledContent("Status", value: channel.isOnline ? (channel.isAsleep ? "Sleeping" : "Online") : "Offline")
-                LabeledContent("Battery powered", value: channel.isBatteryPowered ? "Yes" : "No")
-                LabeledContent("Dual lens", value: channel.isDualLens ? "Yes" : "No")
+                LabeledContent("Battery powered", value: session.isBatteryPowered(channel: channel.channel) ? "Yes" : "No")
+                if store.developerMode {
+                    // Hardware property — but we expose a manual override
+                    // for Developer mode because some firmwares don't
+                    // report `typeInfo` and our auto-detection relies on
+                    // the live stream starting. Most users should never
+                    // need to touch this.
+                    Toggle("Dual lens (override)", isOn: Binding(
+                        get: { store.isDualLensOverride(deviceID: session.entry.id, channel: channel.channel)
+                               || channel.isDualLens },
+                        set: { newValue in
+                            store.setDualLensOverride(newValue, deviceID: session.entry.id, channel: channel.channel)
+                        }
+                    ))
+                } else {
+                    LabeledContent("Dual lens", value: session.isDualLens(channel: channel.channel) ? "Yes" : "No")
+                }
+                if let battery = session.batteryByChannel[channel.channel] {
+                    LabeledContent("Battery level", value: "\(battery.percent)%")
+                    LabeledContent("Charge status", value: batteryChargeLabel(for: battery))
+                    if let t = battery.temperatureC {
+                        LabeledContent("Battery temperature", value: "\(t) °C")
+                    }
+                }
             }
             if let info = session.deviceInfo {
                 Section("Device") {
@@ -167,5 +191,11 @@ struct ChannelSettingsView: View {
         } catch {
             errorMessage = "\(error)"
         }
+    }
+
+    private func batteryChargeLabel(for info: BaichuanBatteryInfo) -> String {
+        if info.isCharging { return "Charging" }
+        if info.isPluggedIn { return "Plugged in (\(info.chargeStatus))" }
+        return info.chargeStatus.capitalized
     }
 }

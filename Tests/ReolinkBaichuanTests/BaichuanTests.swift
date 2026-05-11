@@ -147,6 +147,88 @@ struct AESTests {
     }
 }
 
+@Suite("BcMessage two-part body (Extension + body)")
+struct BcMessageExtensionTests {
+
+    /// Encoding a modern message with an Extension XML prefix must:
+    ///   • Encrypt ext and body as INDEPENDENT AES streams (so the IV
+    ///     "0123456789abcdef" is re-applied to each chunk).
+    ///   • Set `body_length` = len(AES(ext)) + len(AES(body)).
+    ///   • Set `payload_offset` = len(AES(ext)).
+    /// Decoding must round-trip cleanly.
+    @Test func roundTripsExtensionAndBody() {
+        let key = BcCipher.deriveAESKey(nonce: "deadbeef", password: "secret")
+        let cipher: BcCipher = .aes(key: key)
+
+        let ext = BcXmlBody.channelExtension(channel: 2)
+        let body = Data("<?xml version=\"1.0\"?><body><findAlarmVideo><channelId>2</channelId></findAlarmVideo></body>".utf8)
+        let header = BcHeader(
+            msgID: BcMessageID.findAlarmVideo,
+            bodyLength: 0,
+            channelID: 2,
+            streamType: 0,
+            msgNum: 42,
+            responseCode: 0,
+            msgClass: BcConstants.classModernWithOffset,
+            payloadOffset: 0
+        )
+        let msg = BcMessage(header: header, body: body, extensionBody: ext)
+
+        let wire = msg.encode(cipher: cipher)
+        // Header (24) + AES(ext).count + AES(body).count == wire.count.
+        // AES-CFB is a stream cipher: ciphertext length == plaintext length.
+        let expectedTotal = 24 + ext.count + body.count
+        #expect(wire.count == expectedTotal)
+
+        // payload_offset on the wire must equal the encrypted-ext length.
+        let writtenPayloadOffset = wire.readLE(at: 20, as: UInt32.self)
+        #expect(writtenPayloadOffset == UInt32(ext.count))
+        // body_length must cover both halves.
+        let writtenBodyLength = wire.readLE(at: 8, as: UInt32.self)
+        #expect(writtenBodyLength == UInt32(ext.count + body.count))
+
+        // Round-trip via decode.
+        let decoded = BcMessage.decode(from: wire, cipher: cipher)
+        #expect(decoded != nil)
+        #expect(decoded?.consumed == wire.count)
+        #expect(decoded?.0.extensionBody == ext)
+        #expect(decoded?.0.body == body)
+    }
+
+    @Test func extensionXMLMatchesReolinkAIOFormat() {
+        let bytes = BcXmlBody.channelExtension(channel: 3)
+        let text = String(data: bytes, encoding: .utf8)
+        #expect(text == """
+        <?xml version="1.0" encoding="UTF-8" ?>
+        <Extension version="1.1">
+        <channelId>3</channelId>
+        </Extension>
+
+        """)
+    }
+
+    /// Without an extension, the encoder must NOT set payload_offset and must
+    /// produce only `AES(body)` after the header (legacy single-stream layout).
+    @Test func noExtensionMatchesLegacyLayout() {
+        let key = BcCipher.deriveAESKey(nonce: "abc", password: "pw")
+        let cipher: BcCipher = .aes(key: key)
+        let body = Data("<?xml version=\"1.0\"?><body/>".utf8)
+        let header = BcHeader(
+            msgID: 80,
+            bodyLength: 0,
+            channelID: 0,
+            streamType: 0,
+            msgNum: 1,
+            responseCode: 0,
+            msgClass: BcConstants.classModernWithOffset
+        )
+        let msg = BcMessage(header: header, body: body, extensionBody: nil)
+        let wire = msg.encode(cipher: cipher)
+        #expect(wire.count == 24 + body.count)
+        #expect(wire.readLE(at: 20, as: UInt32.self) == 0)
+    }
+}
+
 @Suite("MD5 hash")
 struct MD5Tests {
 

@@ -11,8 +11,18 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
     public var username: String
     public var useHTTPS: Bool
     public var preferredCodec: VideoCodec
-    /// Per-channel rotation in degrees (90/180/270). Defaults to 0 when unset.
-    public var channelRotations: [Int: Int] = [:]
+    /// Per-(channel, stream) rotation in degrees (90 / 180 / 270). Defaults
+    /// to 0 when unset. Stored per stream because dual-lens Reolink cameras
+    /// can encode the main and sub stream in different native orientations
+    /// (e.g. sub rotated 90° CCW, main rotated 90° CW) — a single shared
+    /// rotation would only correct one of them. Key format: `"{channel}:{stream}"`,
+    /// e.g. `"0:main"`, `"0:sub"`.
+    public var channelStreamRotations: [String: Int] = [:]
+    /// Channels that the user has manually marked dual-lens. Used when the
+    /// hub's `GetChannelstatus` doesn't report a `typeInfo` we recognize
+    /// (Home Hub Pro returns nil for many paired cameras, including Argus
+    /// 4 Pro on current firmware).
+    public var dualLensOverrides: Set<Int> = []
 
     public init(
         id: UUID = UUID(),
@@ -22,7 +32,8 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
         username: String,
         useHTTPS: Bool = false,
         preferredCodec: VideoCodec = .h264,
-        channelRotations: [Int: Int] = [:]
+        channelStreamRotations: [String: Int] = [:],
+        dualLensOverrides: Set<Int> = []
     ) {
         self.id = id
         self.displayName = displayName
@@ -31,12 +42,16 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
         self.username = username
         self.useHTTPS = useHTTPS
         self.preferredCodec = preferredCodec
-        self.channelRotations = channelRotations
+        self.channelStreamRotations = channelStreamRotations
+        self.dualLensOverrides = dualLensOverrides
     }
 
     /// Codable conformance: serialize the dict with String keys so JSON is round-trip clean.
     enum CodingKeys: String, CodingKey {
-        case id, displayName, host, port, username, useHTTPS, preferredCodec, channelRotations
+        case id, displayName, host, port, username, useHTTPS, preferredCodec,
+             channelRotations,         // legacy: per-channel rotation, no stream split
+             channelStreamRotations,   // new: per-(channel, stream) rotation
+             dualLensOverrides
     }
 
     public init(from decoder: any Decoder) throws {
@@ -48,11 +63,27 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
         self.username = try c.decode(String.self, forKey: .username)
         self.useHTTPS = try c.decode(Bool.self, forKey: .useHTTPS)
         self.preferredCodec = try c.decode(VideoCodec.self, forKey: .preferredCodec)
-        let stringDict = (try? c.decode([String: Int].self, forKey: .channelRotations)) ?? [:]
-        self.channelRotations = Dictionary(uniqueKeysWithValues: stringDict.compactMap { (key, value) -> (Int, Int)? in
-            guard let k = Int(key) else { return nil }
-            return (k, value)
-        })
+        // New per-stream rotation map. Falls back to migrating the legacy
+        // `channelRotations` (one rotation per channel, shared by all
+        // streams) into both `:main` and `:sub` entries — preserves the
+        // user's previous configuration on first launch of this build.
+        if let newDict = try? c.decode([String: Int].self, forKey: .channelStreamRotations), !newDict.isEmpty {
+            self.channelStreamRotations = newDict
+        } else if let legacy = try? c.decode([String: Int].self, forKey: .channelRotations) {
+            var migrated: [String: Int] = [:]
+            for (k, v) in legacy {
+                guard Int(k) != nil else { continue }
+                migrated["\(k):main"] = v
+                migrated["\(k):sub"] = v
+            }
+            self.channelStreamRotations = migrated
+        } else {
+            self.channelStreamRotations = [:]
+        }
+        // Backward-compat: the field is optional so existing cameras.json
+        // files without it continue to deserialize cleanly.
+        let overrideList = (try? c.decode([Int].self, forKey: .dualLensOverrides)) ?? []
+        self.dualLensOverrides = Set(overrideList)
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -64,8 +95,8 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
         try c.encode(username, forKey: .username)
         try c.encode(useHTTPS, forKey: .useHTTPS)
         try c.encode(preferredCodec, forKey: .preferredCodec)
-        let stringDict = Dictionary(uniqueKeysWithValues: channelRotations.map { (String($0.key), $0.value) })
-        try c.encode(stringDict, forKey: .channelRotations)
+        try c.encode(channelStreamRotations, forKey: .channelStreamRotations)
+        try c.encode(Array(dualLensOverrides).sorted(), forKey: .dualLensOverrides)
     }
 }
 
@@ -76,6 +107,14 @@ public final class CameraStore {
     public var selection: SidebarSelection?
     public var sessions: [CameraEntry.ID: CameraSession] = [:]
     public var expandedDevices: Set<UUID> = []
+    /// Developer mode. Surfaces diagnostic UI (Raw JSON popovers, verbose
+    /// log buttons, etc.) that would otherwise clutter the default view.
+    /// Toggle from Settings → Developer. Backed by `UserDefaults` so it
+    /// survives relaunch.
+    public var developerMode: Bool {
+        didSet { UserDefaults.standard.set(developerMode, forKey: Self.developerModeKey) }
+    }
+    private static let developerModeKey = "com.reolens.developerMode"
 
     private let storageURL: URL
 
@@ -87,6 +126,7 @@ public final class CameraStore {
             ?? URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("Reolens", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         self.storageURL = dir.appendingPathComponent("cameras.json")
+        self.developerMode = UserDefaults.standard.bool(forKey: Self.developerModeKey)
         load()
     }
 
@@ -109,25 +149,49 @@ public final class CameraStore {
         save()
     }
 
-    public func rotation(for deviceID: UUID, channel: Int) -> Int {
-        cameras.first(where: { $0.id == deviceID })?.channelRotations[channel] ?? 0
+    /// Look up the user's persisted rotation for a specific (channel, stream).
+    /// Reolink dual-lens cameras can encode main and sub at different
+    /// native orientations, so we have to store these independently.
+    public func rotation(for deviceID: UUID, channel: Int, stream: StreamKind) -> Int {
+        let key = Self.rotationKey(channel: channel, stream: stream)
+        return cameras.first(where: { $0.id == deviceID })?.channelStreamRotations[key] ?? 0
     }
 
-    public func setRotation(_ degrees: Int, for deviceID: UUID, channel: Int) {
+    public func setRotation(_ degrees: Int, for deviceID: UUID, channel: Int, stream: StreamKind) {
         guard let i = cameras.firstIndex(where: { $0.id == deviceID }) else { return }
-        // Normalize to 0/90/180/270.
+        let key = Self.rotationKey(channel: channel, stream: stream)
         let normalized = ((degrees % 360) + 360) % 360
         if normalized == 0 {
-            cameras[i].channelRotations.removeValue(forKey: channel)
+            cameras[i].channelStreamRotations.removeValue(forKey: key)
         } else {
-            cameras[i].channelRotations[channel] = normalized
+            cameras[i].channelStreamRotations[key] = normalized
         }
         save()
     }
 
-    public func rotateClockwise(deviceID: UUID, channel: Int) {
-        let current = rotation(for: deviceID, channel: channel)
-        setRotation(current + 90, for: deviceID, channel: channel)
+    public func rotateClockwise(deviceID: UUID, channel: Int, stream: StreamKind) {
+        let current = rotation(for: deviceID, channel: channel, stream: stream)
+        setRotation(current + 90, for: deviceID, channel: channel, stream: stream)
+    }
+
+    private static func rotationKey(channel: Int, stream: StreamKind) -> String {
+        "\(channel):\(stream.rawValue)"
+    }
+
+    /// User-set dual-lens override for a given channel. Empty when the user
+    /// hasn't explicitly flipped the toggle in channel settings.
+    public func isDualLensOverride(deviceID: UUID, channel: Int) -> Bool {
+        cameras.first(where: { $0.id == deviceID })?.dualLensOverrides.contains(channel) ?? false
+    }
+
+    public func setDualLensOverride(_ enabled: Bool, deviceID: UUID, channel: Int) {
+        guard let i = cameras.firstIndex(where: { $0.id == deviceID }) else { return }
+        if enabled {
+            cameras[i].dualLensOverrides.insert(channel)
+        } else {
+            cameras[i].dualLensOverrides.remove(channel)
+        }
+        save()
     }
 
     public func session(for id: CameraEntry.ID) -> CameraSession? {
@@ -142,6 +206,12 @@ public final class CameraStore {
             useHTTPS: entry.useHTTPS
         )
         let session = CameraSession(entry: entry, credentials: creds)
+        // Inject the store's persistent dual-lens override map so the
+        // session can answer `isDualLens(channel:)` correctly when the
+        // hub doesn't tell us via `typeInfo`.
+        session.dualLensOverride = { [weak self] channel in
+            self?.isDualLensOverride(deviceID: id, channel: channel) ?? false
+        }
         sessions[id] = session
         return session
     }

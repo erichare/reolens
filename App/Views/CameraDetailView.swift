@@ -72,22 +72,45 @@ struct CameraDetailView: View {
         .padding(.vertical, 8)
     }
 
+    /// Compact connection-status pill for the toolbar. The toolbar renders
+    /// `Label` with both icon and text full-size, which looks heavy next to
+    /// the title; switching to a tinted capsule with a small dot keeps the
+    /// information density without the visual weight.
     @ViewBuilder
     private var statusBadge: some View {
         switch session.status {
         case .connected:
-            Label("Connected", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green)
+            statusPill(text: "Connected", color: .green)
         case .connecting:
-            ProgressView().controlSize(.small)
-        case .error:
-            Label("Error", systemImage: "exclamationmark.triangle.fill")
-                .foregroundStyle(.red)
-        case .disconnected:
-            Button("Connect") {
-                Task { await session.connect() }
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Connecting…")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
             }
+        case .error(let msg):
+            statusPill(text: "Disconnected", color: .red)
+                .help(msg)
+        case .disconnected:
+            Button {
+                Task { await session.connect() }
+            } label: {
+                Label("Connect", systemImage: "play.fill")
+            }
+            .controlSize(.small)
         }
+    }
+
+    private func statusPill(text: String, color: Color) -> some View {
+        HStack(spacing: 6) {
+            Circle().fill(color).frame(width: 7, height: 7)
+            Text(text)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(color.opacity(0.12), in: .capsule)
     }
 }
 
@@ -137,9 +160,10 @@ struct MultiChannelGridView: View {
                         onTap: { richViewerChannel = channel },
                         paused: richViewerOpen
                     )
-                    // Dual-lens cameras render natively at ~8:3 (Duo / TrackMix).
-                    // Give them more vertical room so the stitched view isn't cropped.
-                    if channel.isDualLens {
+                    // Dual-lens cameras render natively at ~8:3 (Duo /
+                    // TrackMix / Argus 4 Pro). Give them more vertical room
+                    // so the stitched view isn't cropped.
+                    if session.isDualLens(channel: channel.channel) {
                         tile.frame(minHeight: 110, idealHeight: 140, maxHeight: 220)
                     } else {
                         tile.frame(minHeight: 160, idealHeight: 210, maxHeight: 320)
