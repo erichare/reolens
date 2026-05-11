@@ -140,6 +140,13 @@ struct MultiChannelGridView: View {
             .help(columnVisibility == .detailOnly
                   ? "Show the camera list"
                   : "Hide the camera list and fill the window with the grid")
+            Button {
+                FullscreenViewer.shared.presentGrid(session: session, store: store)
+            } label: {
+                Label("Fullscreen", systemImage: "arrow.up.left.and.arrow.down.right")
+            }
+            .help("Show the whole grid in a fullscreen window — press Esc to exit")
+            .keyboardShortcut("f", modifiers: [.command, .control])
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -293,34 +300,40 @@ struct MultiChannelGridView: View {
                 let subWidth = subSpotlights.isEmpty
                     ? 0
                     : (primaryWidth - CGFloat(max(0, subSpotlights.count - 1)) * spacing) / CGFloat(max(1, subSpotlights.count))
+                // Right column must be the SAME height as the primary
+                // (not the full geo height) — otherwise the VStack below
+                // tries to lay out top-row height = max(primary, full)
+                // and there's no vertical room left for the bottom strip.
+                // Tile count divides primaryHeight, not geo height.
                 let rightTileHeight = rightThumbs.isEmpty
                     ? 0
-                    : (geo.size.height - CGFloat(rightThumbs.count + 1) * spacing) / CGFloat(rightThumbs.count)
+                    : (primaryHeight - CGFloat(max(0, rightThumbs.count - 1)) * spacing) / CGFloat(max(1, rightThumbs.count))
 
                 VStack(spacing: spacing) {
                     HStack(alignment: .top, spacing: spacing) {
-                        tile(for: primary, richViewerOpen: richViewerOpen)
+                        // Primary uses MAIN stream — sub quality looks
+                        // pixelated when blown up to 75% of the window.
+                        // The other tiles stay on sub because Reolink
+                        // hubs only allow one concurrent main-stream
+                        // session at a time on most paired channels.
+                        tile(for: primary, stream: .main, richViewerOpen: richViewerOpen)
                             .frame(width: primaryWidth, height: primaryHeight)
                         if rightThumbs.isEmpty {
-                            // No right-column thumbnails — collapse the strip
-                            // so the primary expands as far as the math
-                            // allowed (still 75% by construction, but we
-                            // don't want a phantom 25% gap on the right).
                             EmptyView()
                         } else {
                             VStack(spacing: spacing) {
                                 ForEach(rightThumbs) { ch in
-                                    tile(for: ch, richViewerOpen: richViewerOpen)
+                                    tile(for: ch, stream: .sub, richViewerOpen: richViewerOpen)
                                         .frame(width: rightStripWidth, height: rightTileHeight)
                                 }
                             }
-                            .frame(width: rightStripWidth, height: geo.size.height - 2 * spacing)
+                            .frame(width: rightStripWidth, height: primaryHeight)
                         }
                     }
                     if !subSpotlights.isEmpty {
                         HStack(spacing: spacing) {
                             ForEach(subSpotlights) { ch in
-                                tile(for: ch, richViewerOpen: richViewerOpen)
+                                tile(for: ch, stream: .sub, richViewerOpen: richViewerOpen)
                                     .frame(width: subWidth, height: bottomStripHeight)
                             }
                         }
@@ -336,13 +349,16 @@ struct MultiChannelGridView: View {
 
     /// Single source of tile rendering — applies the drag source / drop
     /// target modifiers so any layout (adaptive or fixed) gets the same
-    /// reordering behavior.
+    /// reordering behavior. `stream` defaults to `.sub` because the
+    /// adaptive / fixed grids all render small tiles where sub is fine;
+    /// the spotlight overrides to `.main` for the primary so it doesn't
+    /// look pixelated blown up to 75% of the window.
     @ViewBuilder
-    private func tile(for channel: ChannelStatus, richViewerOpen: Bool) -> some View {
+    private func tile(for channel: ChannelStatus, stream: StreamKind = .sub, richViewerOpen: Bool) -> some View {
         LiveCameraTile(
             session: session,
             channel: channel,
-            stream: .sub,
+            stream: stream,
             onTap: { richViewerChannel = channel },
             paused: richViewerOpen
         )
