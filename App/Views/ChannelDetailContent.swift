@@ -106,7 +106,7 @@ struct ChannelDetailContent: View {
     /// hosted (inline detail pane, rich-viewer sheet, etc.).
     private var fullscreenToggle: some View {
         Button {
-            FullscreenViewer.shared.present(
+            FullscreenViewer.shared.presentSingle(
                 session: session,
                 channel: channel,
                 store: store
