@@ -167,11 +167,22 @@ public final class EventNotifier {
             content: content,
             trigger: nil
         )
-        do {
-            try await UNUserNotificationCenter.current().add(request)
+        // Use the callback API rather than the `async` overload for the
+        // same reason as `refreshPermissionStatus`: `UNNotificationRequest`
+        // is non-Sendable and the `async` overload's parameter crossing
+        // the MainActor → nonisolated boundary trips Swift 6's
+        // strict-concurrency checker. The callback fires on the
+        // notification queue, never inspects the request from another
+        // isolation context, and just hands us back an optional error.
+        let postError: Error? = await withCheckedContinuation { (cont: CheckedContinuation<Error?, Never>) in
+            UNUserNotificationCenter.current().add(request) { error in
+                cont.resume(returning: error)
+            }
+        }
+        if let postError {
+            log.warning("Couldn't post notification: \(postError.localizedDescription, privacy: .public)")
+        } else {
             log.info("Notified: \(title, privacy: .public) — \(body, privacy: .public)")
-        } catch {
-            log.warning("Couldn't post notification: \(error.localizedDescription, privacy: .public)")
         }
     }
 
