@@ -49,6 +49,16 @@ public final class CameraSession {
     public var status: ConnectionStatus = .disconnected
     public var deviceInfo: DeviceInfo?
     public var channels: [ChannelStatus] = []
+    /// `channels` filtered to drop the empty paired-camera slots that
+    /// Reolink Home Hub reports for unused channels (no name AND no
+    /// typeInfo). Use this anywhere the UI shows real cameras to the
+    /// user — sidebars, grid layouts, primary pickers — so we don't
+    /// have to duplicate the filter at every call site.
+    public var liveChannels: [ChannelStatus] {
+        channels.filter { ch in
+            (ch.name?.isEmpty == false) || (ch.typeInfo?.isEmpty == false)
+        }
+    }
     public var motionState: [Int: Bool] = [:]
     public var aiTriggered: [Int: Bool] = [:]
 

@@ -81,13 +81,7 @@ struct MultiChannelGridView: View {
     @State private var draggingChannel: Int?
 
     private var visibleChannels: [ChannelStatus] {
-        // Filter out channels with no paired camera. Reolink Home Hub reports
-        // 24 slots even when fewer are populated — empty slots have no name and
-        // no typeInfo. Keep sleeping/named ones; drop totally-empty rows.
-        let live = session.channels.filter { ch in
-            (ch.name?.isEmpty == false) || (ch.typeInfo?.isEmpty == false)
-        }
-        return store.orderedChannels(for: session.entry.id, channels: live)
+        store.orderedChannels(for: session.entry.id, channels: session.liveChannels)
     }
 
     var body: some View {
@@ -120,6 +114,12 @@ struct MultiChannelGridView: View {
             .labelsHidden()
             .frame(minWidth: 130, maxWidth: 170)
             .help("Choose how many cameras to fit in the grid")
+            // Spotlight has a "primary camera" concept (the big top-left
+            // tile). Surface a picker so users can choose it directly
+            // instead of having to drag the right thumbnail into place.
+            if store.gridPreset(for: session.entry.id) == .spotlight {
+                primaryPicker
+            }
             Text("Drag a tile onto another to rearrange.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
@@ -219,13 +219,59 @@ struct MultiChannelGridView: View {
         }
     }
 
-    /// Spotlight layout: one primary tile occupies the top-left 75% × 75%
-    /// of the visible area; the remaining cameras appear as thumbnails
-    /// along the right strip (25% width × full height) and the bottom
-    /// strip (75% width × 25% height under the primary). Dragging a
-    /// thumbnail onto the primary swaps them, since our `reorder` API
-    /// inserts the source before the target — the dropped thumbnail
-    /// becomes the new first entry in the persisted order.
+    /// Picker that surfaces the current spotlight primary and lets the
+    /// user reassign it from any live channel. Hidden when the device
+    /// has only one camera (nothing to pick).
+    @ViewBuilder
+    private var primaryPicker: some View {
+        let live = visibleChannels
+        if live.count > 1 {
+            let primary = live.first { $0.channel == store.primaryChannel(for: session.entry.id) } ?? live.first
+            Menu {
+                ForEach(live) { ch in
+                    Button {
+                        store.setPrimary(
+                            deviceID: session.entry.id,
+                            channel: ch.channel,
+                            allChannels: live
+                        )
+                    } label: {
+                        if ch.channel == primary?.channel {
+                            Label(ch.name ?? "Channel \(ch.channel + 1)", systemImage: "checkmark")
+                        } else {
+                            Text(ch.name ?? "Channel \(ch.channel + 1)")
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "star.fill")
+                        .foregroundStyle(.yellow)
+                    Text("Primary:")
+                        .foregroundStyle(.secondary)
+                    Text(primary?.name ?? "—")
+                        .fontWeight(.medium)
+                }
+                .font(.caption)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.visible)
+            .fixedSize()
+            .help("Choose which camera goes in the big spotlight tile")
+        }
+    }
+
+    /// Spotlight layout: primary tile fills 75% × 75% of the top-left.
+    /// Below it sit TWO "sub-spotlight" tiles side-by-side (the bottom
+    /// strip is split in half, regardless of how many cameras the device
+    /// has — when there's only one sub-spotlight to fill the bottom
+    /// strip we let it take the full bottom width; when there are none
+    /// we collapse the strip). The right column holds the remaining
+    /// thumbnails in a vertical stack. Channel order in
+    /// `CameraStore.channelOrder` drives slot assignment:
+    ///   [0] primary, [1, 2] sub-spotlights, [3+] right-column thumbnails.
+    /// Drag-to-rearrange and the "Make primary" action both promote
+    /// channels into these slots without any layout-specific code.
     private func spotlightGrid(richViewerOpen: Bool) -> some View {
         return GeometryReader { geo in
             let spacing: CGFloat = 8
@@ -237,46 +283,49 @@ struct MultiChannelGridView: View {
 
             let channels = visibleChannels
             if let primary = channels.first {
-                let thumbnails = Array(channels.dropFirst())
-                // Slightly favor the right strip on odd counts — its taller
-                // aspect lets the extra tile breathe more than squeezing
-                // another column into the bottom strip would.
-                let rightCount = (thumbnails.count + 1) / 2
-                let rightThumbs = Array(thumbnails.prefix(rightCount))
-                let bottomThumbs = Array(thumbnails.dropFirst(rightCount))
+                // Slot assignment from the channel order:
+                //   [0]    → primary
+                //   [1, 2] → sub-spotlights (bottom strip, side by side)
+                //   [3+]   → right-column thumbnails
+                let subSpotlights = Array(channels.dropFirst().prefix(2))
+                let rightThumbs = Array(channels.dropFirst(1 + subSpotlights.count))
 
+                let subWidth = subSpotlights.isEmpty
+                    ? 0
+                    : (primaryWidth - CGFloat(max(0, subSpotlights.count - 1)) * spacing) / CGFloat(max(1, subSpotlights.count))
                 let rightTileHeight = rightThumbs.isEmpty
                     ? 0
                     : (geo.size.height - CGFloat(rightThumbs.count + 1) * spacing) / CGFloat(rightThumbs.count)
-                let bottomTileWidth = bottomThumbs.isEmpty
-                    ? 0
-                    : (primaryWidth - CGFloat(max(0, bottomThumbs.count - 1)) * spacing) / CGFloat(max(1, bottomThumbs.count))
 
                 VStack(spacing: spacing) {
                     HStack(alignment: .top, spacing: spacing) {
                         tile(for: primary, richViewerOpen: richViewerOpen)
                             .frame(width: primaryWidth, height: primaryHeight)
-                        VStack(spacing: spacing) {
-                            ForEach(rightThumbs) { ch in
+                        if rightThumbs.isEmpty {
+                            // No right-column thumbnails — collapse the strip
+                            // so the primary expands as far as the math
+                            // allowed (still 75% by construction, but we
+                            // don't want a phantom 25% gap on the right).
+                            EmptyView()
+                        } else {
+                            VStack(spacing: spacing) {
+                                ForEach(rightThumbs) { ch in
+                                    tile(for: ch, richViewerOpen: richViewerOpen)
+                                        .frame(width: rightStripWidth, height: rightTileHeight)
+                                }
+                            }
+                            .frame(width: rightStripWidth, height: geo.size.height - 2 * spacing)
+                        }
+                    }
+                    if !subSpotlights.isEmpty {
+                        HStack(spacing: spacing) {
+                            ForEach(subSpotlights) { ch in
                                 tile(for: ch, richViewerOpen: richViewerOpen)
-                                    .frame(width: rightStripWidth, height: rightTileHeight)
-                            }
-                            if rightThumbs.isEmpty {
-                                Color.clear.frame(width: rightStripWidth, height: 0)
+                                    .frame(width: subWidth, height: bottomStripHeight)
                             }
                         }
-                        .frame(width: rightStripWidth, height: geo.size.height - 2 * spacing)
+                        .frame(width: primaryWidth, height: bottomStripHeight, alignment: .leading)
                     }
-                    HStack(spacing: spacing) {
-                        ForEach(bottomThumbs) { ch in
-                            tile(for: ch, richViewerOpen: richViewerOpen)
-                                .frame(width: bottomTileWidth, height: bottomStripHeight)
-                        }
-                        if bottomThumbs.isEmpty {
-                            Color.clear.frame(height: bottomStripHeight)
-                        }
-                    }
-                    .frame(width: primaryWidth, height: bottomStripHeight, alignment: .leading)
                 }
                 .padding(spacing)
             } else {
