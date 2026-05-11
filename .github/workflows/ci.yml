@@ -128,6 +128,32 @@ jobs:
       - name: Build app bundle
         run: ./Scripts/build-app.sh
 
+      # Boot the built .app with the --smoke-test flag, which constructs
+      # the SwiftUI scene tree (so any binding/observation regression
+      # crashes here) and exits cleanly within ~2 s. We give the timeout
+      # 30 s of slack for cold-launch on a fresh CI runner.
+      - name: Smoke-test launch
+        run: |
+          set -euo pipefail
+          # Capture stdout/stderr in case anything's interesting on
+          # failure; ignore on success.
+          OUT=$(mktemp)
+          # macOS `timeout` isn't installed; use `gtimeout` if Homebrew
+          # coreutils is around, otherwise fall back to a backgrounded
+          # job we kill ourselves.
+          if command -v gtimeout >/dev/null 2>&1; then
+            gtimeout 30s ./Reolens.app/Contents/MacOS/Reolens --smoke-test >"${OUT}" 2>&1
+          else
+            ./Reolens.app/Contents/MacOS/Reolens --smoke-test >"${OUT}" 2>&1 &
+            PID=$!
+            (sleep 30 && kill -0 "${PID}" 2>/dev/null && kill "${PID}") &
+            WAITER=$!
+            wait "${PID}"
+            EXIT=$?
+            kill "${WAITER}" 2>/dev/null || true
+            exit "${EXIT}"
+          fi
+
       - name: Upload .app artifact
         uses: actions/upload-artifact@v4
         with:

@@ -1,77 +1,189 @@
-# Reolens
+<h1 align="center">
+  <img src="docs/assets/icon-256.png" alt="Reolens" width="128" height="128"><br>
+  Reolens
+</h1>
 
-A modern, Apple Silicon–native macOS client for Reolink cameras and NVRs.
+<p align="center">
+  A modern, Apple-silicon-native macOS client for Reolink cameras and NVRs.
+</p>
 
-Built with Swift 6.3, SwiftUI, strict concurrency, `@Observable` state, and the
-URLSession + Network + AVFoundation/VideoToolbox stack — no Electron, no Java,
-no QtWebEngine.
+<p align="center">
+  <a href="https://github.com/erichare/reolens/actions/workflows/ci.yml"><img src="https://github.com/erichare/reolens/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/erichare/reolens/releases/latest"><img src="https://img.shields.io/github/v/release/erichare/reolens?label=download&color=4cd2ff" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT"></a>
+  <img src="https://img.shields.io/badge/macOS-14%2B-1ba6d8" alt="macOS 14+">
+</p>
 
-## Project status
+<p align="center">
+  <a href="https://reolens.io">Website</a> ·
+  <a href="https://github.com/erichare/reolens/releases/latest/download/Reolens.dmg">Download</a> ·
+  <a href="#install">Install</a> ·
+  <a href="https://github.com/erichare/reolens/issues">Issues</a>
+</p>
 
-| Layer | Status |
-| --- | --- |
-| Reolink CGI JSON API client (login/token, command batching) | done |
-| Codable models for the most common commands | done (Login, DevInfo, ChannelStatus, Ability, MdState, AiState, PTZ) |
-| Stream URL builder (RTSP, FLV, JPEG snapshot) | done |
-| Unit tests (Swift Testing) | 16/16 passing |
-| SwiftUI app shell (sidebar, add-camera, multi-cam grid, PTZ pad) | done |
-| JPEG-snapshot live preview (placeholder until RTSP lands) | done |
-| Event polling (motion + AI) | done |
-| RTSP playback (VLCKit fast path) | next |
-| Native RTSP + VideoToolbox `AVSampleBufferDisplayLayer` | phase 2 |
-| Playback timeline (Search + RTSP seek) | planned |
-| Baichuan port-9000 client (talkback, TCP push, battery wakeup) | planned |
-| Live Activities / widgets / local notifications | planned |
+---
 
-## Repository layout
+Reolens is a native macOS client for Reolink cameras, NVRs, and Home Hubs.
+SwiftUI, Swift 6 strict concurrency, AVFoundation/VideoToolbox — no Electron,
+no Java, no QtWebEngine. Cold launches in under a second; battery-friendly;
+feels like every other Mac app.
+
+![Adaptive multi-camera grid](docs/screenshots/grid-adaptive.png)
+
+> All footage in screenshots is blurred — your cameras, your privacy.
+
+## Features
+
+- **Live multi-camera grids** — adaptive layout fills the window; switch to
+  spotlight, 2×2, 3×3, or 4×4 with one click
+- **Drag to rearrange** — pull tiles between slots; the order sticks per device
+- **Full PTZ** — all 17 PTZ ops (pan, tilt, zoom, focus, presets, patrols)
+  from the dedicated control bar
+- **Rich alarm notifications** — when motion fires, get a macOS notification
+  with the trigger frame, not just text
+- **Two-way talkback** — for Reolink cameras that support it
+- **Native streaming** — RTSP / FLV / JPEG fallback, hardware-decoded with
+  VideoToolbox
+- **Auto-updates** — Sparkle in-app updates from a single signed appcast
+- **Open source** — MIT-licensed, build it yourself if you prefer
+
+## System requirements
+
+- macOS 14 Sonoma or later
+- Apple Silicon (M-series) or Intel — universal binary
+- Reolink camera, NVR, or Home Hub on the local network
+- HTTP/HTTPS access to the device's CGI port (default 80 / 443)
+
+## Install
+
+### Homebrew (recommended)
+
+```sh
+brew tap erichare/reolens
+brew install --cask reolens
+```
+
+Updates are handled by Sparkle inside the app — no `brew upgrade` needed.
+
+### Direct download
+
+Grab the signed, notarized DMG from the [latest release](https://github.com/erichare/reolens/releases/latest):
 
 ```
-Package.swift               — SwiftPM manifest (lib + lib + executable + tests)
-Sources/
-  ReolinkAPI/               — pure-Swift CGI client + Codable models (no UI deps)
-    CGIClient.swift         — actor-isolated client, manages one token lease
-    StreamURLs.swift        — RTSP / FLV / snapshot URL builders
-    Camera.swift            — credentials + token value types
-    Models/                 — DeviceInfo, ChannelStatus, Ability, Login, AI/MD
-    Commands/               — strongly-typed CGI command constructors + envelope
-  ReolinkStreaming/         — video module (stub; RTSP playback lands here)
-App/                        — Reolens executable (SwiftUI)
-  ReolensApp.swift          — @main scene + Settings scene
-  State/                    — CameraStore (@Observable), CameraSession, Keychain
-  Views/                    — sidebar, detail, grid, PTZ pad, add-camera sheet
-Tests/
-  ReolinkAPITests/          — Swift Testing suite for codable + URL building
+https://github.com/erichare/reolens/releases/latest/download/Reolens.dmg
 ```
+
+Drag **Reolens.app** to your Applications folder and launch.
+
+### Build from source
+
+```sh
+git clone https://github.com/erichare/reolens.git
+cd reolens
+./Scripts/build-app.sh run
+```
+
+Requires Xcode 16 + Swift 6.
+
+## Quick start
+
+1. **Launch Reolens.** It'll ask for Local Network permission (needed to
+   reach your cameras) and Notification permission (for motion alerts).
+2. **Click the + in the sidebar** to add a camera. Enter the IP address
+   (or hostname), username, and password — the rest is auto-detected.
+3. **Pick a camera in the sidebar** to view it. Use the layout picker
+   (toolbar) to switch between adaptive / spotlight / 2×2 / 3×3 / 4×4 grids.
+
+Drag tiles to rearrange them. Right-click a tile for "Make primary",
+"Rotate", and per-channel settings.
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Adaptive grid](docs/screenshots/grid-adaptive.png) | ![Spotlight layout](docs/screenshots/spotlight.png) |
+| Adaptive multi-camera grid | Spotlight layout |
+| ![Detail + PTZ](docs/screenshots/detail-ptz.png) | ![Rich alarm notification](docs/screenshots/notification.png) |
+| Detail view with PTZ | Rich macOS alarm notifications |
 
 ## Architecture
 
-### Layered, dependency-only-downward
+Layered, dependency-only-downward:
 
 ```
 ┌────────────────────────────────────────────────┐
 │ App (SwiftUI views, @Observable state)         │
 ├────────────────────────────────────────────────┤
-│ ReolinkStreaming (RTSP + VideoToolbox)         │ ← upcoming
+│ ReolinkBaichuan (port 9000 protocol)           │
+│ ReolinkStreaming (RTSP + VideoToolbox)         │
 ├────────────────────────────────────────────────┤
 │ ReolinkAPI (CGI client, models, URLs)          │
 └────────────────────────────────────────────────┘
 ```
 
 `ReolinkAPI` knows nothing about SwiftUI, AppKit, or video frameworks — it's
-testable in isolation and could ship as a standalone SPM package.
+testable in isolation and ships as a standalone SPM library.
 
 ### Concurrency model
 
-- `CGIClient` is an **actor** — one instance per camera/NVR. Reolink devices
-  have a notoriously small global session cap, so the actor serializes
-  login/refresh and reuses one token across all commands for that device.
-- `CameraSession` is `@MainActor`-isolated and `@Observable` — SwiftUI views
-  observe `status`, `deviceInfo`, `channels`, `motionState`, `aiTriggered`
-  directly.
-- Token refresh is implicit: every batched call goes through `login()`, which
-  reuses the cached token unless it's within 60 s of expiry.
-- If the device returns `loginRequired` mid-session, the client drops the
-  token and retries once.
+- `CGIClient` is an **actor** — one instance per camera/NVR. Reolink
+  devices have a notoriously small global session cap, so the actor
+  serializes login/refresh and reuses one token across all commands.
+- `CameraSession` is `@MainActor`-isolated and `@Observable` — SwiftUI
+  views observe `status`, `deviceInfo`, `channels`, `motionState`,
+  `aiTriggered` directly.
+- Token refresh is implicit; if the device returns `loginRequired`
+  mid-session the client drops the token and retries once.
+
+## Repository layout
+
+```
+Package.swift            — SwiftPM manifest (libs + executable + tests)
+App/                     — SwiftUI executable
+  ReolensApp.swift       — @main, About panel, Check-for-Updates menu
+  State/                 — CameraStore, CameraSession, UpdaterController
+  Views/                 — sidebar, grid, detail, PTZ, settings, About
+Sources/
+  ReolinkAPI/            — CGI client + Codable models (no UI deps)
+  ReolinkStreaming/      — RTSP / VideoToolbox / SDP
+  ReolinkBaichuan/       — port-9000 protocol (talkback, push, alarms)
+Tests/
+  ReolinkAPITests/       — Codable + URL builders
+  ReolinkStreamingTests/ — SDP parsing, RTSP digest, codec depacketization
+  ReolinkBaichuanTests/  — Baichuan encryption + framing
+  ReolensE2ETests/       — end-to-end integration test (mocked transport)
+Scripts/
+  build-app.sh           — assemble .app, embed Sparkle, sign
+  build-icns.sh          — slice icon master into AppIcon.icns
+  make-icon.swift        — generate icon master from CoreGraphics
+  make-dmg.sh            — package .app into a styled DMG
+  notarize.sh            — submit to Apple notary + staple
+docs/                    — reolens.io landing page (GitHub Pages)
+dist/homebrew/reolens.rb — Homebrew cask formula template
+.github/workflows/
+  ci.yml                 — build + test + smoke launch on every PR
+  release.yml            — on tag push: build → notarize → DMG → release
+```
+
+## Development
+
+### Build & test
+
+```sh
+swift build                # libs + app
+swift test                 # 70+ tests
+./Scripts/build-app.sh run # bundled .app (needed for Local Network access)
+```
+
+### Release process
+
+See [docs/RELEASE.md](docs/RELEASE.md) for the full runbook. Short version:
+
+1. Bump `CFBundleShortVersionString` in [App/Info.plist](App/Info.plist)
+2. Add a section to [CHANGELOG.md](CHANGELOG.md)
+3. `git tag v0.1.1 && git push --tags`
+4. Watch [.github/workflows/release.yml](.github/workflows/release.yml) build,
+   notarize, package the DMG, regenerate the appcast, and publish
 
 ## API coverage today
 
@@ -84,65 +196,43 @@ Implemented as typed `Commands.*` constructors:
 - `GetMdState`
 - `GetAiState` (people / vehicle / dog_cat / face / package / other / visitor)
 - `PtzCtrl` (all 17 ops including presets, patrol, zoom, focus)
-- `GetLocalLink`, `GetTime`
+- `GetLocalLink`, `GetTime`, `GetOsd`, `SetOsd`, `GetHddInfo`
+- `Search` (recordings list + per-day status)
 
-Adding a new command is mechanical:
+Adding a new command is mechanical — define a typed param + value model,
+construct a `CGICommand`, and call `client.send(_:as:)`. See
+[Commands.swift](Sources/ReolinkAPI/Commands/Commands.swift) for examples.
 
-```swift
-public static func getOsd(channel: Int) -> CGICommand<ChannelParam> {
-    CGICommand(cmd: "GetOsd", action: .get, param: .init(channel: channel))
-}
-```
+## Roadmap
 
-Then define a `Decodable` value type and call `client.send(_:as:)`.
+- Native RTSP + VideoToolbox playback (currently JPEG-snapshot fallback
+  while the streaming path matures)
+- Baichuan-based talkback for battery cameras
+- Recording timeline scrubber
+- Live Activities + widgets
 
-## Building & running
+See the [GitHub issues](https://github.com/erichare/reolens/issues) for
+the full plan.
 
-```sh
-swift build              # builds the library + the Reolens app
-swift test               # runs the test suite
-.build/debug/Reolens     # launches the app (debug build)
-```
+## Privacy
 
-For a release build:
+Reolens runs entirely on your Mac. It talks only to:
 
-```sh
-swift build -c release
-.build/release/Reolens
-```
+- Your Reolink devices (over the local network)
+- `reolens.io/appcast.xml` (for update checks; you can disable updates
+  in Settings)
 
-For App Store / signed distribution, the SwiftPM executable can be wrapped in
-an Xcode App project, or the entitlements plist can be hand-crafted — to be
-done when we add Live Activities and push notifications.
+No analytics. No telemetry. No accounts. Camera passwords live in your
+macOS Keychain.
 
-## Roadmap notes
+## License
 
-### Video — three paths, pick in order
+MIT — see [LICENSE](LICENSE).
 
-1. **VLCKit (`MobileVLCKit`)** — fastest path to pixels on screen.
-   ~25 MB binary, LGPL, supports H.264/H.265/AAC out of the box, hardware
-   decode through VideoToolbox under the hood. We'll ship this first.
+Reolink is a trademark of Reolink Innovation Inc. Reolens is an
+unaffiliated third-party client. The Reolink protocol is reverse-
+engineered from public CGI documentation and community projects:
 
-2. **Native RTSP + VideoToolbox**. RTSP is text-based RTP/RTSP over TCP/UDP;
-   ~2-3 weeks of work over `Network.framework` (`NWConnection`) and
-   `VTDecompressionSession`. Render `CMSampleBuffer`s into a per-tile
-   `AVSampleBufferDisplayLayer`. Lets us drop the VLCKit binary.
-
-3. **Baichuan port 9000** — proprietary protocol; the only way to do
-   talkback and to wake battery cameras. Port from
-   [`thirtythreeforty/neolink`](https://github.com/thirtythreeforty/neolink).
-
-### Events
-
-Today we poll `GetMdState` + `GetAiState` every 2 s. Two upgrades:
-
-- **ONVIF PullPoint** subscriptions on port 8000 — long-poll, no busy poll.
-- **Baichuan TCP push** on port 9000 — server-initiated, lowest latency,
-  doesn't burn through the device's session cap.
-
-## Sources of API knowledge
-
-- Reolink CGI v1.61 PDF — `https://reolink.com/wp-content/uploads/2017/01/Reolink-CGI-command-v1.61.pdf`
-- Reolink API v8 community thread — `https://community.reolink.com/topic/4196/`
-- [starkillerOG/reolink_aio](https://github.com/starkillerOG/reolink_aio) — Python ref, used by Home Assistant
-- [thirtythreeforty/neolink](https://github.com/thirtythreeforty/neolink) — Rust ref for Baichuan protocol
+- Reolink CGI v1.61 reference PDF
+- [starkillerOG/reolink_aio](https://github.com/starkillerOG/reolink_aio) (Python ref, used by Home Assistant)
+- [thirtythreeforty/neolink](https://github.com/thirtythreeforty/neolink) (Rust ref for Baichuan)

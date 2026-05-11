@@ -10,3 +10,14 @@ DerivedData/
 
 # Build artifacts — produced by Scripts/build-app.sh, regenerated each build.
 Reolens.app/
+
+# Release artifacts — DMG and zipped uploads built by make-dmg.sh / release.yml.
+dist/build/
+Reolens-*.dmg
+Reolens-*.zip
+
+# Sparkle EdDSA private signing key (must never be committed; lives in keychain locally + CI secret in CI).
+sparkle_ed_private_key
+
+# Screenshot raw masters (pre-blur). Only the processed copies under docs/screenshots/ ship.
+docs/screenshots/raw/
