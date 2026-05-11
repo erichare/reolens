@@ -181,19 +181,48 @@ struct MultiChannelGridView: View {
         }
     }
 
+    /// Adaptive grid — fits as many tiles as the window width allows,
+    /// expanding each tile to fill the leftover space. Tile heights are
+    /// computed from the resolved tile width to keep a 16:9 aspect
+    /// (Reolink default) so widening the window makes tiles larger
+    /// instead of leaving rivers of dead space along the edges. Dual-lens
+    /// cameras use a wider 8:3 aspect so their stitched frames don't get
+    /// center-cropped by `.resizeAspectFill`.
     private func adaptiveGrid(richViewerOpen: Bool) -> some View {
-        let columns = [GridItem(.adaptive(minimum: 280, maximum: 520), spacing: 8)]
-        return ScrollView {
-            LazyVGrid(columns: columns, spacing: 8) {
-                ForEach(visibleChannels) { channel in
-                    let isDual = session.isDualLens(channel: channel.channel)
-                    tile(for: channel, richViewerOpen: richViewerOpen)
-                        .frame(minHeight: isDual ? 110 : 160,
-                               idealHeight: isDual ? 140 : 210,
-                               maxHeight: isDual ? 220 : 320)
+        return GeometryReader { geo in
+            let spacing: CGFloat = 8
+            let padding: CGFloat = 8
+            // 280 px is the smallest a tile gets before the camera name
+            // and motion / AI badges start crowding the corner. Above
+            // that width, each tile shares the leftover horizontal space
+            // equally with its siblings.
+            let minTileWidth: CGFloat = 280
+            let availableWidth = max(minTileWidth, geo.size.width - 2 * padding)
+            let columnCount = max(
+                1,
+                Int((availableWidth + spacing) / (minTileWidth + spacing))
+            )
+            let tileWidth = (availableWidth - CGFloat(columnCount - 1) * spacing) / CGFloat(columnCount)
+            let standardTileHeight = tileWidth * 9 / 16
+            let dualTileHeight = tileWidth * 3 / 8
+
+            let columns = Array(
+                repeating: GridItem(.fixed(tileWidth), spacing: spacing),
+                count: columnCount
+            )
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: spacing) {
+                    ForEach(visibleChannels) { channel in
+                        let isDual = session.isDualLens(channel: channel.channel)
+                        tile(for: channel, richViewerOpen: richViewerOpen)
+                            .frame(
+                                width: tileWidth,
+                                height: isDual ? dualTileHeight : standardTileHeight
+                            )
+                    }
                 }
+                .padding(padding)
             }
-            .padding(8)
         }
     }
 
