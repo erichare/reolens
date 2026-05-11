@@ -3,13 +3,13 @@ import SwiftUI
 struct ContentView: View {
     @Environment(CameraStore.self) private var store
     @State private var showingAddCamera = false
-    /// Drives the sidebar's collapse animation. When `.detailOnly` the
-    /// sidebar is hidden and the camera detail fills the entire window,
-    /// which is what the "Fullscreen" action wires up to.
-    @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
+        // Sidebar visibility is driven by the native toolbar toggle that
+        // `SidebarCommands()` installs in `ReolensApp`; we don't need to
+        // own a `columnVisibility` binding anymore since nothing else in
+        // the app drives that state.
+        NavigationSplitView {
             CameraListView(showingAddCamera: $showingAddCamera)
                 .navigationSplitViewColumnWidth(min: 220, ideal: 280)
         } detail: {
@@ -17,8 +17,7 @@ struct ContentView: View {
                let session = store.session(for: selection.deviceID) {
                 CameraDetailView(
                     session: session,
-                    focusedChannel: selection.channel,
-                    columnVisibility: $columnVisibility
+                    focusedChannel: selection.channel
                 )
             } else {
                 EmptyDetailView(showingAddCamera: $showingAddCamera)

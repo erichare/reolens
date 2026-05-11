@@ -6,20 +6,8 @@ import UniformTypeIdentifiers
 struct CameraDetailView: View {
     let session: CameraSession
     let focusedChannel: Int?
-    @Binding var columnVisibility: NavigationSplitViewVisibility
 
     @State private var didStart = false
-
-    /// True when the user has collapsed the sidebar via the fullscreen
-    /// toggle. We don't navigate into a separate "fullscreen" view —
-    /// instead, hiding the sidebar via the `NavigationSplitView` binding
-    /// expands the detail pane to fill the window, which is what users
-    /// actually want from "fullscreen for camera feeds" inside the app.
-    /// (Native macOS fullscreen via the green window button works on top
-    /// of this and is the right tool for a kiosk-style display.)
-    private var isSidebarHidden: Bool {
-        columnVisibility == .detailOnly
-    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -43,19 +31,11 @@ struct CameraDetailView: View {
             // tabs + PTZ + rotate + talkback + fullscreen toggle. Single
             // source of UX so users don't need to remember which entry
             // points expose which controls.
-            ChannelDetailContent(
-                session: session,
-                channel: channel,
-                columnVisibility: $columnVisibility
-            )
+            ChannelDetailContent(session: session, channel: channel)
         } else if session.channels.count > 1 {
-            MultiChannelGridView(session: session, columnVisibility: $columnVisibility)
+            MultiChannelGridView(session: session)
         } else if let channel = session.channels.first {
-            ChannelDetailContent(
-                session: session,
-                channel: channel,
-                columnVisibility: $columnVisibility
-            )
+            ChannelDetailContent(session: session, channel: channel)
         } else {
             ContentUnavailableView("Connecting…", systemImage: "bolt.horizontal")
         }
@@ -72,7 +52,6 @@ struct CameraDetailView: View {
 
 struct MultiChannelGridView: View {
     let session: CameraSession
-    @Binding var columnVisibility: NavigationSplitViewVisibility
     @Environment(CameraStore.self) private var store
     @State private var richViewerChannel: ChannelStatus?
     /// Channel ID currently being dragged. Drives the dim-while-dragging
@@ -127,19 +106,10 @@ struct MultiChannelGridView: View {
             Text("\(visibleChannels.count) camera\(visibleChannels.count == 1 ? "" : "s")")
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
-            Button {
-                toggleSidebar()
-            } label: {
-                Label(
-                    columnVisibility == .detailOnly ? "Show sidebar" : "Hide sidebar",
-                    systemImage: columnVisibility == .detailOnly
-                        ? "sidebar.left"
-                        : "rectangle.expand.vertical"
-                )
-            }
-            .help(columnVisibility == .detailOnly
-                  ? "Show the camera list"
-                  : "Hide the camera list and fill the window with the grid")
+            // Show-sidebar / hide-sidebar lived here before; that was a
+            // duplicate of the native toggle `NavigationSplitView` puts
+            // in the toolbar via `SidebarCommands()`. Drop it — users
+            // get a single canonical sidebar control.
             Button {
                 FullscreenViewer.shared.presentGrid(session: session, store: store)
             } label: {
@@ -157,12 +127,6 @@ struct MultiChannelGridView: View {
             get: { store.gridPreset(for: session.entry.id) },
             set: { store.setGridPreset($0, for: session.entry.id) }
         )
-    }
-
-    private func toggleSidebar() {
-        withAnimation(.easeInOut(duration: 0.2)) {
-            columnVisibility = (columnVisibility == .detailOnly) ? .automatic : .detailOnly
-        }
     }
 
     /// The actual grid. Adaptive preset uses SwiftUI's adaptive `GridItem`

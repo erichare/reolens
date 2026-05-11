@@ -11,20 +11,11 @@ struct RichViewerSheet: View {
     let channel: ChannelStatus
 
     @Environment(\.dismiss) private var dismiss
-    /// The sheet sits on top of the existing detail pane, so the fullscreen
-    /// toggle inside `ChannelDetailContent` has nothing meaningful to
-    /// collapse here. We pass a local dummy binding so the toggle is a
-    /// no-op when this content is hosted in a sheet rather than inline.
-    @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
 
     var body: some View {
         VStack(spacing: 0) {
             header
-            ChannelDetailContent(
-                session: session,
-                channel: channel,
-                columnVisibility: $columnVisibility
-            )
+            ChannelDetailContent(session: session, channel: channel)
         }
         .frame(minWidth: 920, minHeight: 600, idealHeight: 760)
     }

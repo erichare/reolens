@@ -10,7 +10,6 @@ import ReolinkBaichuan
 struct ChannelDetailContent: View {
     let session: CameraSession
     let channel: ChannelStatus
-    @Binding var columnVisibility: NavigationSplitViewVisibility
     @Environment(CameraStore.self) private var store
     @State private var tab: Tab = .live
 
