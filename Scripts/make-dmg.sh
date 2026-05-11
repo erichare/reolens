@@ -74,7 +74,7 @@ if [[ "${SIGNING_IDENTITY}" != "-" ]]; then
 fi
 
 # Stable filename so reolens.io's "Download" button can permalink to it
-# via https://github.com/erichare/reolens/releases/latest/download/Reolens.dmg
+# via https://github.com/jestatsio/reolens/releases/latest/download/Reolens.dmg
 cp "${DMG_PATH}" "${DMG_STABLE}"
 
 echo "==> DMG: ${DMG_PATH}"
