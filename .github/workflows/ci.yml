@@ -93,7 +93,7 @@ jobs:
 
       - name: Upload coverage artifact
         if: success() || failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage
           path: |
@@ -155,7 +155,7 @@ jobs:
           fi
 
       - name: Upload .app artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Reolens-app
           path: Reolens.app
