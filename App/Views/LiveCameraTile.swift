@@ -77,6 +77,22 @@ struct LiveCameraTile: View {
         // independent orientations — useful for dual-lens cameras where
         // Reolink encodes the two streams at different native rotations.
         .contextMenu {
+            // "Make primary" promotes this tile to the spotlight slot in
+            // the multi-channel grid (the big top-left tile in the
+            // Spotlight layout). Hidden when the tile is already primary
+            // to avoid offering a no-op.
+            if store.primaryChannel(for: session.entry.id) != channel.channel {
+                Button {
+                    store.setPrimary(
+                        deviceID: session.entry.id,
+                        channel: channel.channel,
+                        allChannels: session.liveChannels
+                    )
+                } label: {
+                    Label("Make primary (spotlight)", systemImage: "star.fill")
+                }
+                Divider()
+            }
             Button {
                 store.rotateClockwise(deviceID: session.entry.id, channel: channel.channel, stream: stream)
             } label: {

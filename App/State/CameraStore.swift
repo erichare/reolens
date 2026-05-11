@@ -267,6 +267,36 @@ public final class CameraStore {
         save()
     }
 
+    /// Promote a channel to the **primary** slot of the channel order.
+    /// In the Spotlight grid this means the big top-left tile. Equivalent
+    /// to dragging the chosen tile to index 0 in the persisted order;
+    /// surfaced as a dedicated helper so the right-click "Make primary"
+    /// action and the control-bar primary picker can share one entry
+    /// point. The previous primary slides one slot to the right (becomes
+    /// the first sub-spotlight in the new spotlight layout).
+    public func setPrimary(deviceID: UUID, channel: Int, allChannels: [ChannelStatus]) {
+        guard let i = cameras.firstIndex(where: { $0.id == deviceID }) else { return }
+        var order = cameras[i].channelOrder
+        if order.isEmpty {
+            order = allChannels.map(\.channel)
+        } else {
+            for ch in allChannels where !order.contains(ch.channel) {
+                order.append(ch.channel)
+            }
+        }
+        order.removeAll { $0 == channel }
+        order.insert(channel, at: 0)
+        cameras[i].channelOrder = order
+        save()
+    }
+
+    /// The currently-primary channel ID for a device, or nil when no
+    /// order has been set yet (caller can default to the first natural
+    /// channel in that case).
+    public func primaryChannel(for deviceID: UUID) -> Int? {
+        cameras.first(where: { $0.id == deviceID })?.channelOrder.first
+    }
+
     public func session(for id: CameraEntry.ID) -> CameraSession? {
         if let s = sessions[id] { return s }
         guard let entry = cameras.first(where: { $0.id == id }),
