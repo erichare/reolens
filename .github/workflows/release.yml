@@ -67,7 +67,7 @@ jobs:
             echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ steps.tag.outputs.tag }}
           # We need a real workdir (not detached HEAD) for the appcast
