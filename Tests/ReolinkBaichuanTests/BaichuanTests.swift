@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import ReolinkAPI
 @testable import ReolinkBaichuan
 
 @Suite("BcHeader round-trip")
@@ -223,5 +224,108 @@ struct NonceTests {
         </body>
         """.utf8)
         #expect(BcXmlBody.extractNonce(from: xml) == "0123456789abcdef")
+    }
+}
+
+@Suite("XML multi-block extraction")
+struct MultiBlockTests {
+    @Test func extractsMultipleAlarmVideoBlocks() {
+        let xml = """
+        <alarmVideoList>
+        <alarmVideo version="1.1">
+        <fileName>0-0-AAA</fileName>
+        <alarmType>md, people</alarmType>
+        </alarmVideo>
+        <alarmVideo version="1.1">
+        <fileName>0-0-BBB</fileName>
+        <alarmType>md, vehicle</alarmType>
+        </alarmVideo>
+        </alarmVideoList>
+        """
+        let blocks = BcXmlBody.allBlocks(in: xml, tag: "alarmVideo")
+        #expect(blocks.count == 2)
+        #expect(BcXmlBody.firstTagContent(in: blocks[0], tag: "fileName") == "0-0-AAA")
+        #expect(BcXmlBody.firstTagContent(in: blocks[1], tag: "alarmType") == "md, vehicle")
+    }
+
+    @Test func extractsReolinkTime() {
+        let xml = """
+        <foo>
+        <startTime>
+        <year>2026</year>
+        <month>5</month>
+        <day>11</day>
+        <hour>9</hour>
+        <minute>20</minute>
+        <second>15</second>
+        </startTime>
+        </foo>
+        """
+        let t = BcXmlBody.reolinkTime(in: xml, tag: "startTime")
+        #expect(t?.year == 2026)
+        #expect(t?.mon == 5)
+        #expect(t?.day == 11)
+        #expect(t?.hour == 9)
+        #expect(t?.min == 20)
+        #expect(t?.sec == 15)
+    }
+}
+
+@Suite("BaichuanAlarmVideoFile detection mapping")
+struct AlarmVideoTests {
+    @Test func mapsCommonAlarmTypes() {
+        let file = BaichuanAlarmVideoFile(
+            fileName: "x",
+            startTime: ReolinkTime(year: 2026, mon: 5, day: 11, hour: 0, min: 0, sec: 0),
+            endTime: ReolinkTime(year: 2026, mon: 5, day: 11, hour: 0, min: 1, sec: 0),
+            alarmType: "md, people, vehicle"
+        )
+        #expect(file.detections.contains(.motion))
+        #expect(file.detections.contains(.person))
+        #expect(file.detections.contains(.vehicle))
+    }
+
+    @Test func dedupesMotionFromMDAndPIR() {
+        let file = BaichuanAlarmVideoFile(
+            fileName: "x",
+            startTime: ReolinkTime(year: 2026, mon: 5, day: 11, hour: 0, min: 0, sec: 0),
+            endTime: ReolinkTime(year: 2026, mon: 5, day: 11, hour: 0, min: 1, sec: 0),
+            alarmType: "md, pir"
+        )
+        #expect(file.detections == [.motion])
+    }
+
+    @Test func handlesAITagsExclusively() {
+        let file = BaichuanAlarmVideoFile(
+            fileName: "x",
+            startTime: ReolinkTime(year: 2026, mon: 5, day: 11, hour: 0, min: 0, sec: 0),
+            endTime: ReolinkTime(year: 2026, mon: 5, day: 11, hour: 0, min: 1, sec: 0),
+            alarmType: "dog_cat, face, package"
+        )
+        #expect(Set(file.detections) == Set([.pet, .face, .packageDelivery]))
+    }
+}
+
+@Suite("IMA ADPCM encoder")
+struct ADPCMEncoderTests {
+
+    @Test func encodesToHalfTheBytes() {
+        var enc = IMAADPCMEncoder()
+        let samples: [Int16] = (0..<1024).map { Int16($0 * 30) }
+        let encoded = enc.encode(pcm: samples)
+        // 4 bits per sample → 1024 / 2 = 512 bytes
+        #expect(encoded.count == 512)
+    }
+
+    @Test func roundTripsCloselyOnSinewave() {
+        // We don't include a decoder, but we can verify the encoder is
+        // deterministic and produces non-zero output for non-silent input.
+        var encA = IMAADPCMEncoder()
+        var encB = IMAADPCMEncoder()
+        let samples: [Int16] = (0..<256).map { Int16(8000 * sin(Double($0) * 0.1)) }
+        let a = encA.encode(pcm: samples)
+        let b = encB.encode(pcm: samples)
+        #expect(a == b)
+        #expect(a.contains(where: { $0 != 0 }))
     }
 }

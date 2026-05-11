@@ -28,6 +28,8 @@
     <true/>
     <key>NSLocalNetworkUsageDescription</key>
     <string>Reolens needs to connect to Reolink cameras, NVRs, and Home Hubs on your local network.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Reolens uses the microphone for two-way talk to your Reolink cameras.</string>
     <key>NSBonjourServices</key>
     <array>
         <string>_http._tcp</string>

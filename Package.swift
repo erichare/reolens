@@ -61,7 +61,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ReolinkBaichuanTests",
-            dependencies: ["ReolinkBaichuan"],
+            dependencies: ["ReolinkBaichuan", "ReolinkAPI"],
             path: "Tests/ReolinkBaichuanTests"
         )
     ]

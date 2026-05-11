@@ -167,6 +167,12 @@ struct LiveCameraTile: View {
     private func startPlayer() async {
         if player != nil { return }
         didStart = true
+        // For battery cameras, poke the hub via Baichuan first to wake the
+        // sleeping camera. If we go straight to RTSP, the camera won't
+        // respond because it's offline at the radio layer.
+        if channel.isBatteryPowered || channel.isAsleep, let baichuan = session.baichuanClient {
+            _ = try? await baichuan.wakeBatteryCamera(channelID: UInt8(channel.channel))
+        }
         let credentials = await session.client.credentials
         let urls = StreamURLs(credentials: credentials).candidatesForLive(
             channel: channel.channel,

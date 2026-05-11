@@ -59,7 +59,7 @@ public final class CameraSession {
 
     private var pollTask: Task<Void, Never>?
     private var baichuanTask: Task<Void, Never>?
-    private var baichuanClient: BaichuanClient?
+    public private(set) var baichuanClient: BaichuanClient?
 
     public init(entry: CameraEntry, credentials: CameraCredentials) {
         self.entry = entry

@@ -1,5 +1,6 @@
 import SwiftUI
 import ReolinkAPI
+import ReolinkBaichuan
 
 /// Full-window single-camera viewer with Live / Recordings / Settings tabs.
 struct RichViewerSheet: View {
@@ -117,6 +118,7 @@ struct RichViewerSheet: View {
         HStack(spacing: 16) {
             PTZControlBar(session: session, channel: channel.channel)
             Spacer()
+            TalkbackButton(session: session, channelID: UInt8(channel.channel))
             rotationControls
         }
         .padding(12)

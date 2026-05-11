@@ -2,6 +2,7 @@ import SwiftUI
 import AVKit
 import OSLog
 import ReolinkAPI
+import ReolinkBaichuan
 
 private let log = Logger(subsystem: "com.reolens.app", category: "recordings")
 
@@ -21,6 +22,10 @@ struct RecordingsView: View {
     @State private var showRawResponse = false
     @State private var eventLog: [HubEvent] = []
     @State private var eventsUnsupported = false
+    /// Baichuan-delivered alarm-tagged recording info, keyed by file name
+    /// prefix. Populated by `findAlarmVideo` on the hub.
+    @State private var alarmVideoByName: [String: BaichuanAlarmVideoFile] = [:]
+    @State private var alarmVideoLoading = false
 
     private let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -33,15 +38,20 @@ struct RecordingsView: View {
             controls
             Divider()
             content
-            if !files.isEmpty
-                && eventsUnsupported
-                && files.allSatisfy({ $0.triggers.isEmpty })
-                && session.aiEventLog.isEmpty {
-                Divider()
-                aiUnavailableFooter
-            } else if !session.aiEventLog.isEmpty && files.contains(where: { !effectiveDetections(for: $0).isEmpty }) {
-                Divider()
-                baichuanActiveFooter
+            if !files.isEmpty {
+                let totalDetections = files.reduce(0) { $0 + effectiveDetections(for: $1).count }
+                if totalDetections == 0
+                    && eventsUnsupported
+                    && files.allSatisfy({ $0.triggers.isEmpty })
+                    && session.aiEventLog.isEmpty
+                    && alarmVideoByName.isEmpty
+                    && !alarmVideoLoading {
+                    Divider()
+                    aiUnavailableFooter
+                } else if !alarmVideoByName.isEmpty || !session.aiEventLog.isEmpty {
+                    Divider()
+                    baichuanActiveFooter
+                }
             }
         }
         .task(id: TaskKey(date: selectedDate, stream: streamType)) {
@@ -71,10 +81,13 @@ struct RecordingsView: View {
         HStack(spacing: 8) {
             Image(systemName: "antenna.radiowaves.left.and.right")
                 .foregroundStyle(.green)
-            Text("AI detection tags are matched against Baichuan events received this session (\(session.aiEventLog.count) in the log).")
+            Text("AI tags from Reolink Baichuan: \(alarmVideoByName.count) tagged recording\(alarmVideoByName.count == 1 ? "" : "s"), \(session.aiEventLog.count) live event\(session.aiEventLog.count == 1 ? "" : "s") this session.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
+            if alarmVideoLoading {
+                ProgressView().controlSize(.small)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -196,10 +209,20 @@ struct RecordingsView: View {
 
         var matches: [DetectionType] = []
         var seen = Set<DetectionType>()
+
+        // 1. Best source: Baichuan's findAlarmVideo response, matched by file
+        //    name. Reolink uses a different file-name encoding here than for
+        //    the CGI Search response, so we try both exact-match and the
+        //    leading-prefix (everything before the first `-` group).
+        if let av = alarmVideoMatch(for: file.name) {
+            for d in av.detections where seen.insert(d).inserted {
+                matches.append(d)
+            }
+            if !matches.isEmpty { return matches }
+        }
+
         if let start = file.startDate, let end = file.endDate {
-            // 1. Match against Baichuan-delivered live AI events on this channel.
-            //    Only events whose timestamp falls inside the recording's range
-            //    AND match the right channel count.
+            // 2. Live Baichuan AlarmEventList pushes received this session.
             for event in session.aiEventLog
                 where event.channelID == channel.channel
                 && event.timestamp >= start
@@ -208,8 +231,7 @@ struct RecordingsView: View {
                     matches.append(d)
                 }
             }
-            // 2. Fall back to the GetEvents probe results if Baichuan didn't
-            //    catch anything (e.g., events that predate this app session).
+            // 3. Speculative GetEvents probe response (rare).
             for entry in eventLog where entry.overlaps(start: start, end: end) {
                 for d in entry.detectionTypes where seen.insert(d).inserted {
                     matches.append(d)
@@ -217,6 +239,18 @@ struct RecordingsView: View {
             }
         }
         return matches
+    }
+
+    private func alarmVideoMatch(for fileName: String) -> BaichuanAlarmVideoFile? {
+        if let exact = alarmVideoByName[fileName] { return exact }
+        // The CGI Search file name often has the form
+        // `0-0-{timestamp}-00000-{deviceUID}` while Baichuan's findAlarmVideo
+        // returns just the timestamp portion. Match on that core if possible.
+        let core = fileName
+            .split(separator: "-")
+            .dropFirst(2)
+            .first.map(String.init) ?? fileName
+        return alarmVideoByName.values.first { $0.fileName.contains(core) || core.contains($0.fileName) }
     }
 
     private func tint(for detection: DetectionType) -> Color {
@@ -294,6 +328,36 @@ struct RecordingsView: View {
         // whatever shape comes back — `HubEvent` decodes permissively.
         if !eventsUnsupported {
             await loadEvents(start: start, end: end)
+        }
+
+        // The real source of historical AI tags: Baichuan's findAlarmVideo
+        // command (msg 272/273/274). Runs in parallel — recordings appear
+        // immediately and detection icons populate as soon as this returns.
+        await loadAlarmVideos(start: start, end: end)
+    }
+
+    private func loadAlarmVideos(start: Date, end: Date) async {
+        guard let client = session.baichuanClient else {
+            log.info("Baichuan client not yet ready; skipping findAlarmVideo")
+            return
+        }
+        alarmVideoLoading = true
+        defer { alarmVideoLoading = false }
+        do {
+            let files = try await client.findAlarmVideos(
+                channel: UInt8(channel.channel),
+                start: start,
+                end: end,
+                streamType: streamType
+            )
+            var byName: [String: BaichuanAlarmVideoFile] = [:]
+            for f in files {
+                byName[f.fileName] = f
+            }
+            alarmVideoByName = byName
+            log.info("findAlarmVideo channel=\(self.channel.channel) entries=\(files.count) tags=\(files.flatMap { $0.detections }.map { $0.label }.joined(separator: ","), privacy: .public)")
+        } catch {
+            log.error("findAlarmVideo failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
