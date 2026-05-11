@@ -129,12 +129,11 @@ private struct SingleCameraFullscreen: View {
 private struct GridFullscreen: View {
     let session: CameraSession
     let onClose: () -> Void
-    @State private var columnVisibility: NavigationSplitViewVisibility = .detailOnly
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
             Color.black.ignoresSafeArea()
-            MultiChannelGridView(session: session, columnVisibility: $columnVisibility)
+            MultiChannelGridView(session: session)
                 .ignoresSafeArea()
             ExitButton(onClose: onClose)
         }
