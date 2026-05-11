@@ -17,7 +17,10 @@ let package = Package(
             name: "ReolinkAPI",
             path: "Sources/ReolinkAPI",
             swiftSettings: [
-                .enableUpcomingFeature("StrictConcurrency"),
+                // StrictConcurrency is implicit at swift-tools-version 6.0;
+                // enabling it explicitly is rejected by the toolchain.
+                // Keep ExistentialAny as an opt-in until the codebase is
+                // fully migrated.
                 .enableUpcomingFeature("ExistentialAny")
             ]
         ),
@@ -26,7 +29,10 @@ let package = Package(
             dependencies: ["ReolinkAPI"],
             path: "Sources/ReolinkStreaming",
             swiftSettings: [
-                .enableUpcomingFeature("StrictConcurrency"),
+                // StrictConcurrency is implicit at swift-tools-version 6.0;
+                // enabling it explicitly is rejected by the toolchain.
+                // Keep ExistentialAny as an opt-in until the codebase is
+                // fully migrated.
                 .enableUpcomingFeature("ExistentialAny")
             ]
         ),
@@ -35,7 +41,10 @@ let package = Package(
             dependencies: ["ReolinkAPI"],
             path: "Sources/ReolinkBaichuan",
             swiftSettings: [
-                .enableUpcomingFeature("StrictConcurrency"),
+                // StrictConcurrency is implicit at swift-tools-version 6.0;
+                // enabling it explicitly is rejected by the toolchain.
+                // Keep ExistentialAny as an opt-in until the codebase is
+                // fully migrated.
                 .enableUpcomingFeature("ExistentialAny")
             ]
         ),
@@ -45,7 +54,10 @@ let package = Package(
             path: "App",
             exclude: ["Info.plist", "Reolens.entitlements"],
             swiftSettings: [
-                .enableUpcomingFeature("StrictConcurrency"),
+                // StrictConcurrency is implicit at swift-tools-version 6.0;
+                // enabling it explicitly is rejected by the toolchain.
+                // Keep ExistentialAny as an opt-in until the codebase is
+                // fully migrated.
                 .enableUpcomingFeature("ExistentialAny")
             ]
         ),

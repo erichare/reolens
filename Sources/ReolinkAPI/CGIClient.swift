@@ -190,7 +190,12 @@ struct AnyEncodable: Encodable, Sendable {
 
     init<P: Encodable & Sendable>(_ cmd: CGICommand<P>) {
         self.command = cmd.cmd
-        self.encode = { encoder in try cmd.encode(to: encoder) }
+        // Mark the captured closure `@Sendable` explicitly — Swift 6
+        // strict-concurrency rejects converting a non-sendable closure
+        // value into the `@Sendable` storage type at assignment time.
+        // `cmd` is `Sendable` by the generic constraint, so capturing
+        // it is safe.
+        self.encode = { @Sendable encoder in try cmd.encode(to: encoder) }
     }
 
     func encode(to encoder: any Encoder) throws {
