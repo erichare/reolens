@@ -8,6 +8,10 @@
     <string>Reolens</string>
     <key>CFBundleExecutable</key>
     <string>Reolens</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIconName</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.reolens.Reolens</string>
     <key>CFBundleInfoDictionaryVersion</key>
@@ -42,6 +46,22 @@
         <key>NSAllowsArbitraryLoads</key>
         <true/>
     </dict>
+    <!-- Sparkle 2 auto-update keys. SUPublicEDKey is the public half of the
+         EdDSA signing keypair; the private half lives in the maintainer's
+         keychain locally and in the SPARKLE_ED_PRIVATE_KEY CI secret.
+         At release time the workflow signs the DMG with the private key,
+         and on the user's machine Sparkle verifies the signature against
+         this public key before applying. An empty/placeholder value
+         disables update application (Sparkle refuses to install unsigned
+         updates), which is safe during development. -->
+    <key>SUFeedURL</key>
+    <string>https://reolens.io/appcast.xml</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
+    <key>SUPublicEDKey</key>
+    <string></string>
     <key>UTExportedTypeDeclarations</key>
     <array>
         <dict>

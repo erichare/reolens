@@ -5,6 +5,7 @@ import AppKit
 struct ReolensApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var store = CameraStore()
+    @State private var updater = UpdaterController()
 
     var body: some Scene {
         WindowGroup("Reolens") {
@@ -14,6 +15,23 @@ struct ReolensApp: App {
         }
         .windowToolbarStyle(.unified(showsTitle: false))
         .commands {
+            // Replace the default About item with our own custom panel.
+            // SwiftUI's `CommandGroup(replacing: .appInfo)` swaps out the
+            // first item in the application menu without touching the
+            // surrounding system items (Services, Hide, Quit, etc.).
+            CommandGroup(replacing: .appInfo) {
+                Button("About Reolens") {
+                    showAboutPanel()
+                }
+            }
+            // "Check for Updates…" sits just under the About item, which
+            // is the macOS HIG-prescribed location for it.
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    updater.checkForUpdates()
+                }
+                .disabled(!updater.canCheckForUpdates)
+            }
             SidebarCommands()
             ToolbarCommands()
         }
@@ -23,6 +41,41 @@ struct ReolensApp: App {
                 .environment(store)
                 .frame(minWidth: 480, minHeight: 320)
         }
+    }
+
+    /// Wraps our SwiftUI `AboutView` in a borderless `NSPanel`. We can't use
+    /// `orderFrontStandardAboutPanel(options:)` because we want full control
+    /// over the layout and links — the standard panel only takes a fixed
+    /// set of keys (credits, version, etc.).
+    @MainActor
+    private func showAboutPanel() {
+        AboutPanelController.shared.show()
+    }
+}
+
+/// Singleton owner of the About panel so its window stays alive across
+/// open/close cycles (the panel's `.releasedWhenClosed = false` means we
+/// just hide it on close and re-show it on the next invocation).
+@MainActor
+final class AboutPanelController {
+    static let shared = AboutPanelController()
+    private var window: NSWindow?
+
+    func show() {
+        if let window {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let host = NSHostingController(rootView: AboutView())
+        let win = NSWindow(contentViewController: host)
+        win.styleMask = [.titled, .closable]
+        win.title = "About Reolens"
+        win.isReleasedWhenClosed = false
+        win.center()
+        self.window = win
+        win.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 }
 
@@ -35,6 +88,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // CI smoke-test hook. Started with `--smoke-test`, the app boots
+        // the SwiftUI scene normally (so the window + view tree
+        // construct), then exits cleanly after a short delay. The
+        // release workflow's smoke step launches the built `.app` with
+        // this flag and asserts the process exits 0 within the window —
+        // catching startup crashes that unit tests can't.
+        let isSmokeTest = CommandLine.arguments.contains("--smoke-test")
+
         NSApp.activate(ignoringOtherApps: true)
         // Auto-request notification permission once, on the very first
         // launch where the OS hasn't yet recorded a decision. After the
@@ -45,10 +106,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // mind later go through Settings → Notifications, which uses
         // the same `requestPermission` (when notDetermined) or deep-
         // links to System Settings (when denied).
-        Task { @MainActor in
-            await EventNotifier.shared.refreshPermissionStatus()
-            if EventNotifier.shared.permissionStatus == .notDetermined {
-                await EventNotifier.shared.requestPermission()
+        //
+        // Skipped in smoke-test mode — we don't want to leave a
+        // permission prompt hanging on a CI runner.
+        if !isSmokeTest {
+            Task { @MainActor in
+                await EventNotifier.shared.refreshPermissionStatus()
+                if EventNotifier.shared.permissionStatus == .notDetermined {
+                    await EventNotifier.shared.requestPermission()
+                }
+            }
+        }
+
+        if isSmokeTest {
+            // Give SwiftUI a runloop spin to construct the WindowGroup,
+            // then exit. 2 seconds is plenty for a no-network launch.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                NSApp.terminate(nil)
             }
         }
     }

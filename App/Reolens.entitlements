@@ -14,5 +14,15 @@
     <array>
         <string>com.reolens.Reolens</string>
     </array>
+    <!-- Allow loading the embedded Sparkle.framework. Hardened Runtime's
+         Library Validation otherwise requires every loaded library to be
+         signed by Apple or by the same Team ID as the main app. With ad-hoc
+         dev signing both have "no team" but Library Validation still
+         refuses; with a real Developer ID, Sparkle's bundled binaries
+         carry the *Sparkle Project's* team ID, not ours, and would also be
+         refused. Disabling it is the standard pattern for apps embedding
+         third-party signed frameworks. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
 </dict>
 </plist>

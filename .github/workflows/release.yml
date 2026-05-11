@@ -1,0 +1,217 @@
+name: Release
+
+# Tag-driven release pipeline. Push `v0.1.0` (etc.) and this workflow:
+#   1. Builds the .app bundle with Developer ID signing.
+#   2. Submits it to Apple's notary service and staples the ticket.
+#   3. Packages it into a styled DMG, signs + notarizes + staples the DMG.
+#   4. Signs the DMG with Sparkle's EdDSA key and regenerates the appcast.
+#   5. Commits the updated appcast.xml back to /docs (so GitHub Pages
+#      serves https://reolens.io/appcast.xml fresh).
+#   6. Creates a GitHub Release with the DMG + sha256 attached.
+#
+# Required secrets (configure under repo Settings → Secrets):
+#   MACOS_CERTIFICATE_P12_BASE64 — base64 of the Developer ID Application
+#                                  cert exported from Keychain as .p12
+#   MACOS_CERTIFICATE_PASSWORD   — password for that .p12
+#   KEYCHAIN_PASSWORD            — arbitrary password for the temporary
+#                                  build keychain we create in CI
+#   AC_API_KEY_ID                — App Store Connect API key ID
+#   AC_API_ISSUER_ID             — App Store Connect issuer UUID
+#   AC_API_KEY_P8_BASE64         — base64 of the .p8 key file
+#   SPARKLE_ED_PRIVATE_KEY       — base64 of the EdDSA private key
+#                                  (generated locally with Sparkle's
+#                                  `generate_keys`; never commit the file)
+#   SPARKLE_PUBLIC_KEY           — the matching public key (also stored
+#                                  in Info.plist; we re-inject at build
+#                                  time so dev builds can leave it blank)
+#
+# Required repo variables:
+#   SIGNING_IDENTITY             — e.g. "Developer ID Application: Eric Hare (TEAM12345)"
+#   TEAM_ID                      — the 10-char team ID
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag name to release (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write  # needed to create releases + push appcast back to /docs
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, notarize, publish
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      SIGNING_IDENTITY: ${{ vars.SIGNING_IDENTITY }}
+      TEAM_ID: ${{ vars.TEAM_ID }}
+      AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+      AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+      AC_API_KEY_P8_BASE64: ${{ secrets.AC_API_KEY_P8_BASE64 }}
+
+    steps:
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+          # We need a real workdir (not detached HEAD) for the appcast
+          # commit-back step at the end of the job.
+          fetch-depth: 0
+
+      - name: Select Xcode 16
+        run: sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
+
+      - name: Import Developer ID signing cert
+        env:
+          P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="build.keychain"
+          security create-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN}"
+          security default-keychain -s "${KEYCHAIN}"
+          security set-keychain-settings -lut 7200 "${KEYCHAIN}"
+          security unlock-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN}"
+          echo "${P12_BASE64}" | base64 -D > /tmp/cert.p12
+          security import /tmp/cert.p12 -k "${KEYCHAIN}" \
+            -P "${P12_PASSWORD}" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          rm -f /tmp/cert.p12
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "${KEYCHAIN_PASSWORD}" "${KEYCHAIN}"
+
+      - name: Inject Sparkle public key into Info.plist
+        env:
+          SPARKLE_PUBLIC_KEY: ${{ secrets.SPARKLE_PUBLIC_KEY }}
+        run: |
+          /usr/libexec/PlistBuddy -c "Set :SUPublicEDKey ${SPARKLE_PUBLIC_KEY}" App/Info.plist
+
+      - name: Build app bundle (release, signed)
+        run: ./Scripts/build-app.sh -c release
+
+      - name: Notarize and staple .app
+        run: ./Scripts/notarize.sh Reolens.app
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Build DMG
+        run: ./Scripts/make-dmg.sh
+
+      - name: Read version
+        id: ver
+        run: |
+          VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Reolens.app/Contents/Info.plist)
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Notarize and staple DMG
+        run: ./Scripts/notarize.sh dist/build/Reolens-${{ steps.ver.outputs.version }}.dmg
+
+      - name: Install Sparkle tools
+        run: |
+          # The Sparkle XCFramework comes bundled with `sign_update` and
+          # `generate_appcast`; SwiftPM puts them under .build/artifacts.
+          SPARKLE_TOOLS=$(find .build/artifacts -type d -name 'Sparkle.xcframework' | head -n 1)
+          echo "SPARKLE_TOOLS=${SPARKLE_TOOLS}/../bin" >> $GITHUB_ENV
+          # Sparkle ships the CLI tools next to the XCFramework. Fall
+          # back to brew if the artifact layout doesn't include them.
+          if [ ! -f "${SPARKLE_TOOLS}/../bin/sign_update" ]; then
+            brew install --quiet sparkle || true
+          fi
+
+      - name: Sign DMG with Sparkle EdDSA key
+        id: ed
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          DMG="dist/build/Reolens-${{ steps.ver.outputs.version }}.dmg"
+          KEY_FILE=$(mktemp)
+          echo "${SPARKLE_ED_PRIVATE_KEY}" | base64 -D > "${KEY_FILE}"
+          # `sign_update` lives either in the brew prefix or beside the
+          # XCFramework; locate whichever exists.
+          SIGN_BIN=$(command -v sign_update || find .build/artifacts -name 'sign_update' -type f | head -n 1)
+          ED_SIG=$("${SIGN_BIN}" -f "${KEY_FILE}" "${DMG}")
+          rm -f "${KEY_FILE}"
+          echo "ed_signature=${ED_SIG}" >> $GITHUB_OUTPUT
+
+      - name: Regenerate appcast.xml
+        env:
+          ED_SIG: ${{ steps.ed.outputs.ed_signature }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          DMG="dist/build/Reolens-${VERSION}.dmg"
+          LENGTH=$(stat -f %z "${DMG}")
+          PUBDATE=$(date -u +"%a, %d %b %Y %H:%M:%S +0000")
+          URL="https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.tag }}/Reolens-${VERSION}.dmg"
+          cat > docs/appcast.xml <<EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+            <channel>
+              <title>Reolens</title>
+              <link>https://reolens.io/appcast.xml</link>
+              <description>Reolens release feed</description>
+              <language>en</language>
+              <item>
+                <title>Version ${VERSION}</title>
+                <pubDate>${PUBDATE}</pubDate>
+                <sparkle:version>${VERSION}</sparkle:version>
+                <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>
+                <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+                <description><![CDATA[See <a href="https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md">CHANGELOG</a> for full release notes.]]></description>
+                <enclosure
+                  url="${URL}"
+                  length="${LENGTH}"
+                  type="application/octet-stream"
+                  ${ED_SIG} />
+              </item>
+            </channel>
+          </rss>
+          EOF
+
+      - name: Commit appcast back to main
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout main
+          git pull --ff-only origin main
+          cp docs/appcast.xml /tmp/appcast.xml
+          git checkout - -- docs/appcast.xml 2>/dev/null || true
+          mv /tmp/appcast.xml docs/appcast.xml
+          if git diff --quiet docs/appcast.xml; then
+            echo "appcast unchanged"
+          else
+            git add docs/appcast.xml
+            git commit -m "chore(release): update appcast for ${{ steps.tag.outputs.tag }}"
+            git push origin main
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Reolens ${{ steps.ver.outputs.version }}
+          generate_release_notes: true
+          files: |
+            dist/build/Reolens-${{ steps.ver.outputs.version }}.dmg
+            dist/build/Reolens-${{ steps.ver.outputs.version }}.dmg.sha256
