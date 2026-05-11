@@ -1,0 +1,154 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Single concurrency group per ref — when a new commit lands on a PR we
+# cancel the older still-running job rather than burning macOS minutes
+# on stale code.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Swift Package Manager build + tests with coverage. The package is the
+  # source of truth for the libraries (ReolinkAPI / ReolinkStreaming /
+  # ReolinkBaichuan) and their tests, so this is the workflow's anchor
+  # job — the others are best-effort signals layered on top.
+  build-test:
+    name: Build & test (Swift Package)
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Xcode 16 ships Swift 6.0+, which Package.swift requires
+      # (`swift-tools-version: 6.0`). The runner image rotates available
+      # Xcodes, so we pin to a major version rather than a build number
+      # to stay green when Apple refreshes the image.
+      - name: Select Xcode 16
+        run: sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
+
+      - name: Print toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
+      # Cache the SPM build dir keyed on Package.swift / Package.resolved
+      # so the second-and-later runs skip module rebuilds.
+      - name: Cache .build
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: ${{ runner.os }}-spm-${{ hashFiles('**/Package.resolved', 'Package.swift') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-
+
+      - name: Build (debug)
+        run: swift build -c debug --enable-code-coverage
+
+      - name: Run tests with coverage
+        run: swift test --enable-code-coverage --parallel
+
+      # Generate an LCOV report from the test profdata. Uploaded as an
+      # artifact so we can drop it into a coverage service later (or
+      # just inspect it locally from a PR).
+      - name: Generate coverage report
+        run: |
+          set -euo pipefail
+          PROFDATA=$(find .build -name 'default.profdata' | head -n 1)
+          if [ -z "$PROFDATA" ]; then
+            echo "No profdata found — skipping coverage report."
+            exit 0
+          fi
+          # On macOS the SPM test bundle is a directory (`.xctest`) and
+          # the Mach-O the profiler instrumented lives at
+          # `<Bundle>.xctest/Contents/MacOS/<Name>`. Resolve to that
+          # inner binary before feeding it to llvm-cov.
+          BUNDLE=$(find .build -type d -name '*PackageTests.xctest' | head -n 1)
+          if [ -z "$BUNDLE" ]; then
+            echo "No test bundle found — skipping coverage report."
+            exit 0
+          fi
+          BIN="$BUNDLE/Contents/MacOS/$(basename "$BUNDLE" .xctest)"
+          if [ ! -f "$BIN" ]; then
+            echo "Resolved binary $BIN doesn't exist — skipping coverage report."
+            exit 0
+          fi
+          xcrun llvm-cov export -format=lcov \
+            -instr-profile "$PROFDATA" "$BIN" \
+            > coverage.lcov
+          xcrun llvm-cov report \
+            -instr-profile "$PROFDATA" "$BIN" \
+            -ignore-filename-regex '\.build|Tests' | tee coverage-summary.txt
+        continue-on-error: true
+
+      - name: Upload coverage artifact
+        if: success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            coverage.lcov
+            coverage-summary.txt
+          if-no-files-found: ignore
+
+  # App-bundle assembly. The Mac app is built outside Xcode via
+  # `Scripts/build-app.sh`, which wraps the SPM build into a proper
+  # `.app` with Info.plist + entitlements. CI runs the same script the
+  # developer runs locally so "works on my machine" stays honest.
+  app-build:
+    name: Assemble .app bundle
+    runs-on: macos-15
+    timeout-minutes: 20
+    needs: build-test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 16
+        run: sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
+
+      - name: Cache .build
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: ${{ runner.os }}-spm-${{ hashFiles('**/Package.resolved', 'Package.swift') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-
+
+      - name: Build app bundle
+        run: ./Scripts/build-app.sh
+
+      - name: Upload .app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Reolens-app
+          path: Reolens.app
+          if-no-files-found: error
+
+  # SwiftLint runs separately from the build so a style warning never
+  # blocks code that compiles and tests cleanly. Failures still surface
+  # in the PR check list — they just don't fail the whole pipeline.
+  lint:
+    name: SwiftLint
+    runs-on: macos-15
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SwiftLint
+        run: brew install swiftlint
+
+      - name: Run SwiftLint
+        run: swiftlint --reporter github-actions-logging
+        continue-on-error: true
