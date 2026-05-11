@@ -2,10 +2,10 @@
 #
 # Lives in this repo as a template. The release workflow updates the
 # `version`, `sha256`, and (optionally) a copy of this file in the
-# `erichare/homebrew-reolens` tap repo.
+# `jestatsio/homebrew-reolens` tap repo.
 #
 # Users install via:
-#   brew tap erichare/reolens
+#   brew tap jestatsio/reolens
 #   brew install --cask reolens
 #
 # `auto_updates true` defers to Sparkle for in-app updates — brew won't
@@ -15,8 +15,8 @@ cask "reolens" do
   version "0.1.0"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
 
-  url "https://github.com/erichare/reolens/releases/download/v#{version}/Reolens-#{version}.dmg",
-      verified: "github.com/erichare/reolens/"
+  url "https://github.com/jestatsio/reolens/releases/download/v#{version}/Reolens-#{version}.dmg",
+      verified: "github.com/jestatsio/reolens/"
   name "Reolens"
   desc "Modern macOS client for Reolink cameras and NVRs"
   homepage "https://reolens.io"

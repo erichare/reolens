@@ -8,17 +8,17 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/erichare/reolens/actions/workflows/ci.yml"><img src="https://github.com/erichare/reolens/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/erichare/reolens/releases/latest"><img src="https://img.shields.io/github/v/release/erichare/reolens?label=download&color=4cd2ff" alt="Latest release"></a>
+  <a href="https://github.com/jestatsio/reolens/actions/workflows/ci.yml"><img src="https://github.com/jestatsio/reolens/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/jestatsio/reolens/releases/latest"><img src="https://img.shields.io/github/v/release/jestatsio/reolens?label=download&color=4cd2ff" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B-1ba6d8" alt="macOS 14+">
 </p>
 
 <p align="center">
   <a href="https://reolens.io">Website</a> ·
-  <a href="https://github.com/erichare/reolens/releases/latest/download/Reolens.dmg">Download</a> ·
+  <a href="https://github.com/jestatsio/reolens/releases/latest/download/Reolens.dmg">Download</a> ·
   <a href="#install">Install</a> ·
-  <a href="https://github.com/erichare/reolens/issues">Issues</a>
+  <a href="https://github.com/jestatsio/reolens/issues">Issues</a>
 </p>
 
 ---
@@ -59,7 +59,7 @@ feels like every other Mac app.
 ### Homebrew (recommended)
 
 ```sh
-brew tap erichare/reolens
+brew tap jestatsio/reolens
 brew install --cask reolens
 ```
 
@@ -67,10 +67,10 @@ Updates are handled by Sparkle inside the app — no `brew upgrade` needed.
 
 ### Direct download
 
-Grab the signed, notarized DMG from the [latest release](https://github.com/erichare/reolens/releases/latest):
+Grab the signed, notarized DMG from the [latest release](https://github.com/jestatsio/reolens/releases/latest):
 
 ```
-https://github.com/erichare/reolens/releases/latest/download/Reolens.dmg
+https://github.com/jestatsio/reolens/releases/latest/download/Reolens.dmg
 ```
 
 Drag **Reolens.app** to your Applications folder and launch.
@@ -78,7 +78,7 @@ Drag **Reolens.app** to your Applications folder and launch.
 ### Build from source
 
 ```sh
-git clone https://github.com/erichare/reolens.git
+git clone https://github.com/jestatsio/reolens.git
 cd reolens
 ./Scripts/build-app.sh run
 ```
@@ -211,7 +211,7 @@ construct a `CGICommand`, and call `client.send(_:as:)`. See
 - Recording timeline scrubber
 - Live Activities + widgets
 
-See the [GitHub issues](https://github.com/erichare/reolens/issues) for
+See the [GitHub issues](https://github.com/jestatsio/reolens/issues) for
 the full plan.
 
 ## Privacy

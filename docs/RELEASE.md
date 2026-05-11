@@ -66,7 +66,7 @@ And as repo variables (Settings → Variables):
 
 ### 4. Homebrew tap
 
-Create `erichare/homebrew-reolens` on GitHub. Copy
+Create `jestatsio/homebrew-reolens` on GitHub. Copy
 `dist/homebrew/reolens.rb` into `Casks/reolens.rb` of the tap repo.
 After each release, update `version` and `sha256` in that file.
 
@@ -87,7 +87,7 @@ Each new version, walk this list. It takes about 10 minutes.
 
 ### Pre-flight
 
-- [ ] **Tests green on `main`** — check the [CI badge](https://github.com/erichare/reolens/actions/workflows/ci.yml)
+- [ ] **Tests green on `main`** — check the [CI badge](https://github.com/jestatsio/reolens/actions/workflows/ci.yml)
 - [ ] **Smoke launch passes** locally:
   ```sh
   ./Scripts/build-app.sh && ./Reolens.app/Contents/MacOS/Reolens --smoke-test
@@ -123,7 +123,7 @@ This triggers `.github/workflows/release.yml`, which:
 
 - [ ] **Smoke install** — on a clean Mac (or a new user account):
   ```sh
-  curl -L https://github.com/erichare/reolens/releases/latest/download/Reolens.dmg \
+  curl -L https://github.com/jestatsio/reolens/releases/latest/download/Reolens.dmg \
     -o /tmp/Reolens.dmg
   xcrun stapler validate /tmp/Reolens.dmg     # should print "Validation: success"
   open /tmp/Reolens.dmg
@@ -135,7 +135,7 @@ This triggers `.github/workflows/release.yml`, which:
   # Edit Casks/reolens.rb: bump version, update sha256 from the release page
   git commit -am "reolens vX.Y.Z"
   git push
-  brew update && brew install --cask erichare/reolens/reolens
+  brew update && brew install --cask jestatsio/reolens/reolens
   ```
 - [ ] **Verify auto-update path** — install the previous version on a
   test Mac, launch it, choose Reolens → Check for Updates… and confirm

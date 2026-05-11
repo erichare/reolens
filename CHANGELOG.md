@@ -22,7 +22,7 @@ First public release.
   frame inline
 - Auto-update infrastructure via Sparkle (signed appcast on reolens.io)
 - About panel with version + Check-for-Updates menu item
-- Homebrew cask available via the `erichare/reolens` tap
+- Homebrew cask available via the `jestatsio/reolens` tap
 - Direct download as a signed, notarized DMG
 - End-to-end integration test for the CGI client
 - CI smoke launch test on every PR
@@ -32,5 +32,5 @@ First public release.
 - All camera passwords stored in the macOS Keychain — never in plain text
 - No analytics, no telemetry, no accounts
 
-[Unreleased]: https://github.com/erichare/reolens/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/erichare/reolens/releases/tag/v0.1.0
+[Unreleased]: https://github.com/jestatsio/reolens/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/jestatsio/reolens/releases/tag/v0.1.0

@@ -54,8 +54,8 @@ struct AboutView: View {
 
             HStack(spacing: 12) {
                 Link("Website", destination: URL(string: "https://reolens.io")!)
-                Link("GitHub",  destination: URL(string: "https://github.com/erichare/reolens")!)
-                Link("Issues",  destination: URL(string: "https://github.com/erichare/reolens/issues")!)
+                Link("GitHub",  destination: URL(string: "https://github.com/jestatsio/reolens")!)
+                Link("Issues",  destination: URL(string: "https://github.com/jestatsio/reolens/issues")!)
                 Link("J&E Stats", destination: URL(string: "https://jestats.io")!)
             }
             .font(.system(size: 11))
