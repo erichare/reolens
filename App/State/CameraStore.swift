@@ -23,6 +23,13 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
     /// (Home Hub Pro returns nil for many paired cameras, including Argus
     /// 4 Pro on current firmware).
     public var dualLensOverrides: Set<Int> = []
+    /// Multi-camera grid layout preset (Adaptive / 1-up / 2×2 / 3×3 / ...).
+    /// Defaults to `.adaptive`.
+    public var gridPreset: GridPreset = .adaptive
+    /// User-customized channel order for the grid. Channel IDs not in this
+    /// list are appended in the device's natural order. Empty means
+    /// "show in natural order" — same effect as nothing-customized.
+    public var channelOrder: [Int] = []
 
     public init(
         id: UUID = UUID(),
@@ -33,7 +40,9 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
         useHTTPS: Bool = false,
         preferredCodec: VideoCodec = .h264,
         channelStreamRotations: [String: Int] = [:],
-        dualLensOverrides: Set<Int> = []
+        dualLensOverrides: Set<Int> = [],
+        gridPreset: GridPreset = .adaptive,
+        channelOrder: [Int] = []
     ) {
         self.id = id
         self.displayName = displayName
@@ -44,6 +53,8 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
         self.preferredCodec = preferredCodec
         self.channelStreamRotations = channelStreamRotations
         self.dualLensOverrides = dualLensOverrides
+        self.gridPreset = gridPreset
+        self.channelOrder = channelOrder
     }
 
     /// Codable conformance: serialize the dict with String keys so JSON is round-trip clean.
@@ -51,7 +62,9 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
         case id, displayName, host, port, username, useHTTPS, preferredCodec,
              channelRotations,         // legacy: per-channel rotation, no stream split
              channelStreamRotations,   // new: per-(channel, stream) rotation
-             dualLensOverrides
+             dualLensOverrides,
+             gridPreset,
+             channelOrder
     }
 
     public init(from decoder: any Decoder) throws {
@@ -84,6 +97,9 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
         // files without it continue to deserialize cleanly.
         let overrideList = (try? c.decode([Int].self, forKey: .dualLensOverrides)) ?? []
         self.dualLensOverrides = Set(overrideList)
+        // Grid layout state — also optional for older files.
+        self.gridPreset = (try? c.decode(GridPreset.self, forKey: .gridPreset)) ?? .adaptive
+        self.channelOrder = (try? c.decode([Int].self, forKey: .channelOrder)) ?? []
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -97,6 +113,8 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
         try c.encode(preferredCodec, forKey: .preferredCodec)
         try c.encode(channelStreamRotations, forKey: .channelStreamRotations)
         try c.encode(Array(dualLensOverrides).sorted(), forKey: .dualLensOverrides)
+        try c.encode(gridPreset, forKey: .gridPreset)
+        try c.encode(channelOrder, forKey: .channelOrder)
     }
 }
 
@@ -191,6 +209,61 @@ public final class CameraStore {
         } else {
             cameras[i].dualLensOverrides.remove(channel)
         }
+        save()
+    }
+
+    // MARK: - Grid layout
+
+    public func gridPreset(for deviceID: UUID) -> GridPreset {
+        cameras.first(where: { $0.id == deviceID })?.gridPreset ?? .adaptive
+    }
+
+    public func setGridPreset(_ preset: GridPreset, for deviceID: UUID) {
+        guard let i = cameras.firstIndex(where: { $0.id == deviceID }) else { return }
+        cameras[i].gridPreset = preset
+        save()
+    }
+
+    /// Order the given channels according to the user's customized order.
+    /// Channels missing from the stored order list are appended in their
+    /// natural (camera-supplied) sequence.
+    public func orderedChannels(for deviceID: UUID, channels: [ChannelStatus]) -> [ChannelStatus] {
+        guard let stored = cameras.first(where: { $0.id == deviceID })?.channelOrder, !stored.isEmpty else {
+            return channels
+        }
+        var remaining = channels
+        var ordered: [ChannelStatus] = []
+        for chID in stored {
+            if let idx = remaining.firstIndex(where: { $0.channel == chID }) {
+                ordered.append(remaining.remove(at: idx))
+            }
+        }
+        ordered.append(contentsOf: remaining)
+        return ordered
+    }
+
+    /// Move the channel ID `source` so it lands immediately before `target`
+    /// in the persisted order. Channels not yet recorded in the order list
+    /// are appended in their current natural sequence first, so the user's
+    /// gesture moves the right tile from the right starting place.
+    public func reorder(deviceID: UUID, source: Int, before target: Int, allChannels: [ChannelStatus]) {
+        guard let i = cameras.firstIndex(where: { $0.id == deviceID }) else { return }
+        var order = cameras[i].channelOrder
+        // Seed from the natural order if we don't have one yet.
+        if order.isEmpty {
+            order = allChannels.map(\.channel)
+        } else {
+            for ch in allChannels where !order.contains(ch.channel) {
+                order.append(ch.channel)
+            }
+        }
+        order.removeAll { $0 == source }
+        if let targetIdx = order.firstIndex(of: target) {
+            order.insert(source, at: targetIdx)
+        } else {
+            order.append(source)
+        }
+        cameras[i].channelOrder = order
         save()
     }
 
