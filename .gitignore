@@ -1,0 +1,12 @@
+.build/
+.swiftpm/
+Package.resolved
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+.DS_Store
+xcuserdata/
+DerivedData/
+*.xcuserstate
+
+# Build artifacts — produced by Scripts/build-app.sh, regenerated each build.
+Reolens.app/
