@@ -411,6 +411,13 @@ struct MultiChannelGridView: View {
             onTap: { richViewerChannel = channel },
             paused: richViewerOpen
         )
+        // Force a fresh view (and therefore a fresh `LiveCameraTile`
+        // @State + `LiveVideoPlayer`) whenever a slot's channel changes.
+        // Without this, SwiftUI sees the tile at position N as the same
+        // view across renders and reuses the cached player — so changing
+        // the spotlight primary via the dropdown would leave the
+        // top-left tile showing the OLD camera's stream.
+        .id(channel.channel)
         .opacity(draggingChannel == channel.channel ? 0.35 : 1.0)
         .draggable(ChannelDragPayload(channel: channel.channel)) {
             DragPreview(channel: channel)
@@ -428,24 +435,6 @@ struct MultiChannelGridView: View {
             return true
         }
     }
-}
-
-/// `Transferable` payload that flows through SwiftUI's drag-and-drop. We
-/// only need the integer channel ID — the rest is recoverable from the
-/// session by looking the channel up by that ID.
-private struct ChannelDragPayload: Codable, Transferable {
-    let channel: Int
-
-    static var transferRepresentation: some TransferRepresentation {
-        CodableRepresentation(contentType: .reolensChannelDrag)
-    }
-}
-
-private extension UTType {
-    /// Custom UTI registered just for our drag payloads — avoids the
-    /// possibility of accidental drag-and-drop interop with other apps
-    /// that publish plain `Int`s.
-    static let reolensChannelDrag = UTType(exportedAs: "com.reolens.channelDrag")
 }
 
 /// Visual representation of the tile while the user is dragging. SwiftUI
