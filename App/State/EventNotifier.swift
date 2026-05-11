@@ -87,8 +87,18 @@ public final class EventNotifier {
 
     /// Re-read the OS authorization state. Cheap; call after returning
     /// from System Settings or after `requestPermission(...)`.
+    ///
+    /// Uses the callback-style API instead of the `async` overload so we
+    /// only pull the `UNAuthorizationStatus` (Sendable enum) across the
+    /// actor boundary, not the entire `UNNotificationSettings` object
+    /// (which is non-Sendable and trips Swift 6's strict-concurrency
+    /// checker when crossing into the MainActor-isolated caller).
     public func refreshPermissionStatus() async {
-        let status = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+        let status = await withCheckedContinuation { (cont: CheckedContinuation<UNAuthorizationStatus, Never>) in
+            UNUserNotificationCenter.current().getNotificationSettings { settings in
+                cont.resume(returning: settings.authorizationStatus)
+            }
+        }
         self.permissionStatus = status
     }
 
