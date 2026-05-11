@@ -7,6 +7,25 @@ import ReolinkAPI
 /// name lookup.
 public enum BcXmlBody {
 
+    /// Build the channel-routing `<Extension>` XML that goes BEFORE the body
+    /// on modern messages targeting a specific paired camera (channel) on a
+    /// Home Hub / NVR. The hub uses it to route the command to the right
+    /// downstream device. Wire layout is `AES(extension) || AES(body)` with
+    /// `payload_offset = AES(extension).count`.
+    ///
+    /// This matches `CHANNEL_EXTENSION_XML` in
+    /// `reolink_aio/baichuan/xmls.py:30`.
+    public static func channelExtension(channel: Int) -> Data {
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8" ?>
+        <Extension version="1.1">
+        <channelId>\(channel)</channelId>
+        </Extension>
+
+        """
+        return Data(xml.utf8)
+    }
+
     /// Build `<?xml ?> <body><LoginUser>...</LoginUser><LoginNet>...</LoginNet></body>`
     /// payload sent in the modern-login phase.
     public static func loginUserAndNet(usernameHash: String, passwordHash: String) -> Data {

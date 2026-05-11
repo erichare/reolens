@@ -125,15 +125,18 @@ struct RichViewerSheet: View {
     }
 
     private var rotationControls: some View {
-        let current = store.rotation(for: session.entry.id, channel: channel.channel)
+        // The rich viewer renders the MAIN stream, so its rotate control
+        // adjusts the main-stream rotation only. The grid preview (sub)
+        // has its own persisted rotation independently.
+        let current = store.rotation(for: session.entry.id, channel: channel.channel, stream: .main)
         return HStack(spacing: 6) {
             Text("\(current)°").font(.caption).foregroundStyle(.secondary).monospacedDigit()
             Button {
-                store.rotateClockwise(deviceID: session.entry.id, channel: channel.channel)
+                store.rotateClockwise(deviceID: session.entry.id, channel: channel.channel, stream: .main)
             } label: {
                 Label("Rotate", systemImage: "rotate.right")
             }
-            .help("Rotate 90° clockwise")
+            .help("Rotate the main feed 90° clockwise")
         }
     }
 }

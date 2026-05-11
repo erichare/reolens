@@ -1,5 +1,6 @@
 import SwiftUI
 import ReolinkAPI
+import ReolinkBaichuan
 
 struct CameraListView: View {
     @Environment(CameraStore.self) private var store
@@ -36,7 +37,13 @@ struct DeviceSidebarRow: View {
 
     var body: some View {
         let session = store.session(for: entry.id)
-        let channels = session?.channels ?? []
+        // Reolink Home Hub reports all 24 paired-camera slots even when most
+        // are empty. Empty slots come back with no name and no typeInfo and
+        // would otherwise pollute the sidebar with "Channel N" entries we
+        // can't actually do anything with — filter them here.
+        let channels = (session?.channels ?? []).filter { ch in
+            (ch.name?.isEmpty == false) || (ch.typeInfo?.isEmpty == false)
+        }
 
         if channels.count > 1 {
             DisclosureGroup(isExpanded: bindingForExpansion(deviceID: entry.id)) {
@@ -132,6 +139,7 @@ struct ChannelSidebarRow: View {
         let session = store.sessions[deviceID]
         let triggered = session?.aiTriggered[channel.channel] == true
             || session?.motionState[channel.channel] == true
+        let battery = session?.batteryByChannel[channel.channel]
         HStack(spacing: 6) {
             Image(systemName: channel.isAsleep ? "moon.zzz" : "video.fill")
                 .foregroundStyle(.secondary)
@@ -144,11 +152,56 @@ struct ChannelSidebarRow: View {
                     .foregroundStyle(.yellow)
                     .font(.system(size: 6))
             }
+            if let battery {
+                BatteryBadge(info: battery)
+            }
             if !channel.isOnline {
                 Image(systemName: "wifi.slash")
                     .foregroundStyle(.tertiary)
                     .font(.caption2)
             }
         }
+    }
+}
+
+/// Tiny battery glyph for paired battery cameras. The fill level uses
+/// SF Symbols' built-in `battery.0/25/50/75/100` variants; tint switches
+/// to red below 20 % and green while charging. Exact percentage is in the
+/// hover tooltip — `.help(...)` wires that up natively on macOS.
+struct BatteryBadge: View {
+    let info: BaichuanBatteryInfo
+
+    var body: some View {
+        Image(systemName: symbolName)
+            .foregroundStyle(tint)
+            .font(.caption2)
+            .help(tooltip)
+            .accessibilityLabel(tooltip)
+    }
+
+    private var symbolName: String {
+        if info.isCharging { return "battery.100.bolt" }
+        switch info.percent {
+        case 0..<13:  return "battery.0"
+        case 13..<38: return "battery.25"
+        case 38..<63: return "battery.50"
+        case 63..<88: return "battery.75"
+        default:      return "battery.100"
+        }
+    }
+
+    private var tint: Color {
+        if info.isCharging { return .green }
+        if info.isCritical { return .red }
+        if info.isLow { return .orange }
+        return .secondary
+    }
+
+    private var tooltip: String {
+        var parts = ["\(info.percent)%"]
+        if info.isCharging { parts.append("charging") }
+        else if info.isPluggedIn { parts.append("plugged in") }
+        if let t = info.temperatureC { parts.append("\(t)°C") }
+        return parts.joined(separator: " · ")
     }
 }

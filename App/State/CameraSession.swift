@@ -57,8 +57,14 @@ public final class CameraSession {
     public var aiEventLog: [TimestampedAIEvent] = []
     public static let eventLogCapacity = 500
 
+    /// Battery info per channel (only present for battery-powered cameras).
+    /// Updated from Baichuan msg 252 (`batteryInfoList`) pushes, which the
+    /// hub emits every few seconds for each paired battery cam.
+    public var batteryByChannel: [Int: BaichuanBatteryInfo] = [:]
+
     private var pollTask: Task<Void, Never>?
     private var baichuanTask: Task<Void, Never>?
+    private var batteryTask: Task<Void, Never>?
     public private(set) var baichuanClient: BaichuanClient?
 
     public init(entry: CameraEntry, credentials: CameraCredentials) {
@@ -76,10 +82,27 @@ public final class CameraSession {
             deviceInfo = info.DevInfo
 
             if info.DevInfo.isNVR {
-                let env = try await client.send(Commands.getChannelStatus(), as: ChannelStatusEnvelope.self)
-                channels = env.status
+                // Capture the raw JSON before decoding so we can see EVERY
+                // field the hub returns per channel — useful when a paired
+                // camera doesn't carry `typeInfo` and we need an alternate
+                // signal for dual-lens / battery classification.
+                let raw = try await client.sendCapturingRaw(Commands.getChannelStatus())
+                if let pretty = String(data: raw, encoding: .utf8) {
+                    log.info("GetChannelstatus raw payload (first 4 KB):\n\(pretty.prefix(4096), privacy: .public)")
+                }
+                let env = try JSONDecoder().decode([CGIResponse<ChannelStatusEnvelope>].self, from: raw)
+                channels = env.first?.value?.status ?? []
             } else {
                 channels = [ChannelStatus(channel: 0, name: info.DevInfo.name, online: 1, typeInfo: info.DevInfo.model, uid: nil, sleep: 0)]
+            }
+            // Dump the per-channel `typeInfo` so we can see exactly what
+            // string Reolink reports for each paired camera. This is the
+            // only field we use to recognize dual-lens / battery hardware,
+            // and Reolink changes its naming across firmware versions —
+            // logging it makes it cheap to add new model codes when a
+            // camera doesn't get classified correctly.
+            for ch in channels {
+                log.info("Channel \(ch.channel) name=\(ch.name ?? "<none>", privacy: .public) typeInfo=\(ch.typeInfo ?? "<nil>", privacy: .public) sleep=\(ch.sleep ?? 0) online=\(ch.online)")
             }
             status = .connected
             startEventPolling()
@@ -94,6 +117,8 @@ public final class CameraSession {
         pollTask = nil
         baichuanTask?.cancel()
         baichuanTask = nil
+        batteryTask?.cancel()
+        batteryTask = nil
         if let baichuanClient {
             await baichuanClient.close()
         }
@@ -121,12 +146,34 @@ public final class CameraSession {
                 try await client.connect()
                 let deviceName = try await client.login()
                 log.info("Baichuan login OK device=\(deviceName, privacy: .public)")
+                // Spin up the battery-info reader alongside alarm events.
+                // Both consume the same unsolicited push stream — the hub
+                // multiplexes msgID=33 (motion) and msgID=252 (battery) on
+                // the single TCP connection it already gave us.
+                self.startBatterySubscriber(client: client)
                 let events = try await client.subscribeToAlarmEvents()
                 for await event in events {
                     self.recordAIEvent(event)
                 }
             } catch {
                 log.warning("Baichuan task ended: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    private func startBatterySubscriber(client: BaichuanClient) {
+        batteryTask?.cancel()
+        batteryTask = Task { @MainActor [weak self] in
+            let stream = await client.subscribeToBatteryInfo()
+            for await info in stream {
+                guard let self else { return }
+                let prior = self.batteryByChannel[info.channelID]
+                self.batteryByChannel[info.channelID] = info
+                // Log transitions to make low-battery diagnosis easy without
+                // spamming on every push (~once per few seconds per cam).
+                if prior?.percent != info.percent {
+                    log.info("Battery ch=\(info.channelID) \(info.percent)% \(info.chargeStatus, privacy: .public)\(info.isPluggedIn ? " [plugged]" : "")")
+                }
             }
         }
     }
@@ -170,6 +217,32 @@ public final class CameraSession {
     public func snapshotURL(channel: Int) async -> URL? {
         let token = await client.currentToken?.name
         return streamURLs.snapshot(channel: channel, token: token)
+    }
+
+    /// Authoritative "is this a battery-powered camera" check. The hub
+    /// pushes msg 252 (`batteryInfoList`) for every paired battery cam, so
+    /// presence of an entry in `batteryByChannel` is ground truth. We fall
+    /// back to the `typeInfo` string heuristic for the moment between
+    /// session connect and the first push.
+    public func isBatteryPowered(channel: Int) -> Bool {
+        if batteryByChannel[channel] != nil { return true }
+        return channels.first(where: { $0.channel == channel })?.isBatteryPowered ?? false
+    }
+
+    /// Optional manual override consulted before the heuristic. When the
+    /// hub's `GetChannelstatus` returns `typeInfo: nil` for paired cameras
+    /// (common on Home Hub Pro firmware), the user can flip a toggle in
+    /// channel settings to force dual-lens rendering. This closure is set
+    /// up from `ContentView` at session-binding time.
+    public var dualLensOverride: (@MainActor (Int) -> Bool)?
+
+    /// Authoritative "does this camera have two physical lenses on one
+    /// stream" check. Checks the user-supplied manual override first, then
+    /// the `typeInfo` heuristic on `ChannelStatus`.
+    public func isDualLens(channel: Int) -> Bool {
+        if dualLensOverride?(channel) == true { return true }
+        guard let ch = channels.first(where: { $0.channel == channel }) else { return false }
+        return ch.isDualLens
     }
 
     private func startEventPolling() {

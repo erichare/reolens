@@ -59,14 +59,33 @@ public struct ChannelStatus: Sendable, Codable, Hashable, Identifiable {
     public var isOnline: Bool { online == 1 }
     public var isAsleep: Bool { sleep == 1 }
 
-    /// Reolink Duo (RLC-81xA Duo, Duo 2, Duo 3, Duo PoE, TrackMix) cameras
-    /// encode two physical lenses into a single wide frame (typically 8:3 or
-    /// 16:5). Detection is heuristic — the camera identifies via the `typeInfo`
-    /// field returned in `GetChannelstatus`. When true, the UI should render
-    /// the tile with the natural aspect instead of cropping to 16:9.
+    /// Reolink Duo (RLC-81xA Duo, Duo 2, Duo 3, Duo PoE, TrackMix), Argus 4 /
+    /// Argus 4 Pro, and DualTag cameras encode two physical lenses into a
+    /// single wide frame (typically 8:3 or 32:9). Detection is heuristic —
+    /// `typeInfo` from `GetChannelstatus` carries the model code; we
+    /// normalize whitespace/case before matching because Reolink isn't
+    /// consistent about either across firmware revisions. When true, the
+    /// UI should render the tile with the natural aspect instead of
+    /// cropping to 16:9.
     public var isDualLens: Bool {
-        let s = (typeInfo ?? "").lowercased()
-        return s.contains("duo") || s.contains("trackmix") || s.contains("dualtag")
+        let s = (typeInfo ?? "").lowercased().replacingOccurrences(of: " ", with: "")
+        // Marketing names (when the firmware reports them):
+        if s.contains("duo")
+            || s.contains("trackmix")
+            || s.contains("dualtag")
+            || s.contains("argus4")          // Argus 4 / Argus 4 Pro
+            || s.contains("argus_4") {
+            return true
+        }
+        // Internal Reolink model codes for dual-lens hardware. The hub's
+        // `GetChannelstatus` reports these instead of the marketing name on
+        // most firmware revisions — `Argus4Pro_IPC` for the Kit, `A4Pro` /
+        // `A4_Pro` on older payloads, `B400` for OEM Argus 4 boards, and
+        // `RLC-A4P` for the wired-PoE sibling. Add more as Reolink ships
+        // new dual-lens models.
+        let dualLensCodes = ["a4pro", "a4_pro", "b400", "rlc-a4p", "rlca4p"]
+        for code in dualLensCodes where s.contains(code) { return true }
+        return false
     }
 
     /// Heuristic identification of battery-powered cameras. We can't rely on
@@ -74,13 +93,19 @@ public struct ChannelStatus: Sendable, Codable, Hashable, Identifiable {
     /// (e.g., responding to a motion event) reports `sleep == 0`. Battery
     /// cameras shouldn't auto-stream because every connection drains the
     /// battery and the camera goes back to sleep moments later anyway.
+    ///
+    /// This is a fallback only — at runtime, prefer
+    /// `CameraSession.isBatteryPowered(channel:)`, which consults live
+    /// Baichuan msg-252 battery data and is authoritative.
     public var isBatteryPowered: Bool {
-        let s = (typeInfo ?? "").lowercased()
+        let s = (typeInfo ?? "").lowercased().replacingOccurrences(of: " ", with: "")
         return s.contains("argus")
-            || s.contains("go")
+            || s.contains("go")            // Reolink Go (LTE battery)
             || s.contains("battery")
-            || s.contains("wireguard")  // older Reolink internal label
+            || s.contains("wirefree")       // Reolink's marketing term for battery
+            || s.contains("wireguard")      // older Reolink internal label
             || s.contains("pir")
+            || s.contains("solar")          // solar-charged battery cams
     }
 }
 

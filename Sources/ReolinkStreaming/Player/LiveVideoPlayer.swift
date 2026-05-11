@@ -24,6 +24,10 @@ public final class LiveVideoPlayer {
 
     public let displayLayer: AVSampleBufferDisplayLayer
     public private(set) var state: LivePlayerState = .idle
+    /// Natural pixel size of the decoded video, observed from the first
+    /// `CMSampleBuffer` we enqueue. `nil` until decoding starts. Useful for
+    /// detecting dual-lens cameras (stitched frames at ~32:9 = 3.55).
+    public private(set) var naturalSize: CGSize?
 
     /// Clockwise rotation in degrees applied by the host view.
     public var rotationDegrees: Int = 0
@@ -295,6 +299,13 @@ public final class LiveVideoPlayer {
         }
         displayLayer.enqueue(sample)
         enqueuedSampleCount += 1
+        // Publish the decoded natural size once. Used by the UI to auto-mark
+        // dual-lens cameras (which produce stitched ~32:9 frames).
+        if naturalSize == nil, let fd = CMSampleBufferGetFormatDescription(sample) {
+            let dims = CMVideoFormatDescriptionGetDimensions(fd)
+            naturalSize = CGSize(width: Int(dims.width), height: Int(dims.height))
+            log.info("First decoded frame: \(dims.width)×\(dims.height)")
+        }
         // Log first sample + every 60 thereafter so we can see continuous
         // forward progress in the log stream.
         if enqueuedSampleCount == 1 || enqueuedSampleCount % 60 == 0 {
