@@ -60,7 +60,7 @@ public enum BcMessageID {
 
 /// Encryption protocol negotiated during login. Returned by the server in the
 /// low byte of the legacy login response_code (high byte is `0xDD`).
-public enum BcEncryptionLevel: UInt8 {
+public enum BcEncryptionLevel: UInt8, Sendable {
     case unencrypted = 0x00
     case bcEncrypt = 0x01
     case aes = 0x02

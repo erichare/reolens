@@ -1,0 +1,61 @@
+# SwiftLint config. Goal: catch genuinely useful issues (force-tries,
+# unused imports, dodgy concurrency patterns) without nagging on
+# stylistic minutiae that don't matter for a small Swift 6 project.
+
+included:
+  - App
+  - Sources
+  - Tests
+
+excluded:
+  - .build
+  - Tests/**/*.generated.swift
+
+# Rules turned off because they fight idiomatic Swift / our codebase
+# (long files for cohesive Reolink modules, heavy view bodies in
+# SwiftUI, named-arg-heavy CGI command builders).
+disabled_rules:
+  - line_length
+  - file_length
+  - type_body_length
+  - function_body_length
+  - large_tuple
+  - identifier_name           # we use short Reolink field names like `os`, `ai`
+  - todo                      # TODOs are fine; we don't want lint noise
+  - trailing_comma            # SwiftPM source has mixed trailing-comma style
+
+# Opt-in rules that are actually worth turning on for a Swift 6
+# project. These cover the classes of bug that bite us in practice:
+# force-unwraps, force-tries, missed @Sendable, escaping closures
+# capturing self strongly by accident.
+opt_in_rules:
+  - empty_count
+  - empty_string
+  - explicit_init
+  - first_where
+  - force_unwrapping
+  - last_where
+  - missing_docs
+  - reduce_into
+  - redundant_nil_coalescing
+  - sorted_first_last
+  - unused_import
+  - unused_declaration
+  - vertical_whitespace_closing_braces
+  - vertical_whitespace_opening_braces
+  - yoda_condition
+
+# Most of the "missing_docs" hits are intentional in private code, so
+# limit it to warning severity rather than error.
+missing_docs:
+  warning: open, public
+
+force_unwrapping:
+  severity: warning
+
+force_try:
+  severity: warning
+
+cyclomatic_complexity:
+  warning: 15
+  error: 25
