@@ -104,6 +104,13 @@ jobs:
         run: |
           /usr/libexec/PlistBuddy -c "Set :SUPublicEDKey ${SPARKLE_PUBLIC_KEY}" App/Info.plist
 
+      # Scripts/build-app.sh's MAC_APP_DIRECT profile-fetch step calls
+      # Scripts/asc_ensure_profile.py, which needs pyjwt + cryptography
+      # to JWT-sign requests to the App Store Connect API. The iOS job
+      # installs the same pair downstream.
+      - name: Install Python deps for ASC profile fetch
+        run: pip3 install --break-system-packages pyjwt cryptography
+
       - name: Build app bundle (release, signed)
         run: ./Scripts/build-app.sh -c release
 
