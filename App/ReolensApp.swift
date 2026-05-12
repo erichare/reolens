@@ -120,9 +120,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if isSmokeTest {
             // Give SwiftUI a runloop spin to construct the WindowGroup,
-            // then exit. 2 seconds is plenty for a no-network launch.
+            // then exit. We bypass `NSApp.terminate(_:)` and call
+            // `exit(0)` directly — terminate() can stall when the
+            // SwiftUI scene hasn't fully wired up its delegates (which
+            // is exactly the state a 2-second smoke launch is in), and
+            // for a smoke test we just need a clean process-exit signal,
+            // not graceful AppKit teardown.
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                NSApp.terminate(nil)
+                exit(0)
             }
         }
     }
