@@ -54,7 +54,10 @@ struct SettingsView: View {
             }
 
             Section("About") {
-                LabeledContent("Version", value: "0.2.0")
+                // Read from Bundle.main so the version reflects whatever
+                // marketing version Xcode shipped — keeps the Settings
+                // tab from drifting out of sync with the actual build.
+                LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—")
                 LabeledContent("Build", value: Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—")
                 Link("Project on GitHub", destination: URL(string: "https://github.com/jestatsio/reolens")!)
                 Link("Report an issue", destination: URL(string: "https://github.com/jestatsio/reolens/issues")!)
