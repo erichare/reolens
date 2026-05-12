@@ -2,9 +2,14 @@ import Foundation
 import Observation
 import UserNotifications
 import OSLog
-import AppKit
 import ReolinkAPI
 import ReolinkBaichuan
+
+#if os(macOS)
+import AppKit
+#elseif os(iOS) || os(tvOS) || os(visionOS)
+import UIKit
+#endif
 
 private let log = Logger(subsystem: "com.reolens.app", category: "notifier")
 
@@ -133,9 +138,19 @@ public final class EventNotifier {
     /// user can flip the OS-level permission when our `requestPermission`
     /// gets a previously-denied no-op.
     public func openSystemSettings() {
+        #if os(macOS)
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.notifications") {
             NSWorkspace.shared.open(url)
         }
+        #elseif os(iOS) || os(tvOS) || os(visionOS)
+        if let url = URL(string: UIApplication.openNotificationSettingsURLString) {
+            Task { @MainActor in
+                if UIApplication.shared.canOpenURL(url) {
+                    UIApplication.shared.open(url)
+                }
+            }
+        }
+        #endif
     }
 
     // MARK: - Posting

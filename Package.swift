@@ -4,12 +4,14 @@ import PackageDescription
 let package = Package(
     name: "Reolens",
     platforms: [
-        .macOS(.v14)
+        .macOS(.v14),
+        .iOS(.v18)
     ],
     products: [
         .library(name: "ReolinkAPI", targets: ["ReolinkAPI"]),
         .library(name: "ReolinkStreaming", targets: ["ReolinkStreaming"]),
         .library(name: "ReolinkBaichuan", targets: ["ReolinkBaichuan"]),
+        .library(name: "AppShared", targets: ["AppShared"]),
         .executable(name: "Reolens", targets: ["Reolens"])
     ],
     dependencies: [
@@ -55,12 +57,25 @@ let package = Package(
                 .enableUpcomingFeature("ExistentialAny")
             ]
         ),
+        .target(
+            // Cross-platform app domain layer shared by the macOS app and
+            // the iPad/iPhone app: camera persistence, sessions, discovery,
+            // notifications, downloads, Keychain. Anything that does NOT
+            // require AppKit/UIKit lives here.
+            name: "AppShared",
+            dependencies: ["ReolinkAPI", "ReolinkBaichuan"],
+            path: "Sources/AppShared",
+            swiftSettings: [
+                .enableUpcomingFeature("ExistentialAny")
+            ]
+        ),
         .executableTarget(
             name: "Reolens",
             dependencies: [
                 "ReolinkAPI",
                 "ReolinkStreaming",
                 "ReolinkBaichuan",
+                "AppShared",
                 .product(name: "Sparkle", package: "Sparkle")
             ],
             path: "App",

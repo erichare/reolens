@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import ReolinkAPI
+import AppShared
 
 /// Borderless full-screen viewer — what "any video app" does for
 /// fullscreen mode. Instead of fighting SwiftUI's navigation stack

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import AppShared
 
 @main
 struct ReolensApp: App {

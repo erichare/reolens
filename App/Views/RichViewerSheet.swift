@@ -1,6 +1,7 @@
 import SwiftUI
 import ReolinkAPI
 import ReolinkBaichuan
+import AppShared
 
 /// Modal sheet wrapper around `ChannelDetailContent`, used when a grid
 /// tile is clicked. The same camera UI renders inline (without the sheet

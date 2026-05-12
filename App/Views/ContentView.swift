@@ -1,4 +1,5 @@
 import SwiftUI
+import AppShared
 
 struct ContentView: View {
     @Environment(CameraStore.self) private var store

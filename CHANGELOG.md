@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] — TBD
+
+First multi-platform release. Reolens now ships natively for macOS,
+iPad, and iPhone from a single repository, with shared protocol and
+domain code.
+
+### Added
+- **iPad and iPhone apps** — true native SwiftUI experience for both
+  size classes (not a Catalyst port). Same brand and design cues as
+  the Mac app, adapted to touch idioms: TabView on iPhone,
+  three-column `NavigationSplitView` on iPad, swipe actions, and
+  hold-to-talk talkback. iOS 18 minimum.
+- **iCloud Drive sync** — camera list, grid layout, channel order,
+  rotation, dual-lens overrides, and codec preferences sync across
+  all your devices via the `iCloud.com.reolens.Reolens` ubiquity
+  container. Passwords stay per-device in Keychain (never leave the
+  device they were entered on). Falls back to local-only storage
+  when iCloud is unavailable.
+- New `AppShared` SPM library that holds the cross-platform domain
+  layer (camera persistence, sessions, discovery, notifications,
+  Reolink Keychain) — consumed by both the macOS and iOS app
+  targets so platform-specific UI does not duplicate logic.
+
+### Changed
+- `Sources/ReolinkStreaming/LiveVideoView` is now multi-platform
+  (`NSViewRepresentable` on macOS, `UIViewRepresentable` on iOS) so
+  the existing RTSP/RTP/VideoToolbox stack renders identically on
+  both platforms with no logic changes.
+- `Package.swift` now declares `.iOS(.v18)` alongside `.macOS(.v14)`.
+
 ## [0.1.1] — TBD
 
 Hotfix release.

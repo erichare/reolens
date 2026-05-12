@@ -184,6 +184,39 @@ jobs:
           path: Reolens.app
           if-no-files-found: error
 
+  # iOS app build. The `.xcodeproj` for the iPad/iPhone app is xcodegen-
+  # generated from `AppiOS/project.yml` (only the spec is committed),
+  # so CI regenerates it then runs an unsigned Simulator build.
+  # Signing/TestFlight upload lives in release.yml on tag push.
+  ios-build:
+    name: Build iOS app (Simulator)
+    runs-on: macos-15
+    timeout-minutes: 20
+    needs: build-test
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Select Xcode 16
+        run: sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: AppiOS
+        run: xcodegen generate
+
+      - name: Build for iOS Simulator (unsigned)
+        run: |
+          xcodebuild \
+            -project AppiOS/ReolensiOS.xcodeproj \
+            -scheme ReolensiOS \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build-ios \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
   # SwiftLint runs separately from the build so a style warning never
   # blocks code that compiles and tests cleanly. Failures still surface
   # in the PR check list — they just don't fail the whole pipeline.

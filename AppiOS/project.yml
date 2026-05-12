@@ -1,0 +1,99 @@
+name: ReolensiOS
+options:
+  bundleIdPrefix: com.reolens
+  deploymentTarget:
+    iOS: "18.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    ENABLE_HARDENED_RUNTIME: YES
+packages:
+  Reolens:
+    path: ..
+targets:
+  ReolensiOS:
+    type: application
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: Sources
+    resources:
+      - path: Resources/Assets.xcassets
+    info:
+      path: Resources/Info.plist
+      properties:
+        CFBundleDisplayName: Reolens
+        CFBundleShortVersionString: "0.2.0"
+        CFBundleVersion: "1"
+        LSRequiresIPhoneOS: true
+        UILaunchScreen: {}
+        UIRequiresFullScreen: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        # Required for any LAN scan / Bonjour discovery on iOS 14+. Without
+        # this string the OS silently denies discovery and RTSP connections
+        # to camera IPs on the local network.
+        NSLocalNetworkUsageDescription: "Reolens connects to Reolink cameras on your local Wi-Fi network for live view and recordings."
+        NSBonjourServices:
+          - _http._tcp
+          - _rtsp._tcp
+        # Talkback (two-way audio) records mic and streams it to the camera
+        # over Baichuan MSG_ID_TALK. Audio background mode lets a single
+        # live-view tile keep its stream open while the app is backgrounded
+        # (PiP picks this up too).
+        NSMicrophoneUsageDescription: "Reolens uses the microphone to talk back through your Reolink camera's two-way audio."
+        UIBackgroundModes:
+          - audio
+        # Reolink cameras on LAN serve HTTP/HTTPS with self-signed certs.
+        # Matches the macOS app's ATS exception; both are limited to local
+        # networking — no public-Internet HTTP traffic is intended.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+          NSAllowsArbitraryLoads: true
+    entitlements:
+      path: Resources/ReolensiOS.entitlements
+      properties:
+        com.apple.developer.icloud-container-identifiers:
+          - "iCloud.com.reolens.Reolens"
+        com.apple.developer.ubiquity-container-identifiers:
+          - "iCloud.com.reolens.Reolens"
+        com.apple.developer.icloud-services:
+          - CloudDocuments
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.reolens.Reolens.iOS
+        PRODUCT_NAME: Reolens
+        MARKETING_VERSION: "0.2.0"
+        CURRENT_PROJECT_VERSION: "1"
+        # Same Apple Developer team as the macOS app. Xcode's automatic
+        # signing uses this to fetch / create the Apple Distribution
+        # certificate and the App Store provisioning profile on first
+        # archive. CI overrides via -allowProvisioningUpdates anyway.
+        DEVELOPMENT_TEAM: 5M9UT7VQ8Q
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_PREVIEWS: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        GENERATE_INFOPLIST_FILE: NO
+    dependencies:
+      - package: Reolens
+        product: ReolinkAPI
+      - package: Reolens
+        product: ReolinkStreaming
+      - package: Reolens
+        product: ReolinkBaichuan
+      - package: Reolens
+        product: AppShared

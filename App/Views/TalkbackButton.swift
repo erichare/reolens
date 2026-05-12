@@ -1,5 +1,6 @@
 import SwiftUI
 import ReolinkBaichuan
+import AppShared
 
 /// Push-to-talk button. Holding the button captures the Mac mic, ADPCM-encodes
 /// at 16 kHz mono, and streams to the camera via Baichuan's `MSG_ID_TALK`.

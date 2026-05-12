@@ -1,5 +1,6 @@
 import SwiftUI
 import ReolinkAPI
+import AppShared
 
 struct PTZControlBar: View {
     let session: CameraSession

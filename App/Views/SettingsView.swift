@@ -1,5 +1,6 @@
 import SwiftUI
 import UserNotifications
+import AppShared
 
 struct SettingsView: View {
     @Environment(CameraStore.self) private var store

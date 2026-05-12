@@ -21,3 +21,13 @@ sparkle_ed_private_key
 
 # Screenshot raw masters (pre-blur). Only the processed copies under docs/screenshots/ ship.
 docs/screenshots/raw/
+
+# iOS app Xcode project is xcodegen-generated from AppiOS/project.yml.
+# We commit project.yml (the source of truth) and regenerate the .xcodeproj
+# locally / in CI via `cd AppiOS && xcodegen`. Mirrors how Tuist-style
+# projects are usually treated.
+AppiOS/ReolensiOS.xcodeproj/
+
+# iOS build artifacts — archives, exported IPAs, etc. Produced by
+# Scripts/build-ios.sh.
+build-ios/

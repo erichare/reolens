@@ -14,6 +14,23 @@
     <array>
         <string>com.reolens.Reolens</string>
     </array>
+    <!-- iCloud Drive sync for cameras.json shared across Mac/iPad/iPhone.
+         Container is "iCloud.com.reolens.Reolens"; the JSON lives under
+         the container's Documents/ folder so it shows up in the Files
+         app and `FileManager.url(forUbiquityContainerIdentifier:)` can
+         resolve it. Passwords stay per-device in Keychain. -->
+    <key>com.apple.developer.icloud-container-identifiers</key>
+    <array>
+        <string>iCloud.com.reolens.Reolens</string>
+    </array>
+    <key>com.apple.developer.ubiquity-container-identifiers</key>
+    <array>
+        <string>iCloud.com.reolens.Reolens</string>
+    </array>
+    <key>com.apple.developer.icloud-services</key>
+    <array>
+        <string>CloudDocuments</string>
+    </array>
     <!-- Allow loading the embedded Sparkle.framework. Hardened Runtime's
          Library Validation otherwise requires every loaded library to be
          signed by Apple or by the same Team ID as the main app. With ad-hoc

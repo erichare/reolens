@@ -1,5 +1,6 @@
 import SwiftUI
 import ReolinkAPI
+import AppShared
 
 struct AddCameraSheet: View {
     let onAdd: (CameraEntry, String) -> Void

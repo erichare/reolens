@@ -25,13 +25,13 @@ private let log = Logger(subsystem: "com.reolens.app", category: "recordings")
 /// which feels smooth in the UI.
 @MainActor
 @Observable
-final class RecordingDownloader {
-    var state: State = .idle
-    var bytesReceived: Int64 = 0
-    var totalBytes: Int64 = 0
-    var localURL: URL?
+package final class RecordingDownloader {
+    package var state: State = .idle
+    package var bytesReceived: Int64 = 0
+    package var totalBytes: Int64 = 0
+    package var localURL: URL?
 
-    enum State: Equatable {
+    package enum State: Equatable {
         case idle
         case downloading
         case ready
@@ -55,7 +55,7 @@ final class RecordingDownloader {
     private var legacyTask: URLSessionDownloadTask?
     private var legacyObservations: [NSKeyValueObservation] = []
 
-    init() {
+    package init() {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 1800
@@ -66,7 +66,7 @@ final class RecordingDownloader {
         self.session = URLSession(configuration: config)
     }
 
-    func start(url: URL) {
+    package func start(url: URL) {
         cancel()
         state = .downloading
         bytesReceived = 0
@@ -79,7 +79,7 @@ final class RecordingDownloader {
         }
     }
 
-    func cancel() {
+    package func cancel() {
         workTask?.cancel()
         workTask = nil
         legacyTask?.cancel()
@@ -88,7 +88,7 @@ final class RecordingDownloader {
         legacyObservations.removeAll()
     }
 
-    func cleanupTempFile() {
+    package func cleanupTempFile() {
         if let url = localURL {
             try? FileManager.default.removeItem(at: url)
             localURL = nil
@@ -414,15 +414,15 @@ final class RecordingDownloader {
 /// single seek-and-write under the actor's isolation.
 private actor OffsetWriter {
     private var handle: FileHandle?
-    init(handle: FileHandle) { self.handle = handle }
+    package init(handle: FileHandle) { self.handle = handle }
 
-    func write(_ data: Data, at offset: Int64) throws {
+    package func write(_ data: Data, at offset: Int64) throws {
         guard let handle else { throw URLError(.cancelled) }
         try handle.seek(toOffset: UInt64(offset))
         try handle.write(contentsOf: data)
     }
 
-    func close() {
+    package func close() {
         try? handle?.close()
         handle = nil
     }
@@ -432,7 +432,7 @@ private actor OffsetWriter {
 /// Returns the new running total so the caller can publish it.
 private actor ProgressCounter {
     private var total: Int64 = 0
-    func add(_ n: Int64) -> Int64 {
+    package func add(_ n: Int64) -> Int64 {
         total += n
         return total
     }

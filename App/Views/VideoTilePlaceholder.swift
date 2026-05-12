@@ -1,5 +1,6 @@
 import SwiftUI
 import ReolinkAPI
+import AppShared
 
 /// Placeholder tile that displays:
 /// - Periodic JPEG snapshots (cheap, works without any RTSP integration)

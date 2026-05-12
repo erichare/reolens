@@ -1,6 +1,7 @@
 import SwiftUI
 import ReolinkAPI
 import ReolinkBaichuan
+import AppShared
 
 struct CameraListView: View {
     @Environment(CameraStore.self) private var store

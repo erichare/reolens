@@ -1,10 +1,10 @@
 import Foundation
 import Security
 
-enum Keychain {
+package enum Keychain {
     private static let service = "com.reolens.cameraPassword"
 
-    static func set(password: String, for id: UUID) {
+    package static func set(password: String, for id: UUID) {
         let account = id.uuidString
         guard let data = password.data(using: .utf8) else { return }
         deletePassword(for: id)
@@ -18,7 +18,7 @@ enum Keychain {
         SecItemAdd(query as CFDictionary, nil)
     }
 
-    static func password(for id: UUID) -> String? {
+    package static func password(for id: UUID) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -33,7 +33,7 @@ enum Keychain {
         return str
     }
 
-    static func deletePassword(for id: UUID) {
+    package static func deletePassword(for id: UUID) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
