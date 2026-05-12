@@ -35,47 +35,54 @@ import Sparkle
 @MainActor
 @Observable
 public final class UpdaterController {
-    /// The Sparkle controller. Always constructed so the menu item has
-    /// something to bind to; `startingUpdater` is conditional.
-    private let controller: SPUStandardUpdaterController
+    /// The Sparkle controller. Optional because `--smoke-test` and
+    /// "no public key configured" both skip construction entirely —
+    /// that codepath touches Sparkle's `SPUUpdater`, which has crashed
+    /// CI smoke launches even with `startingUpdater: false`. We
+    /// optimistically construct it only when both gates pass.
+    private let controller: SPUStandardUpdaterController?
 
     /// Mirrors Sparkle's `canCheckForUpdates` so the menu item can bind
     /// to it through SwiftUI's observation system. Always `false` when
-    /// the updater wasn't started (empty `SUPublicEDKey`), regardless of
-    /// what Sparkle would otherwise report.
+    /// the updater wasn't constructed.
     public private(set) var canCheckForUpdates: Bool
 
     /// Whether Sparkle's background scheduler is running. False on
-    /// dev/CI builds (no `SUPublicEDKey` injected); true once the
-    /// release workflow injects the real public key at build time.
+    /// dev/CI builds (no `SUPublicEDKey` injected) and any
+    /// `--smoke-test` launch; true once the release workflow injects
+    /// the real public key at build time.
     public let isUpdaterEnabled: Bool
 
     private var observation: NSKeyValueObservation?
 
     public init() {
         let publicKey = (Bundle.main.infoDictionary?["SUPublicEDKey"] as? String) ?? ""
-        let enabled = !publicKey.isEmpty
+        let isSmokeTest = CommandLine.arguments.contains("--smoke-test")
+        let enabled = !publicKey.isEmpty && !isSmokeTest
         self.isUpdaterEnabled = enabled
-        self.controller = SPUStandardUpdaterController(
-            startingUpdater: enabled,
-            updaterDelegate: nil,
-            userDriverDelegate: nil
-        )
-        self.canCheckForUpdates = enabled && controller.updater.canCheckForUpdates
         if enabled {
-            self.observation = controller.updater.observe(\.canCheckForUpdates, options: [.new]) { [weak self] _, change in
+            let ctl = SPUStandardUpdaterController(
+                startingUpdater: true,
+                updaterDelegate: nil,
+                userDriverDelegate: nil
+            )
+            self.controller = ctl
+            self.canCheckForUpdates = ctl.updater.canCheckForUpdates
+            self.observation = ctl.updater.observe(\.canCheckForUpdates, options: [.new]) { [weak self] _, change in
                 guard let value = change.newValue else { return }
                 Task { @MainActor in
                     self?.canCheckForUpdates = value
                 }
             }
+        } else {
+            self.controller = nil
+            self.canCheckForUpdates = false
         }
     }
 
     /// User-initiated update check (always shows feedback).
     /// No-op when the updater is disabled.
     public func checkForUpdates() {
-        guard isUpdaterEnabled else { return }
-        controller.checkForUpdates(nil)
+        controller?.checkForUpdates(nil)
     }
 }

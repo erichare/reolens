@@ -131,28 +131,40 @@ jobs:
       # Boot the built .app with the --smoke-test flag, which constructs
       # the SwiftUI scene tree (so any binding/observation regression
       # crashes here) and exits cleanly within ~2 s. We give the timeout
-      # 30 s of slack for cold-launch on a fresh CI runner.
+      # 30 s of slack for cold-launch on a fresh CI runner. On failure
+      # we dump captured stdout/stderr and any fresh crash reports —
+      # otherwise `Trace/BPT trap: 5` is all we get and that's not enough
+      # to debug a remote macOS process.
       - name: Smoke-test launch
         run: |
-          set -euo pipefail
-          # Capture stdout/stderr in case anything's interesting on
-          # failure; ignore on success.
+          set -uo pipefail  # NOTE: no -e so we can dump diagnostics on failure
           OUT=$(mktemp)
-          # macOS `timeout` isn't installed; use `gtimeout` if Homebrew
-          # coreutils is around, otherwise fall back to a backgrounded
-          # job we kill ourselves.
+          EXIT=0
           if command -v gtimeout >/dev/null 2>&1; then
-            gtimeout 30s ./Reolens.app/Contents/MacOS/Reolens --smoke-test >"${OUT}" 2>&1
+            gtimeout 30s ./Reolens.app/Contents/MacOS/Reolens --smoke-test >"${OUT}" 2>&1 || EXIT=$?
           else
             ./Reolens.app/Contents/MacOS/Reolens --smoke-test >"${OUT}" 2>&1 &
             PID=$!
             (sleep 30 && kill -0 "${PID}" 2>/dev/null && kill "${PID}") &
             WAITER=$!
-            wait "${PID}"
-            EXIT=$?
+            wait "${PID}" || EXIT=$?
             kill "${WAITER}" 2>/dev/null || true
-            exit "${EXIT}"
           fi
+          echo "==> smoke-test exit code: ${EXIT}"
+          echo "----- BEGIN APP OUTPUT -----"
+          cat "${OUT}" || echo "(no output captured)"
+          echo "----- END APP OUTPUT -----"
+          if [ "${EXIT}" -ne 0 ]; then
+            echo "==> recent Reolens crash reports:"
+            find ~/Library/Logs/DiagnosticReports/ -name 'Reolens*' -mmin -5 2>/dev/null \
+              | head -3 \
+              | while read -r f; do
+                  echo "----- ${f} -----"
+                  head -200 "${f}"
+                  echo "----- end ${f} -----"
+                done
+          fi
+          exit "${EXIT}"
 
       - name: Upload .app artifact
         uses: actions/upload-artifact@v7
