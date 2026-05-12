@@ -93,11 +93,27 @@ public final class EventNotifier {
     /// actor boundary, not the entire `UNNotificationSettings` object
     /// (which is non-Sendable and trips Swift 6's strict-concurrency
     /// checker when crossing into the MainActor-isolated caller).
+    ///
+    /// **Why the explicit `@Sendable` typed handler.** Without the
+    /// explicit type, Swift 6.2's "approachable concurrency" infers the
+    /// completion-handler closure as inheriting the caller's isolation
+    /// — `@MainActor` here, since this method is `@MainActor`. But
+    /// `UNUserNotificationCenter` actually invokes the callback on its
+    /// own private serial queue (`com.apple.usernotifications.UNUser
+    /// NotificationServiceConnection.call-out`). When the closure body
+    /// runs on that queue, the runtime's actor-isolation check
+    /// (`swift_task_isCurrentExecutorWithFlags`) fires SIGTRAP and the
+    /// app crashes on launch. Declaring the handler as
+    /// `@Sendable (UNNotificationSettings) -> Void` opts out of caller
+    /// isolation; UN can call us back on any queue and we just hop the
+    /// captured `CheckedContinuation` back to the awaiting MainActor
+    /// (which is what `cont.resume` does internally).
     public func refreshPermissionStatus() async {
         let status = await withCheckedContinuation { (cont: CheckedContinuation<UNAuthorizationStatus, Never>) in
-            UNUserNotificationCenter.current().getNotificationSettings { settings in
+            let handler: @Sendable (UNNotificationSettings) -> Void = { settings in
                 cont.resume(returning: settings.authorizationStatus)
             }
+            UNUserNotificationCenter.current().getNotificationSettings(completionHandler: handler)
         }
         self.permissionStatus = status
     }
@@ -175,10 +191,16 @@ public final class EventNotifier {
         // notification queue, never inspects the request from another
         // isolation context, and just hands us back an optional error.
         // `(any Error)?` because the target uses `ExistentialAny`.
+        //
+        // The handler is explicitly typed `@Sendable` so Swift 6.2
+        // doesn't infer it as inheriting `@MainActor` — see the long
+        // comment on `refreshPermissionStatus` for what goes wrong when
+        // it does.
         let postError: (any Error)? = await withCheckedContinuation { (cont: CheckedContinuation<(any Error)?, Never>) in
-            UNUserNotificationCenter.current().add(request) { error in
+            let handler: @Sendable ((any Error)?) -> Void = { error in
                 cont.resume(returning: error)
             }
+            UNUserNotificationCenter.current().add(request, withCompletionHandler: handler)
         }
         if let postError {
             log.warning("Couldn't post notification: \(postError.localizedDescription, privacy: .public)")
