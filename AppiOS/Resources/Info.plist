@@ -19,9 +19,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.2.3</string>
+	<string>0.3.0</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>2</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSAppTransportSecurity</key>
@@ -40,6 +40,8 @@
 	<string>Reolens connects to Reolink cameras on your local Wi-Fi network for live view and recordings.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Reolens uses the microphone to talk back through your Reolink camera's two-way audio.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Reolens saves snapshots of your camera feeds to Photos when you tap Save Snapshot.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
@@ -60,6 +62,33 @@
 		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.reolens.channelDrag</string>
+			<key>UTTypeDescription</key>
+			<string>Reolens channel drag payload</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict/>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.reolens.deviceDrag</string>
+			<key>UTTypeDescription</key>
+			<string>Reolens device drag payload</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict/>
+		</dict>
 	</array>
 </dict>
 </plist>

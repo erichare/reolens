@@ -29,8 +29,8 @@ targets:
       path: Resources/Info.plist
       properties:
         CFBundleDisplayName: Reolens
-        CFBundleShortVersionString: "0.2.3"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: "0.3.0"
+        CFBundleVersion: "2"
         # iOS 11+ requires apps using asset-catalog icons to also
         # declare CFBundleIconName so the OS / App Store knows which
         # icon set to consult at runtime. Without this key, ASC's
@@ -64,8 +64,27 @@ targets:
         # live-view tile keep its stream open while the app is backgrounded
         # (PiP picks this up too).
         NSMicrophoneUsageDescription: "Reolens uses the microphone to talk back through your Reolink camera's two-way audio."
+        # Save Snapshot writes the latest decoded camera frame into the
+        # Photos library. We request the add-only authorization
+        # (PHPhotoLibrary.requestAuthorization(for: .addOnly)) so Reolens
+        # only ever inserts photos — never reads the user's library.
+        NSPhotoLibraryAddUsageDescription: "Reolens saves snapshots of your camera feeds to Photos when you tap Save Snapshot."
         UIBackgroundModes:
           - audio
+        # Custom drag-and-drop UTIs for in-app reordering (channels in
+        # the grid, devices in the sidebar). Exported with a custom
+        # namespace so the payloads can't be consumed by other apps.
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.reolens.channelDrag
+            UTTypeDescription: Reolens channel drag payload
+            UTTypeConformsTo:
+              - public.data
+            UTTypeTagSpecification: {}
+          - UTTypeIdentifier: com.reolens.deviceDrag
+            UTTypeDescription: Reolens device drag payload
+            UTTypeConformsTo:
+              - public.data
+            UTTypeTagSpecification: {}
         # Reolink cameras on LAN serve HTTP/HTTPS with self-signed certs.
         # Matches the macOS app's ATS exception; both are limited to local
         # networking — no public-Internet HTTP traffic is intended.
@@ -85,8 +104,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.reolens.Reolens.iOS
         PRODUCT_NAME: Reolens
-        MARKETING_VERSION: "0.2.3"
-        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "0.3.0"
+        CURRENT_PROJECT_VERSION: "2"
         # Same Apple Developer team as the macOS app. Xcode's automatic
         # signing uses this to fetch / create the Apple Distribution
         # certificate and the App Store provisioning profile on first
