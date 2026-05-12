@@ -281,6 +281,46 @@ jobs:
       - name: Show available iOS SDKs (diagnostic)
         run: xcodebuild -showsdks | grep -i ios
 
+      # The Apple Distribution certificate (the one that signs App
+      # Store / TestFlight builds) only exists in the maintainer's
+      # local Keychain — Apple doesn't redistribute it from the
+      # developer portal once it's been issued. Without it, xcodebuild's
+      # manual signing step errors with:
+      #
+      #   error: No signing certificate "iOS Distribution" found:
+      #   No "iOS Distribution" signing certificate matching team ID
+      #   "5M9UT7VQ8Q" with a private key was found.
+      #
+      # Same .p12-import pattern as the macOS Developer ID step in the
+      # release job above, just with iOS-named secrets so the two
+      # certs don't get confused with each other (different cert types,
+      # different distribution channels, intentionally separate).
+      - name: Import Apple Distribution signing cert
+        env:
+          P12_BASE64: ${{ secrets.IOS_DIST_CERT_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="ios-build.keychain"
+          security create-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN}"
+          security default-keychain -s "${KEYCHAIN}"
+          security set-keychain-settings -lut 7200 "${KEYCHAIN}"
+          security unlock-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN}"
+          echo "${P12_BASE64}" | base64 -D > /tmp/ios-cert.p12
+          security import /tmp/ios-cert.p12 -k "${KEYCHAIN}" \
+            -P "${P12_PASSWORD}" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          rm -f /tmp/ios-cert.p12
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "${KEYCHAIN_PASSWORD}" "${KEYCHAIN}"
+          # Diagnostic — confirm the identity is now visible.
+          security find-identity -v -p codesigning "${KEYCHAIN}" | grep -i "Apple Distribution" || {
+              echo "::error::Apple Distribution identity not visible after import" >&2
+              exit 1
+          }
+
       - name: Install xcodegen
         run: brew install xcodegen
 
