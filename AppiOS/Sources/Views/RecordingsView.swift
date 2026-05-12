@@ -7,22 +7,25 @@ import AppShared
 
 private let log = Logger(subsystem: "com.reolens.app", category: "ios-recordings")
 
-/// iOS recordings browser. Loads the day's recordings via the CGI
-/// `Search` command (the same path the macOS app uses), lists them
-/// with detection-trigger badges, and plays them in a downloading
-/// AVPlayer sheet on tap.
+/// iOS recordings browser. Mirrors the macOS app's approach:
 ///
-/// Earlier versions used Baichuan's `findAlarmVideo` to populate the
-/// list, but that endpoint returns filenames in a format the CGI
-/// Download endpoint doesn't accept — the download then failed with
-/// "the camera or hub refused the download request". CGI Search
-/// returns the canonical filenames that work with Download.
+/// - Loads BOTH the main and sub stream's CGI Search results, matches
+///   them by time-range overlap so each row knows its high- and
+///   low-quality download options.
+/// - Tap a row → play the sub stream (smaller, faster download) when
+///   available; long-press for explicit quality choice.
+/// - Detection-trigger badges come from two sources, in priority order:
+///     1. `SearchFile.triggers` — the CGI Search response bitfield.
+///     2. `CameraSession.aiEventLog` — live Baichuan AI alerts
+///        collected since the session connected, matched by time
+///        overlap.
 struct RecordingsView: View {
     let session: CameraSession
     let channel: ChannelStatus
 
     @State private var selectedDate: Date = Date()
-    @State private var entries: [SearchFile] = []
+    @State private var files: [SearchFile] = []
+    @State private var subFiles: [SearchFile] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var nowPlaying: PlayableRecording?
@@ -63,22 +66,46 @@ struct RecordingsView: View {
                 systemImage: "exclamationmark.triangle",
                 description: Text(errorMessage)
             )
-        } else if entries.isEmpty {
+        } else if files.isEmpty {
             ContentUnavailableView(
                 "No recordings",
                 systemImage: "moon.zzz",
                 description: Text("Nothing recorded on \(selectedDate.formatted(date: .abbreviated, time: .omitted)).")
             )
         } else {
-            List(entries) { file in
-                Button {
-                    Task { await playEntry(file) }
-                } label: {
-                    RecordingRow(file: file)
-                }
-                .buttonStyle(.plain)
+            List(files) { file in
+                row(for: file)
             }
             .listStyle(.plain)
+        }
+    }
+
+    @ViewBuilder
+    private func row(for file: SearchFile) -> some View {
+        let sub = subFileMatch(for: file)
+        let detections = effectiveDetections(for: file)
+        Button {
+            // Tap default: play the sub stream when available — much
+            // smaller and faster to download than the main stream.
+            // Falls back to main if no matching sub exists (some
+            // single-stream cameras / certain firmware).
+            Task { playEntry(file: file, sub: sub, preferSub: true) }
+        } label: {
+            RecordingRow(file: file, subFile: sub, detections: detections)
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button {
+                Task { playEntry(file: file, sub: sub, preferSub: true) }
+            } label: {
+                Label("Play (Low Quality)", systemImage: "play.circle")
+            }
+            .disabled(sub == nil)
+            Button {
+                Task { playEntry(file: file, sub: sub, preferSub: false) }
+            } label: {
+                Label("Play (High Quality)", systemImage: "play.circle.fill")
+            }
         }
     }
 
@@ -86,12 +113,9 @@ struct RecordingsView: View {
         isLoading = true
         defer { isLoading = false }
         errorMessage = nil
-        entries = []
+        files = []
+        subFiles = []
 
-        // CameraDetailView's .task kicks off the session connect, but
-        // we might land here straight from the iPad sidebar before
-        // the channels have populated. The Search command needs the
-        // CGI client to be authenticated.
         if session.channels.isEmpty {
             await session.connect()
         }
@@ -100,75 +124,182 @@ struct RecordingsView: View {
         let start = calendar.startOfDay(for: selectedDate)
         let end = calendar.date(byAdding: .day, value: 1, to: start) ?? start
 
+        // Fire both Search requests in parallel — the CGI client
+        // serializes them through the actor anyway, but `async let`
+        // keeps the call sites readable.
+        async let mainOutcome = fetchSearch(streamType: "main", start: start, end: end)
+        async let subOutcome = fetchSearch(streamType: "sub", start: start, end: end)
+        let (mainResult, subResult) = await (mainOutcome, subOutcome)
+
+        switch mainResult {
+        case .success(let mainList):
+            var seen = Set<String>()
+            let unique = mainList.filter { seen.insert($0.name).inserted }
+            files = unique.sorted { ($0.startDate ?? .distantPast) > ($1.startDate ?? .distantPast) }
+        case .failure(let message):
+            errorMessage = message
+        }
+        // Sub-stream failures aren't fatal — the user can still play
+        // the main stream. Log and carry on.
+        if case .success(let subList) = subResult {
+            var seen = Set<String>()
+            subFiles = subList.filter { seen.insert($0.name).inserted }
+        } else if case .failure(let message) = subResult {
+            log.warning("Sub-stream Search failed: \(message, privacy: .public)")
+        }
+    }
+
+    private enum SearchOutcome {
+        case success([SearchFile])
+        case failure(String)
+    }
+
+    private func fetchSearch(streamType: String, start: Date, end: Date) async -> SearchOutcome {
         let command = Commands.search(
             channel: channel.channel,
             onlyStatus: false,
-            streamType: "main",
+            streamType: streamType,
             start: start,
             end: end
         )
         do {
             let raw = try await session.client.sendCapturingRaw(command)
             let envelopes = try JSONDecoder().decode([CGIResponse<SearchEnvelope>].self, from: raw)
-            let files = envelopes.first?.value?.SearchResult.File ?? []
-            // Dedupe defensively: Reolink rarely returns dupes on Search
-            // (unlike findAlarmVideo, which did) — but still cheap to do.
-            var seen = Set<String>()
-            let unique = files.filter { seen.insert($0.name).inserted }
-            entries = unique.sorted { ($0.startDate ?? .distantPast) > ($1.startDate ?? .distantPast) }
+            return .success(envelopes.first?.value?.SearchResult.File ?? [])
         } catch {
-            log.error("Search failed: \(error.localizedDescription, privacy: .public)")
-            errorMessage = error.localizedDescription
+            return .failure(error.localizedDescription)
         }
     }
 
-    private func playEntry(_ file: SearchFile) async {
-        let credentials = await session.client.credentials
-        let urls = StreamURLs(credentials: credentials)
-        let token = await session.client.currentToken?.name
-        // Use the SearchFile's own `name` (canonical CGI filename) as
-        // the source — that's what the Download endpoint expects.
-        let url = urls.recordingDownload(source: file.name, token: token)
-        nowPlaying = PlayableRecording(
-            id: file.name,
-            url: url,
-            displayName: file.name,
-            detections: file.triggers,
-            startDate: file.startDate
-        )
+    /// Find the sub-stream file that best matches `file`'s main-stream
+    /// time range. The two stream chunkers can emit slightly offset
+    /// segment boundaries, so "longest temporal overlap wins" is more
+    /// reliable than equality matching.
+    private func subFileMatch(for file: SearchFile) -> SearchFile? {
+        guard let mainStart = file.startDate, let mainEnd = file.endDate else { return nil }
+        var best: (sub: SearchFile, overlap: TimeInterval)? = nil
+        for sub in subFiles {
+            guard let subStart = sub.startDate, let subEnd = sub.endDate else { continue }
+            let lo = max(mainStart, subStart)
+            let hi = min(mainEnd, subEnd)
+            let overlap = hi.timeIntervalSince(lo)
+            guard overlap > 0 else { continue }
+            if best == nil || overlap > best!.overlap {
+                best = (sub, overlap)
+            }
+        }
+        return best?.sub
+    }
+
+    /// Detection-trigger pipeline mirroring the macOS app:
+    ///   1. CGI `Search` response's `Trigger` bitfield, when populated.
+    ///   2. Live Baichuan `aiEventLog` events received this session,
+    ///      matched to the file's time range by channel + timestamp.
+    private func effectiveDetections(for file: SearchFile) -> [DetectionType] {
+        if !file.triggers.isEmpty { return file.triggers }
+        guard let start = file.startDate, let end = file.endDate else { return [] }
+        var matches: [DetectionType] = []
+        var seen = Set<DetectionType>()
+        for event in session.aiEventLog
+            where event.channelID == channel.channel
+                && event.timestamp >= start
+                && event.timestamp <= end {
+            if let d = event.detectionType, seen.insert(d).inserted {
+                matches.append(d)
+            }
+        }
+        return matches
+    }
+
+    private func playEntry(file: SearchFile, sub: SearchFile?, preferSub: Bool) {
+        let target = (preferSub ? sub : file) ?? file
+        Task {
+            let credentials = await session.client.credentials
+            let urls = StreamURLs(credentials: credentials)
+            let token = await session.client.currentToken?.name
+            let url = urls.recordingDownload(source: target.name, token: token)
+            await MainActor.run {
+                nowPlaying = PlayableRecording(
+                    id: target.name,
+                    url: url,
+                    displayName: target.name,
+                    detections: effectiveDetections(for: file),
+                    startDate: target.startDate
+                )
+            }
+        }
     }
 }
 
 private struct RecordingRow: View {
     let file: SearchFile
+    let subFile: SearchFile?
+    let detections: [DetectionType]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Image(systemName: "play.rectangle.fill")
-                    .foregroundStyle(.tint)
-                Text(timeLabel)
-                    .font(.body.monospacedDigit())
-                Spacer()
-                Text(durationLabel)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-            if !file.triggers.isEmpty {
-                HStack(spacing: 6) {
-                    ForEach(file.triggers, id: \.self) { detection in
-                        Label(detection.label, systemImage: detection.systemImage)
-                            .labelStyle(.titleAndIcon)
-                            .font(.caption)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(detection.tint.opacity(0.18), in: .capsule)
-                            .foregroundStyle(detection.tint)
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "play.rectangle.fill")
+                .foregroundStyle(.tint)
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Text(timeLabel)
+                        .font(.body.monospacedDigit())
+                    if let duration = durationLabel {
+                        Text(duration)
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if !detections.isEmpty {
+                    HStack(spacing: 6) {
+                        ForEach(detections, id: \.self) { detection in
+                            Label(detection.label, systemImage: detection.systemImage)
+                                .labelStyle(.titleAndIcon)
+                                .font(.caption)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(detection.tint.opacity(0.18), in: .capsule)
+                                .foregroundStyle(detection.tint)
+                        }
                     }
                 }
             }
+            Spacer(minLength: 8)
+            sizeColumn
         }
         .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private var sizeColumn: some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            if let mainMB = sizeMB(for: file) {
+                sizeBadge(label: "HD", value: mainMB, tint: .blue)
+            }
+            if let sub = subFile, let subMB = sizeMB(for: sub) {
+                sizeBadge(label: "SD", value: subMB, tint: .secondary)
+            }
+        }
+    }
+
+    private func sizeBadge(label: String, value: Double, tint: Color) -> some View {
+        HStack(spacing: 4) {
+            Text(label)
+                .font(.system(size: 9, weight: .semibold))
+                .padding(.horizontal, 4)
+                .padding(.vertical, 1)
+                .background(tint.opacity(0.18), in: .capsule)
+                .foregroundStyle(tint)
+            Text("\(value, specifier: "%.1f") MB")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func sizeMB(for file: SearchFile) -> Double? {
+        guard let size = file.size, size > 0 else { return nil }
+        return Double(size) / 1_048_576.0
     }
 
     private var timeLabel: String {
@@ -176,8 +307,8 @@ private struct RecordingRow: View {
         return start.formatted(date: .omitted, time: .shortened)
     }
 
-    private var durationLabel: String {
-        guard let seconds = file.durationSeconds, seconds > 0 else { return "" }
+    private var durationLabel: String? {
+        guard let seconds = file.durationSeconds, seconds > 0 else { return nil }
         let total = Int(seconds)
         let m = total / 60
         let s = total % 60
@@ -234,28 +365,11 @@ struct PlayableRecording: Identifiable, Hashable {
     let startDate: Date?
 }
 
-/// Download-then-play sheet for Reolink alarm clips.
-///
-/// Why download instead of streaming directly with `AVPlayer(url:)`:
-/// Reolink's CGI download endpoint accepts auth via `?user=&password=`
-/// query parameters, but AVPlayer often fails to negotiate the
-/// resulting response — chunked transfer encoding, missing
-/// Content-Length, or self-signed TLS that AVPlayer rejects even
-/// though ATS is set to allow local networking. The user saw a blank
-/// VideoPlayer that never started.
-///
-/// Solution: reuse the macOS `RecordingDownloader` (lives in
-/// AppShared, already battle-tested), which makes parallel HTTP Range
-/// requests with a plain URLSession that handles the auth and
-/// response shape correctly. When the download lands on disk, hand
-/// the local file URL to AVPlayer — local files always Just Work.
-///
-/// The trade-off is the user waits for the download before playback
-/// starts. We show a progress UI with bytes-downloaded so the wait
-/// isn't a silent spinner. A future iteration could use
-/// `AVAssetResourceLoaderDelegate` for progressive playback while
-/// downloading, but the download-then-play path is reliable enough
-/// for 0.3.0 and matches how the macOS Save / Open works.
+/// Download-then-play sheet for Reolink recordings — see the long
+/// header comment a few revisions ago. Briefly: AVPlayer can't
+/// negotiate Reolink's CGI Download endpoint reliably, so we
+/// download the file via RecordingDownloader (parallel HTTP Range,
+/// auth-correct) and play the local file with AVPlayer.
 struct RecordingPlayerSheet: View {
     let recording: PlayableRecording
 
@@ -274,17 +388,10 @@ struct RecordingPlayerSheet: View {
                     }
                 }
                 .task {
-                    // Kick off the download once on first appear. Re-entering
-                    // .task on subsequent state changes is harmless because
-                    // RecordingDownloader.start() guards against re-entry.
                     downloader.start(url: recording.url)
                 }
                 .onChange(of: downloader.state) { _, newState in
                     if newState == .ready, let localURL = downloader.localURL {
-                        // Switch from progress UI to playback. AVPlayer
-                        // against a local file URL has none of the auth /
-                        // encoding issues that broke streaming directly
-                        // from the Reolink CGI endpoint.
                         let item = AVPlayerItem(url: localURL)
                         let p = AVPlayer(playerItem: item)
                         self.player = p
@@ -292,8 +399,6 @@ struct RecordingPlayerSheet: View {
                     }
                 }
                 .onDisappear {
-                    // Release the AVPlayerItem before deleting the temp
-                    // file so the file isn't held open at delete time.
                     player?.pause()
                     player?.replaceCurrentItem(with: nil)
                     player = nil
