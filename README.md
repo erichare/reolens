@@ -128,7 +128,7 @@ Drag **Reolens.app** to your Applications folder and launch.
 The iOS app is in TestFlight beta. Open the invite link on your device:
 
 ```
-[https://testflight.apple.com/join/2Pk2Anfz](https://testflight.apple.com/join/2Pk2Anfz)
+https://testflight.apple.com/join/2Pk2Anfz
 ```
 
 (Replace with your actual TestFlight join URL once published — see
