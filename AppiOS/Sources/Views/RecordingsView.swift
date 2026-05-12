@@ -249,28 +249,34 @@ struct PlayableRecording: Identifiable, Hashable {
     let startDate: Date?
 }
 
-/// Lightweight AVPlayer sheet. AVPlayer streams the recording's HTTP
-/// download URL directly — Reolink supports HTTP Range, so playback
-/// starts as soon as the first chunk arrives.
+/// Download-then-play sheet for Reolink alarm clips.
 ///
-/// Observes the player item's status so we can surface a real error
-/// instead of a blank screen when Reolink's CGI auth doesn't play
-/// nicely with AVPlayer. (Recording playback on iOS is a known
-/// rough edge — see CHANGELOG / SECURITY.md for the planned fix
-/// using AVAssetResourceLoaderDelegate. The status observer lets us
-/// at least *see* the failure mode while we iterate.)
+/// Why download instead of streaming directly with `AVPlayer(url:)`:
+/// Reolink's CGI download endpoint accepts auth via `?user=&password=`
+/// query parameters, but AVPlayer often fails to negotiate the
+/// resulting response — chunked transfer encoding, missing
+/// Content-Length, or self-signed TLS that AVPlayer rejects even
+/// though ATS is set to allow local networking. The user saw a blank
+/// VideoPlayer that never started.
+///
+/// Solution: reuse the macOS `RecordingDownloader` (lives in
+/// AppShared, already battle-tested), which makes parallel HTTP Range
+/// requests with a plain URLSession that handles the auth and
+/// response shape correctly. When the download lands on disk, hand
+/// the local file URL to AVPlayer — local files always Just Work.
+///
+/// The trade-off is the user waits for the download before playback
+/// starts. We show a progress UI with bytes-downloaded so the wait
+/// isn't a silent spinner. A future iteration could use
+/// `AVAssetResourceLoaderDelegate` for progressive playback while
+/// downloading, but the download-then-play path is reliable enough
+/// for 0.3.0 and matches how the macOS Save / Open works.
 struct RecordingPlayerSheet: View {
     let recording: PlayableRecording
 
     @Environment(\.dismiss) private var dismiss
+    @State private var downloader = RecordingDownloader()
     @State private var player: AVPlayer?
-    @State private var status: PlayerStatus = .loading
-
-    enum PlayerStatus: Equatable {
-        case loading
-        case playing
-        case failed(String)
-    }
 
     var body: some View {
         NavigationStack {
@@ -282,73 +288,106 @@ struct RecordingPlayerSheet: View {
                         Button("Done") { dismiss() }
                     }
                 }
-                .onAppear(perform: startPlayback)
+                .task {
+                    // Kick off the download once on first appear. Re-entering
+                    // .task on subsequent state changes is harmless because
+                    // RecordingDownloader.start() guards against re-entry.
+                    downloader.start(url: recording.url)
+                }
+                .onChange(of: downloader.state) { _, newState in
+                    if newState == .ready, let localURL = downloader.localURL {
+                        // Switch from progress UI to playback. AVPlayer
+                        // against a local file URL has none of the auth /
+                        // encoding issues that broke streaming directly
+                        // from the Reolink CGI endpoint.
+                        let item = AVPlayerItem(url: localURL)
+                        let p = AVPlayer(playerItem: item)
+                        self.player = p
+                        p.play()
+                    }
+                }
                 .onDisappear {
+                    // Release the AVPlayerItem before deleting the temp
+                    // file so the file isn't held open at delete time.
                     player?.pause()
+                    player?.replaceCurrentItem(with: nil)
                     player = nil
+                    downloader.cancel()
+                    downloader.cleanupTempFile()
                 }
         }
     }
 
     @ViewBuilder
     private var content: some View {
-        switch status {
-        case .loading:
-            ProgressView("Loading recording…")
+        switch downloader.state {
+        case .idle:
+            ProgressView("Preparing…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-        case .playing:
+        case .downloading:
+            downloadProgress
+        case .ready:
             if let player {
                 VideoPlayer(player: player)
                     .ignoresSafeArea(.container, edges: .bottom)
+            } else {
+                ProgressView("Starting playback…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         case .failed(let message):
             ContentUnavailableView {
-                Label("Couldn't play this recording", systemImage: "exclamationmark.triangle")
+                Label("Couldn't download this recording", systemImage: "exclamationmark.triangle")
             } description: {
                 VStack(spacing: 8) {
-                    Text("iOS playback of Reolink alarm clips is being reworked — for now, try the Mac app to play this clip.")
+                    Text("The camera or hub refused the download request.")
                     Text(message)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal)
                 }
+            } actions: {
+                Button("Try Again") {
+                    downloader.start(url: recording.url)
+                }
+                .buttonStyle(.borderedProminent)
             }
         }
     }
 
-    private func startPlayback() {
-        let item = AVPlayerItem(url: recording.url)
-        let p = AVPlayer(playerItem: item)
-        self.player = p
-        // Observe load status so we don't sit on a permanent ProgressView
-        // if AVPlayer can't make sense of the response (most often:
-        // Reolink's CGI auth via query params + a chunked transfer
-        // encoding AVFoundation isn't happy with).
-        Task { @MainActor in
-            // Give AVPlayer a chance to start. 8s is generous;
-            // typical playable items reach .readyToPlay in <1s.
-            let deadline = Date().addingTimeInterval(8.0)
-            while Date() < deadline {
-                switch item.status {
-                case .readyToPlay:
-                    status = .playing
-                    p.play()
-                    return
-                case .failed:
-                    let message = item.error?.localizedDescription ?? "Unknown decode error"
-                    status = .failed(message)
-                    return
-                case .unknown:
-                    try? await Task.sleep(nanoseconds: 200_000_000)
-                @unknown default:
-                    try? await Task.sleep(nanoseconds: 200_000_000)
-                }
+    @ViewBuilder
+    private var downloadProgress: some View {
+        VStack(spacing: 24) {
+            Image(systemName: "arrow.down.circle")
+                .font(.system(size: 64))
+                .foregroundStyle(.tint)
+                .symbolEffect(.pulse, options: .repeating)
+            VStack(spacing: 8) {
+                Text("Downloading recording")
+                    .font(.headline)
+                Text(byteCountLabel)
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
             }
-            // Hit the deadline without resolving — surface a soft error
-            // so the user isn't staring at a spinner forever.
-            status = .failed("Timed out waiting for the recording to start.")
+            if downloader.totalBytes > 0 {
+                ProgressView(value: Double(downloader.bytesReceived), total: Double(downloader.totalBytes))
+                    .frame(maxWidth: 320)
+            } else {
+                ProgressView()
+            }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 40)
+    }
+
+    private var byteCountLabel: String {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useMB, .useKB]
+        formatter.countStyle = .file
+        let received = formatter.string(fromByteCount: downloader.bytesReceived)
+        guard downloader.totalBytes > 0 else { return received }
+        let total = formatter.string(fromByteCount: downloader.totalBytes)
+        return "\(received) of \(total)"
     }
 
     private var headerTitle: String {
