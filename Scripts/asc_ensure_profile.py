@@ -55,6 +55,7 @@ import plistlib
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -117,6 +118,20 @@ def jwt_token() -> str:
     )
 
 
+def _query(params: dict[str, str]) -> str:
+    """Build a URL query string with values percent-encoded.
+
+    We can't use urlencode() because it would also encode the keys —
+    ASC's filter syntax uses literal square brackets like
+    `filter[name]` which the API is happiest to receive un-escaped.
+    Spaces and other control characters in *values* (e.g. profile
+    names like "Reolens iOS App Store") MUST be encoded though,
+    otherwise Python 3.14's stricter `http.client._validate_path`
+    raises `InvalidURL`.
+    """
+    return "&".join(f"{k}={urllib.parse.quote(str(v), safe='')}" for k, v in params.items())
+
+
 def request(method: str, path: str, body: dict | None = None) -> dict:
     """Hit the ASC API. Raises with the response body on non-2xx."""
     token = jwt_token()
@@ -148,7 +163,7 @@ def find_bundle_id_resource(bundle_id: str, platform: str) -> str:
     """Return the ASC resource id for our bundle id (creates if missing)."""
     res = request(
         "GET",
-        f"/bundleIds?filter[identifier]={bundle_id}&limit=1",
+        "/bundleIds?" + _query({"filter[identifier]": bundle_id, "limit": 1}),
     )
     data = res.get("data") or []
     if data:
@@ -180,7 +195,7 @@ def find_certificate_id(cert_type: str) -> str:
     """
     res = request(
         "GET",
-        f"/certificates?filter[certificateType]={cert_type}&limit=20",
+        "/certificates?" + _query({"filter[certificateType]": cert_type, "limit": 20}),
     )
     data = res.get("data") or []
     if not data:
@@ -205,7 +220,7 @@ def find_or_create_profile(
     """
     res = request(
         "GET",
-        f"/profiles?filter[name]={name}&limit=10",
+        "/profiles?" + _query({"filter[name]": name, "limit": 10}),
     )
     for p in res.get("data") or []:
         attrs = p.get("attributes", {})
