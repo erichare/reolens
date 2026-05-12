@@ -128,18 +128,45 @@ jobs:
       - name: Build app bundle
         run: ./Scripts/build-app.sh
 
-      # Boot the built .app with the --smoke-test flag, which constructs
-      # the SwiftUI scene tree (so any binding/observation regression
-      # crashes here) and exits cleanly within ~2 s. We give the timeout
-      # 30 s of slack for cold-launch on a fresh CI runner. On failure
-      # we dump captured stdout/stderr and any fresh crash reports —
-      # otherwise `Trace/BPT trap: 5` is all we get and that's not enough
-      # to debug a remote macOS process.
+      # Diagnostic dump of the built .app *before* trying to launch it.
+      # On the previous failed CI run the app trapped before printing
+      # anything, before macOS wrote a crash report — meaning the trap
+      # was during dyld load / static initialization, not in our code.
+      # These diagnostics tell us what dyld was trying to do.
+      - name: Pre-launch app diagnostics
+        run: |
+          set +e
+          echo "==> codesign on main binary"
+          codesign -dvvv Reolens.app 2>&1 | head -20
+          echo "==> codesign on Sparkle.framework"
+          codesign -dvvv Reolens.app/Contents/Frameworks/Sparkle.framework 2>&1 | head -10
+          echo "==> entitlements"
+          codesign -d --entitlements :- Reolens.app 2>&1 | head -30
+          echo "==> linked libraries (otool -L)"
+          otool -L Reolens.app/Contents/MacOS/Reolens | head -30
+          echo "==> rpaths (otool -l | LC_RPATH)"
+          otool -l Reolens.app/Contents/MacOS/Reolens | grep -A2 LC_RPATH
+          echo "==> Sparkle.framework contents"
+          ls -la Reolens.app/Contents/Frameworks/Sparkle.framework/Versions/B/
+          echo "==> spctl assessment"
+          spctl -a -vv -t execute Reolens.app 2>&1 || true
+          echo "==> macOS version"
+          sw_vers
+          echo "==> Xcode version"
+          xcodebuild -version
+
       - name: Smoke-test launch
         run: |
-          set -uo pipefail  # NOTE: no -e so we can dump diagnostics on failure
+          set -uo pipefail
           OUT=$(mktemp)
           EXIT=0
+          # DYLD_PRINT_LIBRARIES traces every dylib dyld attempts to load
+          # (and where from) — if Sparkle.framework or one of its
+          # dependencies fails to map, the last printed line tells us
+          # exactly where it died.
+          export DYLD_PRINT_LIBRARIES=1
+          export DYLD_PRINT_RPATHS=1
+          export DYLD_PRINT_BINDINGS=1
           if command -v gtimeout >/dev/null 2>&1; then
             gtimeout 30s ./Reolens.app/Contents/MacOS/Reolens --smoke-test >"${OUT}" 2>&1 || EXIT=$?
           else
@@ -151,18 +178,22 @@ jobs:
             kill "${WAITER}" 2>/dev/null || true
           fi
           echo "==> smoke-test exit code: ${EXIT}"
-          echo "----- BEGIN APP OUTPUT -----"
-          cat "${OUT}" || echo "(no output captured)"
+          echo "----- BEGIN APP OUTPUT (with dyld traces) -----"
+          # Tail the last 200 lines — DYLD_PRINT_LIBRARIES generates a
+          # lot of output and the last few lines are the most useful.
+          tail -200 "${OUT}" || echo "(no output captured)"
           echo "----- END APP OUTPUT -----"
           if [ "${EXIT}" -ne 0 ]; then
             echo "==> recent Reolens crash reports:"
-            find ~/Library/Logs/DiagnosticReports/ -name 'Reolens*' -mmin -5 2>/dev/null \
+            find ~/Library/Logs/DiagnosticReports/ -name 'Reolens*' -mmin -10 2>/dev/null \
               | head -3 \
               | while read -r f; do
                   echo "----- ${f} -----"
                   head -200 "${f}"
                   echo "----- end ${f} -----"
                 done
+            echo "==> system log (last 30s for the Reolens process)"
+            log show --predicate 'process == "Reolens"' --last 30s --style compact 2>&1 | head -60 || true
           fi
           exit "${EXIT}"
 
