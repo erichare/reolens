@@ -80,5 +80,11 @@ cp "${DMG_PATH}" "${DMG_STABLE}"
 echo "==> DMG: ${DMG_PATH}"
 echo "==> Alias: ${DMG_STABLE}"
 
-# Emit a sha256 so the Homebrew cask can pin to it.
+# Emit a sha256 of the freshly-built DMG. NOTE: when this script runs
+# inside the release workflow, the DMG hasn't been notarized + stapled
+# yet, and stapling rewrites the file in place — so this sha256 is
+# *stale* by the time the DMG ships. The release workflow recomputes
+# it after `Scripts/notarize.sh` runs and the published `.sha256`
+# sidecar is the post-staple value. For local-only DMGs (no
+# notarization), this hash IS the final value.
 shasum -a 256 "${DMG_PATH}" | tee "${DMG_PATH}.sha256"

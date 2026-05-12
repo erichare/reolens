@@ -125,6 +125,17 @@ jobs:
       - name: Notarize and staple DMG
         run: ./Scripts/notarize.sh dist/build/Reolens-${{ steps.ver.outputs.version }}.dmg
 
+      # `notarytool ... staple` rewrites the DMG to embed the
+      # notarization ticket, so any sha256 we computed before this step
+      # (e.g. by Scripts/make-dmg.sh during local development) is now
+      # stale. Recompute against the post-staple bytes — that's what
+      # `brew install --cask` will see when it downloads the asset.
+      - name: Recompute DMG sha256 (post-staple)
+        run: |
+          set -euo pipefail
+          DMG="dist/build/Reolens-${{ steps.ver.outputs.version }}.dmg"
+          shasum -a 256 "${DMG}" | tee "${DMG}.sha256"
+
       - name: Install Sparkle tools
         run: |
           # The Sparkle XCFramework comes bundled with `sign_update` and
