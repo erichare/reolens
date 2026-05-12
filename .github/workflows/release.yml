@@ -226,3 +226,59 @@ jobs:
             dist/build/Reolens-${{ steps.ver.outputs.version }}.dmg.sha256
             dist/build/Reolens.dmg
             appcast.xml
+
+  # iOS TestFlight upload. Runs in parallel with the macOS `release` job;
+  # the two are independent. Reuses the App Store Connect API key the
+  # macOS job already uses for notarization (`AC_API_KEY_*` secrets);
+  # the key is scoped to the team, not a single app, so it covers both
+  # platforms' uploads as long as it has Admin role (required by
+  # xcodebuild for provisioning-profile auto-creation).
+  #
+  # Prereqs (one-time, done in App Store Connect UI):
+  #   - Bundle ID com.reolens.Reolens.iOS registered under Identifiers.
+  #   - An app record created under My Apps with that bundle ID.
+  #   - The ASC API key has Admin role.
+  #
+  # See docs/IOS_RELEASE.md for the full walkthrough.
+  ios-testflight:
+    name: iOS TestFlight upload
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+      AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+      AC_API_KEY_P8_BASE64: ${{ secrets.AC_API_KEY_P8_BASE64 }}
+      TEAM_ID: ${{ vars.TEAM_ID }}
+
+    steps:
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+
+      - name: Select Xcode 16
+        run: sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Bump CURRENT_PROJECT_VERSION to GitHub run number
+        # MARKETING_VERSION stays at whatever the spec says (0.2.0, etc.);
+        # CURRENT_PROJECT_VERSION must monotonically increase per upload
+        # — App Store Connect rejects duplicates. Using ${GITHUB_RUN_NUMBER}
+        # gives us a stable, increasing integer without committing back.
+        run: |
+          set -euo pipefail
+          sed -i.bak "s/CURRENT_PROJECT_VERSION: \"1\"/CURRENT_PROJECT_VERSION: \"${GITHUB_RUN_NUMBER}\"/" AppiOS/project.yml
+          rm AppiOS/project.yml.bak
+
+      - name: Build + upload to TestFlight
+        run: ./Scripts/build-ios.sh upload
