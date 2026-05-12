@@ -74,6 +74,23 @@ public final class RecordingDownloader {
         self.session = URLSession(configuration: config)
     }
 
+    /// Return a description of `url` safe to write to the unified log:
+    /// drops `user`, `password`, and `token` query parameters which Reolink's
+    /// CGI endpoints accept as plaintext credentials when no session cookie
+    /// is available. AGENTS.md §3 — never log credentials.
+    static func sanitizedDescription(of url: URL) -> String {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            // No query parameters to worry about — but also no way to be
+            // sure, so return only the scheme + host + path.
+            return "\(url.scheme ?? "?"):\(url.host ?? "?")\(url.path)"
+        }
+        let credentialNames: Set<String> = ["user", "password", "token"]
+        components.queryItems = components.queryItems?.filter { !credentialNames.contains($0.name) }
+        components.user = nil
+        components.password = nil
+        return components.url?.absoluteString ?? "<unparseable URL>"
+    }
+
     public func start(url: URL) {
         cancel()
         state = .downloading
@@ -81,7 +98,12 @@ public final class RecordingDownloader {
         totalBytes = 0
         localURL = nil
 
-        log.info("Starting download \(url.absoluteString, privacy: .public)")
+        // The download URL embeds Reolink session tokens (and, in the
+        // tokenless fallback, the camera username and password as query
+        // parameters). Strip those before logging — `os.Logger` keeps the
+        // unified log around across reboots, so a `.public` log of the
+        // raw URL would leak credentials. See AGENTS.md §3.
+        log.info("Starting download \(Self.sanitizedDescription(of: url), privacy: .public)")
         workTask = Task { [weak self] in
             await self?.run(url: url)
         }

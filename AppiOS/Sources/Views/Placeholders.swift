@@ -8,6 +8,9 @@ import AppShared
 /// camera's detail (multi-channel grid or single-channel view).
 struct LivePlaceholderView: View {
     @Environment(CameraStore.self) private var store
+    @State private var showingAdd = false
+    @State private var passwordEntryEntry: CameraEntry?
+    @State private var searchText: String = ""
 
     var body: some View {
         Group {
@@ -15,26 +18,58 @@ struct LivePlaceholderView: View {
                 ContentUnavailableView {
                     Label("No Cameras", systemImage: "video.slash")
                 } description: {
-                    Text("Add a camera from the Devices tab to start streaming. The camera list syncs from your other Reolens devices via iCloud.")
+                    Text("Add a camera to start streaming. The camera list syncs from your other Reolens devices via iCloud.")
+                } actions: {
+                    Button("Add Camera…") { showingAdd = true }
+                        .buttonStyle(.borderedProminent)
                 }
             } else {
-                List(store.cameras) { entry in
+                List(store.orderedCameras(matching: searchText)) { entry in
                     NavigationLink {
                         if let session = store.session(for: entry.id) {
                             CameraDetailView(session: session)
                         } else {
-                            ContentUnavailableView(
-                                "No credentials on this device",
-                                systemImage: "key.slash",
-                                description: Text("\(entry.displayName) was added on another device. Re-enter the password on this device to stream from it.")
-                            )
+                            ContentUnavailableView {
+                                Label("No password on this device", systemImage: "key.slash")
+                            } description: {
+                                Text("\(entry.displayName) was added on another device. Enter the password on this device to stream from it.")
+                            } actions: {
+                                Button("Enter Password") { passwordEntryEntry = entry }
+                                    .buttonStyle(.borderedProminent)
+                            }
                         }
                     } label: {
                         CameraRow(entry: entry)
                     }
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button("Enter Password", systemImage: "key.fill") {
+                            passwordEntryEntry = entry
+                        }
+                        .tint(.accentColor)
+                    }
+                    .contextMenu {
+                        Button("Enter Password", systemImage: "key.fill") {
+                            passwordEntryEntry = entry
+                        }
+                    }
                 }
             }
         }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { showingAdd = true } label: {
+                    Label("Add Camera", systemImage: "plus")
+                }
+                .accessibilityLabel("Add Camera")
+            }
+        }
+        .sheet(isPresented: $showingAdd) {
+            AddCameraView()
+        }
+        .sheet(item: $passwordEntryEntry) { entry in
+            EnterPasswordSheet(entry: entry)
+        }
+        .searchable(text: $searchText, placement: .automatic, prompt: "Search cameras")
     }
 }
 
@@ -42,6 +77,8 @@ struct LivePlaceholderView: View {
 struct DevicesPlaceholderView: View {
     @Environment(CameraStore.self) private var store
     @State private var showingAdd = false
+    @State private var passwordEntryEntry: CameraEntry?
+    @State private var searchText: String = ""
 
     var body: some View {
         Group {
@@ -57,12 +94,36 @@ struct DevicesPlaceholderView: View {
             } else {
                 List {
                     Section {
-                        ForEach(store.cameras) { entry in
-                            CameraRow(entry: entry)
+                        ForEach(store.orderedCameras(matching: searchText)) { entry in
+                            HStack {
+                                CameraRow(entry: entry)
+                                Spacer()
+                                if store.session(for: entry.id) == nil {
+                                    Image(systemName: "key.slash")
+                                        .foregroundStyle(.secondary)
+                                        .accessibilityLabel("Missing password")
+                                }
+                            }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button("Enter Password", systemImage: "key.fill") {
+                                    passwordEntryEntry = entry
+                                }
+                                .tint(.accentColor)
+                            }
+                            .contextMenu {
+                                Button("Enter Password", systemImage: "key.fill") {
+                                    passwordEntryEntry = entry
+                                }
+                                Button("Remove", systemImage: "trash", role: .destructive) {
+                                    store.remove(entry.id)
+                                }
+                            }
                         }
                         .onDelete { offsets in
+                            let displayed = store.orderedCameras(matching: searchText)
                             for index in offsets {
-                                store.remove(store.cameras[index].id)
+                                guard displayed.indices.contains(index) else { continue }
+                                store.remove(displayed[index].id)
                             }
                         }
                     } header: {
@@ -83,6 +144,10 @@ struct DevicesPlaceholderView: View {
         .sheet(isPresented: $showingAdd) {
             AddCameraView()
         }
+        .sheet(item: $passwordEntryEntry) { entry in
+            EnterPasswordSheet(entry: entry)
+        }
+        .searchable(text: $searchText, placement: .automatic, prompt: "Search cameras")
     }
 }
 
@@ -102,7 +167,7 @@ struct RecordingsPlaceholderView: View {
                 description: Text("Add a camera to browse recordings. The camera list syncs from your Mac and other devices via iCloud.")
             )
         } else {
-            List(store.cameras) { entry in
+            List(store.orderedCameras()) { entry in
                 if let session = store.session(for: entry.id) {
                     NavigationLink {
                         RecordingsCameraPicker(session: session)
@@ -184,18 +249,32 @@ private struct CameraListRow: View {
 struct DevicePlaceholderView: View {
     let entry: CameraEntry
     @Environment(CameraStore.self) private var store
+    @State private var showingPasswordSheet = false
 
     var body: some View {
         Group {
             if let session = store.session(for: entry.id) {
                 CameraDetailView(session: session)
+                    .toolbar {
+                        ToolbarItem(placement: .secondaryAction) {
+                            Button("Update Password", systemImage: "key.fill") {
+                                showingPasswordSheet = true
+                            }
+                        }
+                    }
             } else {
-                ContentUnavailableView(
-                    "No credentials on this device",
-                    systemImage: "key.slash",
-                    description: Text("\(entry.displayName) was added on another device. Re-enter the password here to start streaming.")
-                )
+                ContentUnavailableView {
+                    Label("No password on this device", systemImage: "key.slash")
+                } description: {
+                    Text("\(entry.displayName) was added on another device. Enter the password here to start streaming.")
+                } actions: {
+                    Button("Enter Password") { showingPasswordSheet = true }
+                        .buttonStyle(.borderedProminent)
+                }
             }
+        }
+        .sheet(isPresented: $showingPasswordSheet) {
+            EnterPasswordSheet(entry: entry)
         }
     }
 }

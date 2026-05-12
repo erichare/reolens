@@ -21,6 +21,10 @@ struct LiveCameraTile: View {
     /// avoid running two RTSP sessions to the same channel when the rich
     /// viewer is open — Reolink's hub silently drops one after a few seconds.
     var paused: Bool = false
+    /// Optional callback invoked from the context menu's "Update Password…"
+    /// item. When nil, the item is hidden. Wired up by parent views that
+    /// own the password-entry sheet state.
+    var onEnterPassword: (() -> Void)? = nil
 
     @Environment(CameraStore.self) private var store
     @State private var player: LiveVideoPlayer?
@@ -99,6 +103,21 @@ struct LiveCameraTile: View {
             } label: {
                 let current = store.rotation(for: session.entry.id, channel: channel.channel, stream: stream)
                 Label("Rotate \(streamLabel) feed (\(current)°)", systemImage: "rotate.right")
+            }
+            Divider()
+            Button {
+                Task { await saveSnapshot() }
+            } label: {
+                Label("Save Snapshot…", systemImage: "camera.fill")
+            }
+            .disabled(player == nil)
+            if let onEnterPassword {
+                Divider()
+                Button {
+                    onEnterPassword()
+                } label: {
+                    Label("Update Password…", systemImage: "key.fill")
+                }
             }
         }
         .task(id: channel.channel) {
@@ -227,6 +246,18 @@ struct LiveCameraTile: View {
 
     private var effectiveRotation: Int {
         rotationDegrees ?? store.rotation(for: session.entry.id, channel: channel.channel, stream: stream)
+    }
+
+    private func saveSnapshot() async {
+        guard let player else { return }
+        let image = player.currentSnapshot()
+        let name = "\(session.entry.displayName)-ch\(channel.channel + 1)"
+        let result = await SnapshotSaver.save(image, cameraName: name)
+        if case .saved(let url) = result, let url {
+            // Reveal the new file in Finder so the user immediately sees
+            // where it landed — far less surprising than a silent save.
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
     }
 
     private func startPlayer() async {

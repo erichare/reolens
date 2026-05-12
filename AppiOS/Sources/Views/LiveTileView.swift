@@ -25,10 +25,17 @@ struct LiveTileView: View {
     /// fullscreen detail is open — Reolink hubs cap concurrent sessions
     /// and silently drop one after a few seconds.
     var paused: Bool = false
+    /// Invoked whenever the tile's internal `LiveVideoPlayer` is
+    /// created (or nilled). Used by `SingleChannelView` to wire the
+    /// player into a Picture-in-Picture controller. Defaults to nil for
+    /// the grid-tile case where PiP is not surfaced.
+    var onPlayerChanged: ((LiveVideoPlayer?) -> Void)? = nil
 
     @Environment(CameraStore.self) private var store
     @State private var player: LiveVideoPlayer?
     @State private var didStart = false
+    /// Brief HUD shown after a snapshot completes. nil = no HUD.
+    @State private var snapshotHUD: SnapshotHUDState?
 
     var body: some View {
         let userRotation = store.rotation(for: session.entry.id, channel: channel.channel, stream: stream)
@@ -78,7 +85,27 @@ struct LiveTileView: View {
                     Label("Make primary", systemImage: "star.fill")
                 }
             }
+            Divider()
+            Button {
+                Task { await saveSnapshot() }
+            } label: {
+                Label("Save Snapshot", systemImage: "camera.fill")
+            }
+            .disabled(player == nil)
         }
+        .overlay(alignment: .bottom) {
+            if let snapshotHUD {
+                Text(snapshotHUD.text)
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(snapshotHUD.tint.opacity(0.9), in: Capsule())
+                    .padding(.bottom, 16)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: snapshotHUD)
         .task(id: channel.channel) {
             guard autoStart, !channel.isAsleep, !session.isBatteryPowered(channel: channel.channel), !didStart, !paused else { return }
             didStart = true
@@ -116,6 +143,10 @@ struct LiveTileView: View {
             player?.stop()
             player = nil
             didStart = false
+            onPlayerChanged?(nil)
+        }
+        .onChange(of: player == nil) { _, _ in
+            onPlayerChanged?(player)
         }
     }
 
@@ -223,6 +254,44 @@ struct LiveTileView: View {
         case .main: "main"
         case .sub: "preview"
         case .ext: "ext"
+        }
+    }
+
+    private func saveSnapshot() async {
+        guard let player else { return }
+        let image = player.currentSnapshot()
+        let name = "\(session.entry.displayName)-ch\(channel.channel + 1)"
+        let result = await SnapshotSaver.save(image, cameraName: name)
+        await MainActor.run {
+            snapshotHUD = SnapshotHUDState(result: result)
+        }
+        try? await Task.sleep(for: .seconds(2))
+        await MainActor.run {
+            snapshotHUD = nil
+        }
+    }
+}
+
+/// Brief HUD shown over a tile after a snapshot completes. Driven by an
+/// optional `@State` so SwiftUI's transition wraps the show/hide.
+struct SnapshotHUDState: Equatable {
+    let text: String
+    let tint: Color
+
+    init(result: SnapshotSaver.Result) {
+        switch result {
+        case .saved:
+            self.text = "Saved to Photos"
+            self.tint = .green
+        case .denied:
+            self.text = "Photos access denied"
+            self.tint = .orange
+        case .noFrame:
+            self.text = "Camera still connecting"
+            self.tint = .gray
+        case .failed(let msg):
+            self.text = "Save failed: \(msg)"
+            self.tint = .red
         }
     }
 }

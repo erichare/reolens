@@ -59,6 +59,12 @@ struct MultiChannelGridView: View {
     /// effect on the source tile and unblocks the drop target so dropping
     /// a tile on itself is a no-op.
     @State private var draggingChannel: Int?
+    /// Reorder mode (iOS-home-screen jiggle). Long-press on any tile (or
+    /// the "Edit Layout" button) enters this mode; tiles jiggle and the
+    /// tap action that normally opens the rich viewer is suppressed so
+    /// the user can drag without accidentally launching the full-screen
+    /// player. Escape or the Done button exits.
+    @State private var isReordering: Bool = false
 
     private var visibleChannels: [ChannelStatus] {
         store.orderedChannels(for: session.entry.id, channels: session.liveChannels)
@@ -100,10 +106,31 @@ struct MultiChannelGridView: View {
             if store.gridPreset(for: session.entry.id) == .spotlight {
                 primaryPicker
             }
-            Text("Drag a tile onto another to rearrange.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+            if isReordering {
+                Text("Drag tiles to rearrange. Press Done or Escape when finished.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            } else {
+                Text("Long-press a tile to rearrange.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
             Spacer()
+            if isReordering {
+                Button("Done") {
+                    withAnimation(.easeOut(duration: 0.2)) { isReordering = false }
+                }
+                .keyboardShortcut(.escape, modifiers: [])
+                .buttonStyle(.borderedProminent)
+            } else {
+                Button {
+                    withAnimation(.easeIn(duration: 0.2)) { isReordering = true }
+                } label: {
+                    Label("Edit Layout", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
+                }
+                .help("Enter rearrange mode (or long-press any tile). ⌘E.")
+                .keyboardShortcut("e", modifiers: .command)
+            }
             Text("\(visibleChannels.count) camera\(visibleChannels.count == 1 ? "" : "s")")
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
@@ -373,7 +400,14 @@ struct MultiChannelGridView: View {
             session: session,
             channel: channel,
             stream: stream,
-            onTap: { richViewerChannel = channel },
+            onTap: {
+                // Tapping in reorder mode would launch the full-screen
+                // viewer and yank the user out of the rearrange flow.
+                // Suppress and rely on Escape / Done to exit reorder.
+                if !isReordering {
+                    richViewerChannel = channel
+                }
+            },
             paused: richViewerOpen
         )
         // Force a fresh view (and therefore a fresh `LiveCameraTile`
@@ -384,6 +418,16 @@ struct MultiChannelGridView: View {
         // top-left tile showing the OLD camera's stream.
         .id(channel.channel)
         .opacity(draggingChannel == channel.channel ? 0.35 : 1.0)
+        .jiggle(isActive: isReordering)
+        // 0.7s long-press enters reorder mode. Sits before .draggable so
+        // the gesture fires on the press itself rather than waiting for
+        // the drag to start — the user sees the jiggle the moment they
+        // hold a tile, exactly like the iOS home screen.
+        .onLongPressGesture(minimumDuration: 0.7) {
+            if !isReordering {
+                withAnimation(.easeIn(duration: 0.2)) { isReordering = true }
+            }
+        }
         .draggable(ChannelDragPayload(channel: channel.channel)) {
             DragPreview(channel: channel)
                 .onAppear { draggingChannel = channel.channel }

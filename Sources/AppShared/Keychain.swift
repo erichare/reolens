@@ -13,7 +13,12 @@ package enum Keychain {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked,
+            // Belt-and-suspenders: passwords are device-local by design
+            // (AGENTS.md §4). Setting `kSecAttrSynchronizable` to false
+            // explicitly ensures the item never lands in iCloud Keychain
+            // even if the user enables Keychain sync system-wide.
+            kSecAttrSynchronizable as String: kCFBooleanFalse as Any
         ]
         SecItemAdd(query as CFDictionary, nil)
     }
@@ -23,6 +28,7 @@ package enum Keychain {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: id.uuidString,
+            kSecAttrSynchronizable as String: kCFBooleanFalse as Any,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
@@ -34,10 +40,14 @@ package enum Keychain {
     }
 
     package static func deletePassword(for id: UUID) {
+        // Match on `kSecAttrSynchronizableAny` so a possible legacy item
+        // (pre-0.3.0, when we didn't set the attribute explicitly) is
+        // also removed when the user updates their password.
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: id.uuidString
+            kSecAttrAccount as String: id.uuidString,
+            kSecAttrSynchronizable as String: kSecAttrSynchronizableAny
         ]
         SecItemDelete(query as CFDictionary)
     }

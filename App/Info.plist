@@ -21,9 +21,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.2.3</string>
+    <string>0.3.0</string>
     <key>CFBundleVersion</key>
-    <string>6</string>
+    <string>7</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>LSApplicationCategoryType</key>
@@ -74,6 +74,18 @@
             <string>com.reolens.channelDrag</string>
             <key>UTTypeDescription</key>
             <string>Reolens channel drag payload</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict/>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>com.reolens.deviceDrag</string>
+            <key>UTTypeDescription</key>
+            <string>Reolens device drag payload</string>
             <key>UTTypeConformsTo</key>
             <array>
                 <string>public.data</string>

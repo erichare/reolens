@@ -125,6 +125,17 @@ public final class CameraStore {
     public var selection: SidebarSelection?
     public var sessions: [CameraEntry.ID: CameraSession] = [:]
     public var expandedDevices: Set<UUID> = []
+    /// Per-device preferred order for the top-level camera list.
+    /// **Not synced via iCloud** — different platforms (sidebar / tab /
+    /// single column) have different optimal orderings, and avoiding a
+    /// `cameras.json` schema bump keeps older Reolens versions on the
+    /// user's other Apple devices compatible. See AGENTS.md "backward-
+    /// compatible sync schema". Empty array means "use natural insertion
+    /// order"; reconciled with the current `cameras` list at read time
+    /// so newly-synced devices appear at the end automatically.
+    public var cameraOrder: [UUID] = [] {
+        didSet { persistCameraOrder() }
+    }
     /// Developer mode. Surfaces diagnostic UI (Raw JSON popovers, verbose
     /// log buttons, etc.) that would otherwise clutter the default view.
     /// Toggle from Settings → Developer. Backed by `UserDefaults` so it
@@ -133,11 +144,17 @@ public final class CameraStore {
         didSet { UserDefaults.standard.set(developerMode, forKey: Self.developerModeKey) }
     }
     private static let developerModeKey = "com.reolens.developerMode"
+    private static let cameraOrderKey = "com.reolens.cameraOrder"
 
     public init() {
         let storage = ICloudCameraStorage.shared
         storage.migrateLegacyLocalIfNeeded()
         self.developerMode = UserDefaults.standard.bool(forKey: Self.developerModeKey)
+        // Restore the device-local sidebar order (UUID strings). Filter to
+        // valid UUIDs defensively in case anything was corrupted.
+        if let raw = UserDefaults.standard.array(forKey: Self.cameraOrderKey) as? [String] {
+            self.cameraOrder = raw.compactMap(UUID.init(uuidString:))
+        }
         load()
         // Watch for remote pushes from a sibling device. When another
         // Mac/iPad/iPhone signs in to the same iCloud account writes
@@ -145,6 +162,73 @@ public final class CameraStore {
         storage.observeRemoteChanges { [weak self] in
             self?.reloadFromStorageIfChanged()
         }
+    }
+
+    /// The user's camera list ordered for display in any tile/row UI.
+    /// New cameras (not yet in `cameraOrder`) appear at the end so they
+    /// don't get hidden after a fresh iCloud sync.
+    public func orderedCameras() -> [CameraEntry] {
+        let natural = cameras.map(\.id)
+        let reconciled = ReorderList.reconciled(order: cameraOrder, natural: natural)
+        let byID = Dictionary(uniqueKeysWithValues: cameras.map { ($0.id, $0) })
+        return reconciled.compactMap { byID[$0] }
+    }
+
+    /// Filter the ordered camera list by a free-text search query. Empty
+    /// query returns the full ordered list (same as `orderedCameras()`).
+    /// Matches on display name OR host (case-insensitive, diacritic-
+    /// insensitive). Useful when a user has many devices and wants to
+    /// jump to one without scrolling.
+    public func orderedCameras(matching query: String) -> [CameraEntry] {
+        let ordered = orderedCameras()
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return ordered }
+        return ordered.filter { entry in
+            entry.displayName.range(of: trimmed, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+                || entry.host.range(of: trimmed, options: [.caseInsensitive]) != nil
+        }
+    }
+
+    /// Move the device identified by `sourceID` to the slot immediately
+    /// before `targetID`. Used by the sidebar/device-list drag-and-drop.
+    /// No-op if either ID is unknown or source == target.
+    @discardableResult
+    public func reorderCamera(source sourceID: UUID, before targetID: UUID) -> Bool {
+        // Seed `cameraOrder` from natural order on first reorder so the
+        // user's gesture moves the correct tile from the correct starting
+        // position rather than from "empty + appended-at-end".
+        var working = ReorderList.reconciled(order: cameraOrder, natural: cameras.map(\.id))
+        let moved = ReorderList.move(sourceID: sourceID, before: targetID, in: &working)
+        if moved {
+            cameraOrder = working
+        }
+        return moved
+    }
+
+    private func persistCameraOrder() {
+        let strings = cameraOrder.map { $0.uuidString }
+        UserDefaults.standard.set(strings, forKey: Self.cameraOrderKey)
+    }
+
+    /// One-shot navigation request. Set by `applyPendingIntentFocus()`
+    /// when an App Intent fires; observed by platform-specific shells
+    /// (`iPadSplitShell`, `iPhoneTabShell`) to update their own
+    /// `selectedSection` / tab state without creating a feedback loop
+    /// with the user's `selection` choices in the sidebar.
+    ///
+    /// Consumers should reset this to nil after handling so a single
+    /// intent fires exactly one navigation.
+    public var pendingIntentNavigationDeviceID: UUID?
+
+    /// Apply any pending focus request written by `OpenCameraIntent`
+    /// (Shortcuts / Siri). Called by each app's scene on launch and on
+    /// foreground. Idempotent — consumes the pending key so it doesn't
+    /// re-apply across background/foreground cycles.
+    public func applyPendingIntentFocus() {
+        guard let id = AppIntentFocus.consumePending() else { return }
+        guard cameras.contains(where: { $0.id == id }) else { return }
+        selection = .device(id)
+        pendingIntentNavigationDeviceID = id
     }
 
     public func add(_ entry: CameraEntry, password: String) {
@@ -164,6 +248,26 @@ public final class CameraStore {
             selection = cameras.first.map { .device($0.id) }
         }
         save()
+    }
+
+    /// Store a new password for an existing device in this device's Keychain
+    /// and tear down any in-memory session so the next access rebuilds it
+    /// with the new credentials.
+    ///
+    /// Used by the "Enter Password" flow when a device has synced in from
+    /// another platform without credentials, or when the user has rotated
+    /// the camera's password on the router/camera side. Does **not** touch
+    /// `cameras.json` (the synced metadata), so no iCloud round-trip
+    /// happens — passwords stay device-local by design.
+    public func setPassword(_ password: String, for id: CameraEntry.ID) {
+        guard cameras.contains(where: { $0.id == id }) else { return }
+        Keychain.set(password: password, for: id)
+        // Tear down the existing session (if any) so a stale one with the
+        // old password doesn't keep serving from cache. `session(for:)`
+        // will rebuild lazily on next access.
+        if let session = sessions.removeValue(forKey: id) {
+            Task { await session.disconnect() }
+        }
     }
 
     /// Look up the user's persisted rotation for a specific (channel, stream).
