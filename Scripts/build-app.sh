@@ -35,19 +35,31 @@ done
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_DIR="${REPO_ROOT}/Reolens.app"
 INFO_PLIST="${REPO_ROOT}/App/Info.plist"
-ENTITLEMENTS="${REPO_ROOT}/App/Reolens.entitlements"
 ICON_SRC="${REPO_ROOT}/Resources/AppIcon.icns"
 
 SIGNING_IDENTITY="${SIGNING_IDENTITY:--}"
 # `codesign --timestamp` requires Apple's timestamp server, which fails on
 # offline CI machines / dev machines with no network. We only request it
 # when signing with a real Developer ID — ad-hoc signing always skips it.
+#
+# Entitlements: production builds (Developer ID) get the full
+# sandbox + iCloud + application-group entitlements from
+# `Reolens.entitlements`. Ad-hoc dev builds use a slimmed-down
+# `Reolens.dev.entitlements` that omits the team-bound capabilities —
+# starting on macOS 26 (Tahoe), AMFI rejects sandbox-profile
+# compilation when team-bound entitlements aren't backed by a
+# matching provisioning profile, and launchd fails the spawn with
+# "Launchd job spawn failed" (NSPOSIXErrorDomain Code=163). The dev
+# entitlements file documents the trade-offs (no iCloud sync, no
+# sandbox) in its own comments.
 if [[ "${SIGNING_IDENTITY}" == "-" ]]; then
     TIMESTAMP_FLAG="--timestamp=none"
     SIGN_LABEL="ad-hoc"
+    ENTITLEMENTS="${REPO_ROOT}/App/Reolens.dev.entitlements"
 else
     TIMESTAMP_FLAG="--timestamp"
     SIGN_LABEL="${SIGNING_IDENTITY}"
+    ENTITLEMENTS="${REPO_ROOT}/App/Reolens.entitlements"
 fi
 
 # Decode AC_API_KEY_P8_BASE64 → AC_API_KEY_P8_PATH if only the base64
