@@ -14,49 +14,68 @@ import Sparkle
 ///   shows feedback (either "you're on the latest version" or the install
 ///   prompt).
 /// - `canCheckForUpdates` — gates the menu item so it greys out while
-///   another update check is already in flight. Reads Sparkle's published
-///   `canCheckForUpdates` flag.
+///   another update check is already in flight, OR while the updater is
+///   disabled (no public key configured — see below).
 ///
-/// We construct the underlying `SPUStandardUpdaterController` with
-/// `startingUpdater: true`, which kicks off the background scheduler. The
-/// scheduler honors `SUEnableAutomaticChecks` and `SUScheduledCheckInterval`
-/// from `Info.plist` (currently: once per day).
+/// ### Public key gating
 ///
-/// When `SUPublicEDKey` is the empty placeholder (development builds), all
-/// the background machinery still runs but Sparkle refuses to *apply* any
-/// update — the signature check fails by design. Production releases get
-/// the real public key swapped in by the release workflow.
+/// We only start Sparkle's scheduler when `SUPublicEDKey` in `Info.plist`
+/// is non-empty. On dev/CI builds the key is the empty placeholder (the
+/// release workflow injects the real value at tag-push time), and Sparkle
+/// 2 hits a `precondition` that turns into a SIGTRAP on launch if you
+/// pass `startingUpdater: true` without a key. That crashes the app the
+/// moment the SwiftUI scene initializes — including in CI's smoke-launch
+/// step. Gating on key presence keeps dev/CI builds bootable while
+/// production builds (which do have the key) update normally.
+///
+/// In the disabled state the controller still exists, the About-panel
+/// menu item still renders, but it's greyed out — and any release
+/// metadata that flows through `Info.plist` (feed URL, schedule
+/// interval) is preserved.
 @MainActor
 @Observable
 public final class UpdaterController {
-    /// The Sparkle controller. Strong reference — Sparkle's scheduled
-    /// checks stop when the controller is deallocated.
+    /// The Sparkle controller. Always constructed so the menu item has
+    /// something to bind to; `startingUpdater` is conditional.
     private let controller: SPUStandardUpdaterController
 
-    /// Mirrors Sparkle's `canCheckForUpdates` so the menu item can bind to
-    /// it through SwiftUI's observation system. Updated whenever Sparkle
-    /// flips the flag via KVO.
+    /// Mirrors Sparkle's `canCheckForUpdates` so the menu item can bind
+    /// to it through SwiftUI's observation system. Always `false` when
+    /// the updater wasn't started (empty `SUPublicEDKey`), regardless of
+    /// what Sparkle would otherwise report.
     public private(set) var canCheckForUpdates: Bool
+
+    /// Whether Sparkle's background scheduler is running. False on
+    /// dev/CI builds (no `SUPublicEDKey` injected); true once the
+    /// release workflow injects the real public key at build time.
+    public let isUpdaterEnabled: Bool
 
     private var observation: NSKeyValueObservation?
 
     public init() {
+        let publicKey = (Bundle.main.infoDictionary?["SUPublicEDKey"] as? String) ?? ""
+        let enabled = !publicKey.isEmpty
+        self.isUpdaterEnabled = enabled
         self.controller = SPUStandardUpdaterController(
-            startingUpdater: true,
+            startingUpdater: enabled,
             updaterDelegate: nil,
             userDriverDelegate: nil
         )
-        self.canCheckForUpdates = controller.updater.canCheckForUpdates
-        self.observation = controller.updater.observe(\.canCheckForUpdates, options: [.new]) { [weak self] _, change in
-            guard let value = change.newValue else { return }
-            Task { @MainActor in
-                self?.canCheckForUpdates = value
+        self.canCheckForUpdates = enabled && controller.updater.canCheckForUpdates
+        if enabled {
+            self.observation = controller.updater.observe(\.canCheckForUpdates, options: [.new]) { [weak self] _, change in
+                guard let value = change.newValue else { return }
+                Task { @MainActor in
+                    self?.canCheckForUpdates = value
+                }
             }
         }
     }
 
     /// User-initiated update check (always shows feedback).
+    /// No-op when the updater is disabled.
     public func checkForUpdates() {
+        guard isUpdaterEnabled else { return }
         controller.checkForUpdates(nil)
     }
 }
