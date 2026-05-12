@@ -264,21 +264,25 @@ jobs:
         with:
           ref: ${{ steps.tag.outputs.tag }}
 
-      - name: Select Xcode 16
-        run: sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
+      # The iOS job uses Xcode 26.3 (latest on the macos-15 image) — it
+      # ships iOS 26 SDK *and* the iOS device platform pre-installed.
+      # The macOS `release` job above uses Xcode 16, which has been
+      # working for the Mac DMG flow, so we don't touch it.
+      #
+      # We previously tried `Xcode_16.app` (16.0 — the oldest available
+      # on the runner) which omits the iOS device platform. The
+      # alternative `xcodebuild -downloadPlatform iOS` fails on this
+      # runner with "Unable to connect to simulator" — a known issue
+      # where the downloader's progress reporter can't start
+      # CoreSimulator. Picking a pre-stocked Xcode dodges all of that.
+      - name: Select Xcode 26.3
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
+
+      - name: Show available iOS SDKs (diagnostic)
+        run: xcodebuild -showsdks | grep -i ios
 
       - name: Install xcodegen
         run: brew install xcodegen
-
-      # The macos-15 runner image ships Xcode 16 *without* the iOS
-      # platform support files (simulators, device deployment runtime,
-      # etc.) installed. Without them, `xcodebuild -destination
-      # 'generic/platform=iOS'` errors with "iOS 18.0 is not installed".
-      # Apple's official remedy is `xcodebuild -downloadPlatform iOS`,
-      # which fetches and installs the platform on demand. Skipped if
-      # already installed (idempotent), so it's safe to keep around.
-      - name: Install iOS platform support files
-        run: xcodebuild -downloadPlatform iOS
 
       # PyJWT + cryptography power the pre-flight ASC API check in
       # Scripts/build-ios.sh. Without them the script skips the check
