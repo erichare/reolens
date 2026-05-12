@@ -342,37 +342,39 @@ private struct FullscreenLiveView: View {
 
     private static let minZoom: CGFloat = 1.0
     private static let maxZoom: CGFloat = 4.0
-    private static let chromeAutoHideSeconds: UInt64 = 3
+    /// How long the Done button and camera-name banner stay visible
+    /// without user interaction before fading out. Tap the image to
+    /// bring them back; 5 seconds gives the user comfortable time to
+    /// orient before the chrome fades.
+    private static let chromeAutoHideSeconds: UInt64 = 5
 
     var body: some View {
         ZStack {
             Color.black
                 .ignoresSafeArea()
 
+            // Pass `onTap: toggleChrome` so the LiveTileView's internal
+            // .onTapGesture (which always recognizes single taps and
+            // would otherwise SWALLOW them before any outer gesture
+            // sees them) routes the tap to the chrome show/hide
+            // logic. Tap toggles, matching Photos / Maps fullscreen
+            // viewer behavior — tap on chrome to dismiss, tap on
+            // image to reveal.
+            //
+            // Double-tap-to-reset-zoom is intentionally NOT here —
+            // it disambiguated badly with the single-tap and added a
+            // ~250ms delay before the chrome would appear. Pinching
+            // back to 1× already recenters via the magnify gesture.
             LiveTileView(
                 session: session,
                 channel: channel,
-                stream: .main
+                stream: .main,
+                onTap: { toggleChrome() }
             )
             .scaleEffect(zoom)
             .offset(pan)
             .ignoresSafeArea()
             .gesture(magnifyGesture.simultaneously(with: dragGesture))
-            .onTapGesture(count: 2) {
-                withAnimation(.easeOut(duration: 0.25)) {
-                    zoom = 1.0
-                    pan = .zero
-                    anchorZoom = 1.0
-                    anchorPan = .zero
-                }
-            }
-            // Single-tap toggles the overlay. Doesn't conflict with
-            // double-tap (SwiftUI dispatches double-tap first) or the
-            // pinch/drag gestures, which take priority via the gesture
-            // recognizer hierarchy.
-            .onTapGesture {
-                showChrome()
-            }
 
             if chromeVisible {
                 overlay
@@ -446,6 +448,21 @@ private struct FullscreenLiveView: View {
 
     private func clamp(_ value: CGFloat, min lo: CGFloat, max hi: CGFloat) -> CGFloat {
         Swift.max(lo, Swift.min(hi, value))
+    }
+
+    /// Tap-to-toggle the Done button + camera-name banner. When the
+    /// user makes the chrome visible by tapping, we restart the
+    /// auto-hide countdown; tapping again before that expires
+    /// immediately hides without waiting.
+    private func toggleChrome() {
+        if chromeVisible {
+            chromeHideTask?.cancel()
+            withAnimation(.easeInOut(duration: 0.2)) {
+                chromeVisible = false
+            }
+        } else {
+            showChrome()
+        }
     }
 
     private func showChrome() {
