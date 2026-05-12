@@ -1,7 +1,13 @@
 .build/
 .build-ios-incremental/
 .swiftpm/
+# Ignore Package.resolved files in arbitrary locations (Xcode-managed
+# ones inside .xcodeproj/.xcworkspace), but commit the SwiftPM root one
+# so CI (Xcode Cloud, GitHub Actions) has a deterministic pin set to
+# work from. The post-clone hook copies it into the iOS workspace
+# path after xcodegen regenerates the project.
 Package.resolved
+!/Package.resolved
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
 .DS_Store

@@ -53,3 +53,20 @@ if [[ ! -d "${PROJECT_DIR}/ReolensiOS.xcodeproj" ]]; then
     exit 1
 fi
 echo "==> ReolensiOS.xcodeproj generated successfully"
+
+# Xcode Cloud workflows default to "automatic dependency resolution"
+# being disabled, which means xcodebuild requires a Package.resolved
+# at the workspace's swiftpm path. The SwiftPM root Package.resolved
+# (which we commit) pins the same dependency set, so copy it into
+# place after the workspace exists.
+REPO_ROOT="$(cd "${PROJECT_DIR}/.." && pwd)"
+SOURCE_RESOLVED="${REPO_ROOT}/Package.resolved"
+TARGET_RESOLVED_DIR="${PROJECT_DIR}/ReolensiOS.xcodeproj/project.xcworkspace/xcshareddata/swiftpm"
+TARGET_RESOLVED="${TARGET_RESOLVED_DIR}/Package.resolved"
+if [[ -f "${SOURCE_RESOLVED}" ]]; then
+    mkdir -p "${TARGET_RESOLVED_DIR}"
+    cp "${SOURCE_RESOLVED}" "${TARGET_RESOLVED}"
+    echo "==> Copied Package.resolved to ${TARGET_RESOLVED}"
+else
+    echo "WARNING: ${SOURCE_RESOLVED} not found — xcodebuild may fail to resolve packages" >&2
+fi
