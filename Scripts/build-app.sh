@@ -50,6 +50,21 @@ else
     SIGN_LABEL="${SIGNING_IDENTITY}"
 fi
 
+# Decode AC_API_KEY_P8_BASE64 → AC_API_KEY_P8_PATH if only the base64
+# form is set. CI provides the .p8 contents as a secret (not a file),
+# so without this decode the helper-launch guard below fails silently
+# and the embedded provisioning profile never lands in the .app —
+# which is exactly how v0.2.1 shipped a DMG that AMFI rejected at
+# launch with -413 "No matching profile found". Mirrors the same
+# block in Scripts/build-ios.sh.
+AC_KEY_TMPDIR=""
+if [[ -z "${AC_API_KEY_P8_PATH:-}" && -n "${AC_API_KEY_P8_BASE64:-}" && -n "${AC_API_KEY_ID:-}" ]]; then
+    AC_KEY_TMPDIR=$(mktemp -d)
+    export AC_API_KEY_P8_PATH="${AC_KEY_TMPDIR}/AuthKey_${AC_API_KEY_ID}.p8"
+    echo "${AC_API_KEY_P8_BASE64}" | base64 -D > "${AC_API_KEY_P8_PATH}"
+    trap 'rm -rf "${AC_KEY_TMPDIR}"' EXIT
+fi
+
 cd "${REPO_ROOT}"
 
 # Build the icon if it's missing. The .icns is generated from the
@@ -91,10 +106,21 @@ cp "${ICON_SRC}"   "${APP_DIR}/Contents/Resources/AppIcon.icns"
 # We then copy the latest matching .mobileprovision into the .app as
 # Contents/embedded.provisionprofile *before* signing, so codesign
 # binds the profile into the bundle's signature.
-if [[ "${SIGNING_IDENTITY}" != "-" \
-        && -n "${AC_API_KEY_ID:-}" \
-        && -n "${AC_API_ISSUER_ID:-}" \
-        && -n "${AC_API_KEY_P8_PATH:-}" ]]; then
+#
+# We hard-fail (not warn) if the embed step *should* have run but
+# didn't successfully produce a file — that's exactly how v0.2.1
+# shipped a profile-less DMG that AMFI rejected at launch.
+if [[ "${SIGNING_IDENTITY}" != "-" ]]; then
+    if [[ -z "${AC_API_KEY_ID:-}" \
+            || -z "${AC_API_ISSUER_ID:-}" \
+            || -z "${AC_API_KEY_P8_PATH:-}" ]]; then
+        echo "ERROR: signing with '${SIGNING_IDENTITY}' but ASC API key env vars are missing." >&2
+        echo "       Need AC_API_KEY_ID, AC_API_ISSUER_ID, and AC_API_KEY_P8_PATH" >&2
+        echo "       (or AC_API_KEY_P8_BASE64) so we can fetch + embed the" >&2
+        echo "       MAC_APP_DIRECT provisioning profile before signing." >&2
+        echo "       Without the embed, AMFI rejects launch with -413." >&2
+        exit 1
+    fi
     echo "==> Ensuring MAC_APP_DIRECT provisioning profile via ASC API"
     export PLATFORM=MAC
     export MAC_BUNDLE_ID="${MAC_BUNDLE_ID:-com.reolens.Reolens}"
@@ -106,12 +132,13 @@ if [[ "${SIGNING_IDENTITY}" != "-" \
     HELPER_OUT="$(python3 "${REPO_ROOT}/Scripts/asc_ensure_profile.py")"
     EMBED_PROFILE_NAME="$(printf '%s\n' "${HELPER_OUT}" | sed -n '1p')"
     EMBED_PROFILE_PATH="$(printf '%s\n' "${HELPER_OUT}" | sed -n '2p')"
-    if [[ -n "${EMBED_PROFILE_PATH}" && -f "${EMBED_PROFILE_PATH}" ]]; then
-        cp "${EMBED_PROFILE_PATH}" "${APP_DIR}/Contents/embedded.provisionprofile"
-        echo "    embedded: ${EMBED_PROFILE_PATH##*/} (profile: ${EMBED_PROFILE_NAME})"
-    else
-        echo "    WARNING: helper reported '${EMBED_PROFILE_PATH}' but file is missing" >&2
+    if [[ -z "${EMBED_PROFILE_PATH}" || ! -f "${EMBED_PROFILE_PATH}" ]]; then
+        echo "ERROR: provisioning profile helper reported '${EMBED_PROFILE_PATH}' but the file isn't there." >&2
+        echo "       Refusing to ship a Developer ID build with no embedded profile." >&2
+        exit 1
     fi
+    cp "${EMBED_PROFILE_PATH}" "${APP_DIR}/Contents/embedded.provisionprofile"
+    echo "    embedded: ${EMBED_PROFILE_PATH##*/} (profile: ${EMBED_PROFILE_NAME})"
 fi
 
 # Embed Sparkle.framework. The SwiftPM artifact cache stores the resolved
