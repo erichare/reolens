@@ -29,11 +29,19 @@ public struct LiveVideoView: NSViewRepresentable {
     public func makeNSView(context: Context) -> SampleBufferHostView {
         let view = SampleBufferHostView()
         view.attach(layer: player.displayLayer, rotationDegrees: rotationDegrees)
+        // Register the host view with the player so snapshot capture
+        // can route through the display-cache pipeline. Weak ref on
+        // the player side, so the view is free to deinit normally.
+        player.snapshotHost = view
         return view
     }
 
     public func updateNSView(_ nsView: SampleBufferHostView, context: Context) {
         nsView.attach(layer: player.displayLayer, rotationDegrees: rotationDegrees)
+        // updateNSView fires on every SwiftUI render; re-binding here
+        // is idempotent and keeps the player's host pointer aligned
+        // with the view actually on screen if SwiftUI ever swaps it.
+        player.snapshotHost = nsView
     }
 }
 #else
@@ -49,11 +57,16 @@ public struct LiveVideoView: UIViewRepresentable {
     public func makeUIView(context: Context) -> SampleBufferHostView {
         let view = SampleBufferHostView()
         view.attach(layer: player.displayLayer, rotationDegrees: rotationDegrees)
+        // Register the host view with the player so snapshot capture
+        // can route through the display-cache pipeline. Weak ref on
+        // the player side, so the view is free to deinit normally.
+        player.snapshotHost = view
         return view
     }
 
     public func updateUIView(_ uiView: SampleBufferHostView, context: Context) {
         uiView.attach(layer: player.displayLayer, rotationDegrees: rotationDegrees)
+        player.snapshotHost = uiView
     }
 }
 #endif
@@ -153,6 +166,45 @@ public final class SampleBufferHostView: UIView {
         let radians = CGFloat(rotationDegrees) * .pi / 180
         hosted.setAffineTransform(CGAffineTransform(rotationAngle: radians))
         log.debug("layout host=\(NSCoder.string(for: self.bounds), privacy: .public) layer.bounds=\(NSCoder.string(for: hosted.bounds), privacy: .public) rotation=\(self.rotationDegrees) hidden=\(hosted.isHidden) inWindow=\(self.window != nil)")
+    }
+}
+#endif
+
+// MARK: - Snapshot
+
+#if os(macOS)
+extension SampleBufferHostView: SnapshotCapable {
+    /// Capture the currently-rendered video frame via AppKit's
+    /// display-cache pipeline. Returns nil if the view isn't laid
+    /// out or isn't in a window — both happen briefly during the
+    /// SwiftUI mount sequence, and the snapshot UI surfaces a
+    /// friendly "still connecting" message in those cases.
+    public func captureSnapshot() -> CGImage? {
+        guard bounds.width > 0, bounds.height > 0 else { return nil }
+        guard let rep = bitmapImageRepForCachingDisplay(in: bounds) else { return nil }
+        cacheDisplay(in: bounds, to: rep)
+        return rep.cgImage
+    }
+}
+#else
+extension SampleBufferHostView: SnapshotCapable {
+    /// Capture the currently-rendered video frame via UIKit's
+    /// drawHierarchy pipeline. Unlike `CALayer.render(in:)`, this
+    /// goes through the same render path the screen uses, which is
+    /// the only way to extract a frame from an
+    /// `AVSampleBufferDisplayLayer` — the layer doesn't expose its
+    /// decoded contents through the public CoreAnimation API.
+    public func captureSnapshot() -> CGImage? {
+        guard bounds.width > 0, bounds.height > 0 else { return nil }
+        // afterScreenUpdates: false because we want the frame as it
+        // currently appears on screen — true would force a synchronous
+        // re-render of the whole hierarchy, which both costs more CPU
+        // and can stall mid-decode pipelines.
+        let renderer = UIGraphicsImageRenderer(bounds: bounds)
+        let image = renderer.image { _ in
+            drawHierarchy(in: bounds, afterScreenUpdates: false)
+        }
+        return image.cgImage
     }
 }
 #endif

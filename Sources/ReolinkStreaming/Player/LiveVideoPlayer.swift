@@ -38,21 +38,21 @@ public final class LiveVideoPlayer {
     /// Clockwise rotation in degrees applied by the host view.
     public var rotationDegrees: Int = 0
 
-    /// The most recent decoded video frame (as a `CVPixelBuffer`), kept so
-    /// the UI can snapshot the current live view to Photos / disk without
-    /// stopping playback or running a parallel decode. Updated on every
-    /// successful `enqueue` of a sample buffer.
+    /// Weak reference to the host view (`SampleBufferHostView`) that
+    /// owns the `AVSampleBufferDisplayLayer` on screen. The
+    /// snapshot path renders THROUGH the view (via UIKit/AppKit's
+    /// display-cache APIs) rather than trying to extract a frame from
+    /// the sample buffers — those are *encoded* H.264/H.265 bitstream
+    /// that the display layer decodes internally, so
+    /// `CMSampleBufferGetImageBuffer` returns nil and our earlier
+    /// "cache the pixel buffer at enqueue time" approach was a no-op.
     ///
-    /// Not `@Observable`-tracked deliberately — we don't want SwiftUI to
-    /// re-render every time a frame arrives. The snapshot UI reads the
-    /// property imperatively at the moment the user taps the button.
+    /// Set by `LiveVideoView.makeNSView` / `makeUIView` after
+    /// attaching the player's layer. Weak so the host can be torn
+    /// down independently — the snapshot just returns nil if the
+    /// view is gone.
     @ObservationIgnored
-    public private(set) var latestPixelBuffer: CVPixelBuffer?
-
-    /// Cached Core Image context for snapshot conversion. Created lazily
-    /// on first use so apps that never snapshot don't pay the setup cost.
-    @ObservationIgnored
-    private lazy var snapshotContext: CIContext = CIContext(options: nil)
+    public weak var snapshotHost: (any SnapshotCapable)?
 
     /// Optional list of URLs to try in order. If the first fails with anything other than
     /// an authentication error, we try the next. Useful for "try main as H.265, fall back
@@ -109,11 +109,9 @@ public final class LiveVideoPlayer {
             await c?.teardown()
             t?.cancel()
         }
-        // Drop the cached snapshot buffer so a stopped player doesn't
-        // hold a frame's worth of memory until the whole player object
-        // is released (which may be later than expected if SwiftUI is
-        // still mid-transition).
-        latestPixelBuffer = nil
+        // Drop the host-view reference so a stopped player doesn't
+        // hold a dangling pointer back into a torn-down UIView/NSView.
+        snapshotHost = nil
         state = .stopped
     }
 
@@ -326,12 +324,12 @@ public final class LiveVideoPlayer {
         }
         displayLayer.enqueue(sample)
         enqueuedSampleCount += 1
-        // Cache the latest pixel buffer for snapshot capture. Just a pointer
-        // assignment; the buffer is already retained by the CMSampleBuffer
-        // we just enqueued, so this costs nothing per-frame.
-        if let imageBuffer = CMSampleBufferGetImageBuffer(sample) {
-            latestPixelBuffer = imageBuffer
-        }
+        // No pixel-buffer caching here — the samples we receive are
+        // encoded H.264/H.265 bitstream, so CMSampleBufferGetImageBuffer
+        // always returns nil for them. Snapshot capture instead goes
+        // through the host view's display-cache path; see
+        // `LiveVideoPlayer.currentSnapshot` and `SnapshotCapable`.
+        //
         // Publish the decoded natural size once. Used by the UI to auto-mark
         // dual-lens cameras (which produce stitched ~32:9 frames).
         if naturalSize == nil, let fd = CMSampleBufferGetFormatDescription(sample) {
@@ -348,25 +346,21 @@ public final class LiveVideoPlayer {
 
     // MARK: - Snapshot
 
-    /// Capture the current live frame as a `CGImage`, applying the rotation
-    /// that the host view is showing so the saved image matches what the
-    /// user sees. Returns nil if no frame has been decoded yet (player is
-    /// still connecting, camera is sleeping, etc.).
+    /// Capture the current live frame as a `CGImage`. Returns nil if
+    /// the host view isn't attached yet (player started but never
+    /// rendered) or if the host's bounds are empty.
     ///
-    /// Cheap: just runs the cached `CIContext` over the latest
-    /// `CVPixelBuffer` — no decode, no extra RTSP traffic. Safe to call
-    /// while playback continues.
+    /// The capture goes through the system's display-cache pipeline
+    /// (`drawHierarchy(in:afterScreenUpdates:)` on iOS,
+    /// `cacheDisplay(in:to:)` on macOS) — that's what gets us the
+    /// *decoded, rotated, on-screen* frame. The pixel buffers we
+    /// enqueue into `AVSampleBufferDisplayLayer` are still encoded
+    /// H.264/H.265 bitstream; the display layer decodes them
+    /// internally, and the only practical way to access the resulting
+    /// frame is to ask the layer's host view to draw itself into a
+    /// bitmap context.
     public func currentSnapshot() -> CGImage? {
-        guard let pixelBuffer = latestPixelBuffer else { return nil }
-        var image = CIImage(cvPixelBuffer: pixelBuffer)
-        // Apply the same rotation the host view applies so saved frames
-        // come out right-side-up. Clockwise degrees → CIImage rotation
-        // counter-clockwise via the radians sign flip.
-        if rotationDegrees != 0 {
-            let radians = -CGFloat(rotationDegrees) * .pi / 180
-            image = image.transformed(by: CGAffineTransform(rotationAngle: radians))
-        }
-        return snapshotContext.createCGImage(image, from: image.extent)
+        snapshotHost?.captureSnapshot()
     }
 
     #if os(iOS) || os(visionOS)
@@ -383,4 +377,13 @@ public final class LiveVideoPlayer {
         return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
     }
     #endif
+}
+
+/// Implementation hook that `LiveVideoView`'s host views adopt so the
+/// player can snapshot through them. Lives on the streaming module
+/// boundary so callers don't have to know which platform-specific
+/// view backs the layer.
+@MainActor
+public protocol SnapshotCapable: AnyObject {
+    func captureSnapshot() -> CGImage?
 }
