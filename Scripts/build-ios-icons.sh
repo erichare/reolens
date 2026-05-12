@@ -20,10 +20,15 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MASTER="${REPO_ROOT}/Resources/icon-master.png"
 OUT_DIR="${REPO_ROOT}/AppiOS/Resources/Assets.xcassets/AppIcon.appiconset"
+FLATTEN_SCRIPT="${REPO_ROOT}/Scripts/flatten-png.swift"
 
 if [[ ! -f "${MASTER}" ]]; then
     echo "Master icon missing at ${MASTER}" >&2
     echo "Run: swift Scripts/make-icon.swift" >&2
+    exit 1
+fi
+if [[ ! -f "${FLATTEN_SCRIPT}" ]]; then
+    echo "Flatten helper missing at ${FLATTEN_SCRIPT}" >&2
     exit 1
 fi
 
@@ -57,7 +62,18 @@ declare -a TARGETS=(
 for target in "${TARGETS[@]}"; do
     name="${target%%:*}"
     size="${target##*:}"
-    sips -z "${size}" "${size}" "${MASTER}" --out "${OUT_DIR}/${name}" >/dev/null
+    tmp="$(mktemp "${OUT_DIR}/.${name}.XXXXXX.png")"
+    sips -z "${size}" "${size}" "${MASTER}" --out "${tmp}" >/dev/null
+    swift "${FLATTEN_SCRIPT}" "${tmp}" "${OUT_DIR}/${name}"
+    rm -f "${tmp}"
 done
+
+while IFS= read -r -d '' icon; do
+    has_alpha="$(sips -g hasAlpha "${icon}" 2>/dev/null | awk '/hasAlpha/ {print $2}')"
+    if [[ "${has_alpha}" != "no" ]]; then
+        echo "Generated icon still has alpha channel: ${icon}" >&2
+        exit 1
+    fi
+done < <(find "${OUT_DIR}" -maxdepth 1 -type f -name '*.png' -print0)
 
 echo "Wrote $(ls "${OUT_DIR}"/*.png | wc -l | tr -d ' ') PNG sizes to ${OUT_DIR}"

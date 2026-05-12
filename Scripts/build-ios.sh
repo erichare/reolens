@@ -29,6 +29,32 @@ EXPORT_DIR="${BUILD_DIR}/export"
 EXPORT_OPTIONS="${BUILD_DIR}/ExportOptions.plist"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+assert_png_has_no_alpha() {
+    local png="$1"
+    local has_alpha
+    has_alpha=$(sips -g hasAlpha "${png}" 2>/dev/null | awk '/hasAlpha/ {print $2}')
+    if [[ "${has_alpha}" != "no" ]]; then
+        echo "error: ${png} has alpha channel; iOS app icons must be opaque PNGs" >&2
+        exit 1
+    fi
+}
+
+validate_ios_source_icons() {
+    local icon_dir="${PROJECT_DIR}/Resources/Assets.xcassets/AppIcon.appiconset"
+
+    echo "==> Validating iOS source icon PNGs"
+    if [[ ! -f "${icon_dir}/icon-1024.png" ]]; then
+        echo "error: ${icon_dir}/icon-1024.png is missing" >&2
+        exit 1
+    fi
+
+    local icon
+    while IFS= read -r -d '' icon; do
+        assert_png_has_no_alpha "${icon}"
+    done < <(find "${icon_dir}" -maxdepth 1 -type f -name '*.png' -print0)
+    echo "    source icon PNGs are opaque"
+}
+
 validate_ios_app_bundle() {
     local app="$1"
     local plist="${app}/Info.plist"
@@ -75,6 +101,8 @@ validate_ios_app_bundle() {
         echo "error: ${ipad_icon} is ${ipad_size:-unknown}, expected 152x152" >&2
         exit 1
     fi
+    assert_png_has_no_alpha "${iphone_icon}"
+    assert_png_has_no_alpha "${ipad_icon}"
 
     echo "    CFBundleIconName=${icon_name}; required icon PNGs are present"
 }
@@ -197,6 +225,7 @@ if ! grep -q "Assets.xcassets in Resources" "${PROJECT}/project.pbxproj"; then
     echo "error: generated Xcode project does not put Resources/Assets.xcassets in the Resources build phase" >&2
     exit 1
 fi
+validate_ios_source_icons
 
 mkdir -p "${BUILD_DIR}"
 

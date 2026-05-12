@@ -235,8 +235,14 @@ jobs:
 
           IPHONE_SIZE=$(sips -g pixelWidth -g pixelHeight "${APP}/AppIcon60x60@2x.png" | awk '/pixel/ {print $2}' | paste -sd x -)
           IPAD_SIZE=$(sips -g pixelWidth -g pixelHeight "${APP}/AppIcon76x76@2x~ipad.png" | awk '/pixel/ {print $2}' | paste -sd x -)
+          IPHONE_ALPHA=$(sips -g hasAlpha "${APP}/AppIcon60x60@2x.png" | awk '/hasAlpha/ {print $2}')
+          IPAD_ALPHA=$(sips -g hasAlpha "${APP}/AppIcon76x76@2x~ipad.png" | awk '/hasAlpha/ {print $2}')
+          MARKETING_ALPHA=$(sips -g hasAlpha AppiOS/Resources/Assets.xcassets/AppIcon.appiconset/icon-1024.png | awk '/hasAlpha/ {print $2}')
           test "${IPHONE_SIZE}" = "120x120"
           test "${IPAD_SIZE}" = "152x152"
+          test "${IPHONE_ALPHA}" = "no"
+          test "${IPAD_ALPHA}" = "no"
+          test "${MARKETING_ALPHA}" = "no"
 
   # SwiftLint runs separately from the build so a style warning never
   # blocks code that compiles and tests cleanly. Failures still surface
