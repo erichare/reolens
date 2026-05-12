@@ -153,22 +153,29 @@ jobs:
           rm -f "${KEY_FILE}"
           echo "ed_signature=${ED_SIG}" >> $GITHUB_OUTPUT
 
-      - name: Regenerate appcast.xml
+      - name: Generate appcast.xml as a release asset
         env:
           ED_SIG: ${{ steps.ed.outputs.ed_signature }}
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
+          # Build the appcast at the repo root so it gets attached to
+          # the GitHub Release as `appcast.xml`. Sparkle then reads it
+          # via the /releases/latest/download/appcast.xml permalink —
+          # see SUFeedURL in App/Info.plist. We deliberately do NOT
+          # commit it back to main; the `chore(release)` push pattern
+          # ran into the repo's branch-protection rule, which we want
+          # to keep.
           DMG="dist/build/Reolens-${VERSION}.dmg"
           LENGTH=$(stat -f %z "${DMG}")
           PUBDATE=$(date -u +"%a, %d %b %Y %H:%M:%S +0000")
           URL="https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.tag }}/Reolens-${VERSION}.dmg"
-          cat > docs/appcast.xml <<EOF
+          cat > appcast.xml <<EOF
           <?xml version="1.0" encoding="utf-8"?>
           <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
             <channel>
               <title>Reolens</title>
-              <link>https://reolens.io/appcast.xml</link>
+              <link>https://github.com/${{ github.repository }}/releases/latest/download/appcast.xml</link>
               <description>Reolens release feed</description>
               <language>en</language>
               <item>
@@ -187,24 +194,7 @@ jobs:
             </channel>
           </rss>
           EOF
-
-      - name: Commit appcast back to main
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout main
-          git pull --ff-only origin main
-          cp docs/appcast.xml /tmp/appcast.xml
-          git checkout - -- docs/appcast.xml 2>/dev/null || true
-          mv /tmp/appcast.xml docs/appcast.xml
-          if git diff --quiet docs/appcast.xml; then
-            echo "appcast unchanged"
-          else
-            git add docs/appcast.xml
-            git commit -m "chore(release): update appcast for ${{ steps.tag.outputs.tag }}"
-            git push origin main
-          fi
+          echo "Generated appcast.xml ($(wc -c < appcast.xml) bytes)"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
@@ -215,3 +205,4 @@ jobs:
           files: |
             dist/build/Reolens-${{ steps.ver.outputs.version }}.dmg
             dist/build/Reolens-${{ steps.ver.outputs.version }}.dmg.sha256
+            appcast.xml

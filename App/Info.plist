@@ -54,8 +54,13 @@
          this public key before applying. An empty/placeholder value
          disables update application (Sparkle refuses to install unsigned
          updates), which is safe during development. -->
+    <!-- The appcast is published as a GitHub Release asset (named
+         appcast.xml) on every tag push. Sparkle hits the
+         /releases/latest/download/ permalink so users always get the
+         freshest feed without us having to push a file back to main
+         (which the repo's branch-protection rule blocks anyway). -->
     <key>SUFeedURL</key>
-    <string>https://reolens.io/appcast.xml</string>
+    <string>https://github.com/jestatsio/reolens/releases/latest/download/appcast.xml</string>
     <key>SUEnableAutomaticChecks</key>
     <true/>
     <key>SUScheduledCheckInterval</key>
