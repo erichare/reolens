@@ -25,13 +25,21 @@ private let log = Logger(subsystem: "com.reolens.app", category: "recordings")
 /// which feels smooth in the UI.
 @MainActor
 @Observable
-package final class RecordingDownloader {
-    package var state: State = .idle
-    package var bytesReceived: Int64 = 0
-    package var totalBytes: Int64 = 0
-    package var localURL: URL?
+public final class RecordingDownloader {
+    // Properties are `public` (not `package`) because Xcode 16's @Observable
+    // macro expansion conflicts with `package` on tracked properties — it
+    // emits `@ObservationIgnored private package var _state` for the
+    // backing storage and the compiler flags `private` + `package` as
+    // incompatible access modifiers. `public` doesn't trigger the same
+    // expansion path. (Xcode 17's macro is more permissive but CI still
+    // builds on Xcode 16.) The class itself is `public` so the property
+    // access modifier isn't more open than the type.
+    public var state: State = .idle
+    public var bytesReceived: Int64 = 0
+    public var totalBytes: Int64 = 0
+    public var localURL: URL?
 
-    package enum State: Equatable {
+    public enum State: Equatable {
         case idle
         case downloading
         case ready
@@ -55,7 +63,7 @@ package final class RecordingDownloader {
     private var legacyTask: URLSessionDownloadTask?
     private var legacyObservations: [NSKeyValueObservation] = []
 
-    package init() {
+    public init() {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 1800
@@ -66,7 +74,7 @@ package final class RecordingDownloader {
         self.session = URLSession(configuration: config)
     }
 
-    package func start(url: URL) {
+    public func start(url: URL) {
         cancel()
         state = .downloading
         bytesReceived = 0
@@ -79,7 +87,7 @@ package final class RecordingDownloader {
         }
     }
 
-    package func cancel() {
+    public func cancel() {
         workTask?.cancel()
         workTask = nil
         legacyTask?.cancel()
@@ -88,7 +96,7 @@ package final class RecordingDownloader {
         legacyObservations.removeAll()
     }
 
-    package func cleanupTempFile() {
+    public func cleanupTempFile() {
         if let url = localURL {
             try? FileManager.default.removeItem(at: url)
             localURL = nil
@@ -414,15 +422,15 @@ package final class RecordingDownloader {
 /// single seek-and-write under the actor's isolation.
 private actor OffsetWriter {
     private var handle: FileHandle?
-    package init(handle: FileHandle) { self.handle = handle }
+    init(handle: FileHandle) { self.handle = handle }
 
-    package func write(_ data: Data, at offset: Int64) throws {
+    func write(_ data: Data, at offset: Int64) throws {
         guard let handle else { throw URLError(.cancelled) }
         try handle.seek(toOffset: UInt64(offset))
         try handle.write(contentsOf: data)
     }
 
-    package func close() {
+    func close() {
         try? handle?.close()
         handle = nil
     }
@@ -432,7 +440,7 @@ private actor OffsetWriter {
 /// Returns the new running total so the caller can publish it.
 private actor ProgressCounter {
     private var total: Int64 = 0
-    package func add(_ n: Int64) -> Int64 {
+    func add(_ n: Int64) -> Int64 {
         total += n
         return total
     }
