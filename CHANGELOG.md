@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.2] — TBD
+
+Hotfix release — v0.2.1's macOS DMG still failed to launch.
+
+### Fixed
+- v0.2.1's macOS build *did* run the embedded-provisioning-profile
+  step in `Scripts/build-app.sh`, but the guard that protects that
+  step required `AC_API_KEY_P8_PATH` (a file path), and the release
+  workflow only provides `AC_API_KEY_P8_BASE64` (the contents). The
+  guard fell through silently and the .app shipped without an
+  `embedded.provisionprofile`, hitting the same AMFI -413 we thought
+  we fixed in 0.2.1.
+
+  Two changes:
+  1. `Scripts/build-app.sh` now decodes `AC_API_KEY_P8_BASE64` into
+     a temp file when the path env isn't set — same dance
+     `Scripts/build-ios.sh` already does.
+  2. The guard is now hard-fail rather than silent-skip: if we're
+     signing with a real Developer ID identity, the script aborts
+     unless the profile-embed step succeeds. Catches future
+     regressions of the same shape before they ship.
+
 ## [0.2.1] — TBD
 
 Hotfix release.
@@ -99,7 +121,8 @@ First public release.
 - All camera passwords stored in the macOS Keychain — never in plain text
 - No analytics, no telemetry, no accounts
 
-[Unreleased]: https://github.com/jestatsio/reolens/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/jestatsio/reolens/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/jestatsio/reolens/releases/tag/v0.2.2
 [0.2.1]: https://github.com/jestatsio/reolens/releases/tag/v0.2.1
 [0.2.0]: https://github.com/jestatsio/reolens/releases/tag/v0.2.0
 [0.1.1]: https://github.com/jestatsio/reolens/releases/tag/v0.1.1
