@@ -118,13 +118,26 @@ struct SingleChannelView: View {
         let observable = PiPObservable(controller: controller)
         pipController = controller
         pipObservable = observable
-        // Give SwiftUI one runloop turn to mount the now-observed
-        // PiPToolbarButton, then start PiP. Starting immediately would
-        // race the button rebinding and could miss the active-state
-        // KVO toggle.
+        // `isPictureInPicturePossible` flips to true asynchronously
+        // shortly after construction — the system needs a moment to
+        // verify the display layer is windowed, has decoded frames,
+        // and that screen recording / other PiP isn't already running.
+        // Calling `start()` while still false is a silent no-op, so
+        // poll for up to 2 seconds before giving up.
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 50_000_000)
-            controller.start()
+            let deadline = Date().addingTimeInterval(2.0)
+            while !observable.isPossible && Date() < deadline {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            if observable.isPossible {
+                controller.start()
+            } else {
+                // PiP genuinely isn't available right now (screen
+                // recording in progress, another PiP active, etc.).
+                // The toolbar button remains visible so the user can
+                // try again — it'll observe `isPossible` flipping via
+                // KVO once whatever's blocking finishes.
+            }
         }
     }
 }
