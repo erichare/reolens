@@ -27,6 +27,7 @@ BUILD_DIR="${BUILD_DIR:-build-ios}"
 ARCHIVE_PATH="${BUILD_DIR}/ReolensiOS.xcarchive"
 EXPORT_DIR="${BUILD_DIR}/export"
 EXPORT_OPTIONS="${BUILD_DIR}/ExportOptions.plist"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 if ! command -v xcodegen >/dev/null 2>&1; then
     echo "error: xcodegen is required (brew install xcodegen)" >&2
@@ -145,17 +146,46 @@ echo "==> Regenerating Xcode project from spec"
 
 mkdir -p "${BUILD_DIR}"
 
-echo "==> Archiving for generic/iOS"
-# Force Apple Distribution signing for the archive. Without an explicit
-# CODE_SIGN_IDENTITY, xcodebuild's automatic signing defaults to Apple
-# Development — which then errors with "Your team has no devices" on a
-# fresh CI runner because Development profiles require at least one
-# registered device. Archive for App Store distribution doesn't need
-# any devices, but we have to tell xcodebuild that explicitly.
+# xcodebuild's "automatic" signing in Xcode 26 silently ignores
+# command-line CODE_SIGN_IDENTITY overrides AND defaults to creating an
+# iOS App Development profile when archiving on a CI runner — which then
+# fails with "Your team has no devices" because Development profiles
+# require a registered device. The reliable workaround is to drop to
+# manual signing and pre-create the App Store profile via the ASC API.
 #
-# `-allowProvisioningUpdates` (already set above) lets xcodebuild
-# auto-create the Apple Distribution certificate + App Store
-# provisioning profile on first run using the ASC API key.
+# `Scripts/asc_ensure_profile.py` does the API dance (creates the bundle
+# id and profile if needed, downloads the .mobileprovision into
+# ~/Library/MobileDevice/Provisioning Profiles/) and prints the profile
+# name on stdout. We capture that name for PROVISIONING_PROFILE_SPECIFIER.
+PROFILE_NAME=""
+if [[ -n "${AC_API_KEY_ID:-}" && -n "${AC_API_KEY_P8_PATH:-}" ]]; then
+    echo "==> Ensuring App Store provisioning profile via ASC API"
+    export IOS_BUNDLE_ID="${IOS_BUNDLE_ID:-com.reolens.Reolens.iOS}"
+    export PROFILE_NAME="${PROFILE_NAME:-Reolens iOS App Store}"
+    PROFILE_NAME="$(python3 "${REPO_ROOT}/Scripts/asc_ensure_profile.py")"
+    echo "    using profile: ${PROFILE_NAME}"
+fi
+
+echo "==> Archiving for generic/iOS"
+# With manual signing + an explicit profile specifier, xcodebuild has to
+# use what we tell it. `-allowProvisioningUpdates` lets it download the
+# matching profile if it isn't already in the keychain (it is, because
+# the python script just installed it, but the flag is harmless).
+SIGN_BUILD_SETTINGS=()
+if [[ -n "${PROFILE_NAME}" ]]; then
+    SIGN_BUILD_SETTINGS=(
+        "CODE_SIGN_STYLE=Manual"
+        "CODE_SIGN_IDENTITY=Apple Distribution"
+        "PROVISIONING_PROFILE_SPECIFIER=${PROFILE_NAME}"
+        "DEVELOPMENT_TEAM=5M9UT7VQ8Q"
+    )
+else
+    # No API key available — fall back to whatever the project has
+    # configured (automatic signing with whatever Apple ID Xcode is
+    # signed in as). Useful for local archives during development.
+    SIGN_BUILD_SETTINGS=("CODE_SIGN_IDENTITY=Apple Distribution")
+fi
+
 xcodebuild \
     -project "${PROJECT}" \
     -scheme "${SCHEME}" \
@@ -164,7 +194,7 @@ xcodebuild \
     -archivePath "${ARCHIVE_PATH}" \
     -allowProvisioningUpdates \
     ${AC_AUTH_FLAGS[@]+"${AC_AUTH_FLAGS[@]}"} \
-    CODE_SIGN_IDENTITY="Apple Distribution" \
+    "${SIGN_BUILD_SETTINGS[@]}" \
     archive
 
 if [[ "${MODE}" == "archive" ]]; then
@@ -174,7 +204,13 @@ if [[ "${MODE}" == "archive" ]]; then
 fi
 
 echo "==> Writing ExportOptions.plist"
-cat > "${EXPORT_OPTIONS}" <<'PLIST'
+# Manual signing for export too — must match the archive step's choices,
+# otherwise xcodebuild re-signs the .ipa with whatever it would have
+# picked automatically (often: nothing, since automatic signing fails
+# for the same reason archive does).
+EXPORT_BUNDLE_ID="${IOS_BUNDLE_ID:-com.reolens.Reolens.iOS}"
+EXPORT_PROFILE_NAME="${PROFILE_NAME:-Reolens iOS App Store}"
+cat > "${EXPORT_OPTIONS}" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -186,7 +222,14 @@ cat > "${EXPORT_OPTIONS}" <<'PLIST'
     <key>teamID</key>
     <string>5M9UT7VQ8Q</string>
     <key>signingStyle</key>
-    <string>automatic</string>
+    <string>manual</string>
+    <key>signingCertificate</key>
+    <string>Apple Distribution</string>
+    <key>provisioningProfiles</key>
+    <dict>
+        <key>${EXPORT_BUNDLE_ID}</key>
+        <string>${EXPORT_PROFILE_NAME}</string>
+    </dict>
     <key>uploadSymbols</key>
     <true/>
     <key>stripSwiftSymbols</key>
