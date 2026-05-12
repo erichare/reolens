@@ -266,17 +266,30 @@ if [[ -z "${AC_API_KEY_ID:-}" || -z "${AC_API_ISSUER_ID:-}" || -z "${AC_API_KEY_
     exit 1
 fi
 
-# `xcrun altool --upload-app` wants the key on disk under a directory it
-# will find via --apiKeyPath, OR via the legacy private_keys lookup.
-# Use --apiKey/--apiIssuer with --apiKeyPath for clarity.
+# `xcrun altool` in current Xcode ignores `--apiKeyPath` and only
+# looks for the .p8 in fixed locations:
+#   ~/work/$REPO/$REPO/private_keys     (CI workdir)
+#   ~/private_keys
+#   ~/.private_keys
+#   ~/.appstoreconnect/private_keys
+# The flag still parses without erroring, but altool errors with -43
+# "could not be found in any of these locations" if the file isn't
+# at one of those exact paths. Stage the key into the canonical
+# ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8 location.
+ALTOOL_KEY_DIR="${HOME}/.appstoreconnect/private_keys"
+mkdir -p "${ALTOOL_KEY_DIR}"
+ALTOOL_KEY_PATH="${ALTOOL_KEY_DIR}/AuthKey_${AC_API_KEY_ID}.p8"
+cp "${AC_API_KEY_P8_PATH}" "${ALTOOL_KEY_PATH}"
+chmod 600 "${ALTOOL_KEY_PATH}"
+trap 'rm -f "${ALTOOL_KEY_PATH}"; rm -rf "${AC_KEY_TMPDIR}"' EXIT
+
 echo "==> Uploading to App Store Connect (TestFlight)"
 xcrun altool \
     --upload-app \
     --type ios \
     --file "${IPA}" \
     --apiKey "${AC_API_KEY_ID}" \
-    --apiIssuer "${AC_API_ISSUER_ID}" \
-    --apiKeyPath "${AC_API_KEY_P8_PATH}"
+    --apiIssuer "${AC_API_ISSUER_ID}"
 
 echo "==> Upload complete. TestFlight processing typically takes 10–30 minutes."
 echo "Track progress at: https://appstoreconnect.apple.com/apps"
