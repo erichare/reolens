@@ -447,7 +447,6 @@ struct RecordingPlayerSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var downloader = RecordingDownloader()
-    @State private var player: AVPlayer?
 
     var body: some View {
         NavigationStack {
@@ -462,18 +461,7 @@ struct RecordingPlayerSheet: View {
                 .task {
                     downloader.start(url: recording.url)
                 }
-                .onChange(of: downloader.state) { _, newState in
-                    if newState == .ready, let localURL = downloader.localURL {
-                        let item = AVPlayerItem(url: localURL)
-                        let p = AVPlayer(playerItem: item)
-                        self.player = p
-                        p.play()
-                    }
-                }
                 .onDisappear {
-                    player?.pause()
-                    player?.replaceCurrentItem(with: nil)
-                    player = nil
                     downloader.cancel()
                     // Note: NO cleanupTempFile() here. The downloader
                     // promotes completed files to the cache directory
@@ -495,8 +483,15 @@ struct RecordingPlayerSheet: View {
         case .downloading:
             downloadProgress
         case .ready:
-            if let player {
-                VideoPlayer(player: player)
+            if let localURL = downloader.localURL {
+                // Use AVPlayerViewController directly (not SwiftUI's
+                // VideoPlayer wrapper). VideoPlayer + @State<AVPlayer>
+                // had a race where the player binding flickered between
+                // body re-renders — symptom: image flashed for a frame,
+                // then "Starting playback…" returned. AVPlayerViewController
+                // owns its own player and binds on appear; no SwiftUI
+                // intermediate state to lose.
+                AVPlayerHostView(url: localURL)
                     .ignoresSafeArea(.container, edges: .bottom)
             } else {
                 ProgressView("Starting playback…")
@@ -561,5 +556,37 @@ struct RecordingPlayerSheet: View {
     private var headerTitle: String {
         recording.startDate?.formatted(date: .abbreviated, time: .shortened)
             ?? recording.displayName
+    }
+}
+
+/// AVPlayerViewController wrapped for SwiftUI. Mirrors the macOS app's
+/// `AVPlayerHostView` (NSViewRepresentable wrapping AVPlayerView). Owns
+/// its own AVPlayer rather than receiving one from SwiftUI @State,
+/// which avoids a binding race where the player reference could go
+/// nil between body re-renders, briefly showing the camera frame then
+/// reverting to "Starting playback…".
+private struct AVPlayerHostView: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> AVPlayerViewController {
+        let controller = AVPlayerViewController()
+        controller.player = AVPlayer(url: url)
+        controller.showsPlaybackControls = true
+        // Auto-play once the system has the controller in its view
+        // hierarchy. Calling play() before that point silently no-ops
+        // on some firmware.
+        DispatchQueue.main.async {
+            controller.player?.play()
+        }
+        return controller
+    }
+
+    func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
+        // If the URL changed (different recording on the same sheet),
+        // swap the player. Same-URL re-binds are no-ops.
+        let currentURL = (controller.player?.currentItem?.asset as? AVURLAsset)?.url
+        guard currentURL != url else { return }
+        controller.player = AVPlayer(url: url)
+        controller.player?.play()
     }
 }
