@@ -270,6 +270,23 @@ jobs:
       - name: Install xcodegen
         run: brew install xcodegen
 
+      # The macos-15 runner image ships Xcode 16 *without* the iOS
+      # platform support files (simulators, device deployment runtime,
+      # etc.) installed. Without them, `xcodebuild -destination
+      # 'generic/platform=iOS'` errors with "iOS 18.0 is not installed".
+      # Apple's official remedy is `xcodebuild -downloadPlatform iOS`,
+      # which fetches and installs the platform on demand. Skipped if
+      # already installed (idempotent), so it's safe to keep around.
+      - name: Install iOS platform support files
+        run: xcodebuild -downloadPlatform iOS
+
+      # PyJWT + cryptography power the pre-flight ASC API check in
+      # Scripts/build-ios.sh. Without them the script skips the check
+      # and we lose the diagnostic, falling back on xcodebuild's
+      # generic "Authentication failed" if the key is misconfigured.
+      - name: Install Python deps for pre-flight diagnostic
+        run: pip3 install --break-system-packages pyjwt cryptography
+
       - name: Bump CURRENT_PROJECT_VERSION to GitHub run number
         # MARKETING_VERSION stays at whatever the spec says (0.2.0, etc.);
         # CURRENT_PROJECT_VERSION must monotonically increase per upload
