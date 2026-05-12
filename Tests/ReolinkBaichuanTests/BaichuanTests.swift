@@ -291,6 +291,80 @@ struct AlarmEventTests {
         #expect(events[1].kind == .ai("dog_cat"))
         #expect(events[2].kind == .motionStop)
     }
+
+    /// Real XML captured from a Reolink Home Hub Pro on firmware
+    /// v3.3.0.369. Two differences from the legacy / community-doc
+    /// shape that broke the parser before:
+    ///   - `<AlarmEvent version="1.1">` carries an attribute on the
+    ///     opening tag (the parser used to require a bare
+    ///     `<AlarmEvent>`)
+    ///   - the AI type tag is `<AItype>` (camel-case, no underscore),
+    ///     not `<ai_type>`
+    /// Without the fix, parsing returned 0 events and no notifications
+    /// ever fired even when motion was happening.
+    @Test func parsesHomeHubProBaselinePoll() {
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8" ?>
+        <body>
+        <AlarmEventList version="1.1">
+        <AlarmEvent version="1.1">
+        <channelId>0</channelId>
+        <status>none</status>
+        <AItype>none</AItype>
+        <recording>0</recording>
+        <timeStamp>0</timeStamp>
+        </AlarmEvent>
+        <AlarmEvent version="1.1">
+        <channelId>1</channelId>
+        <status>none</status>
+        <AItype>none</AItype>
+        <recording>0</recording>
+        <timeStamp>0</timeStamp>
+        </AlarmEvent>
+        </AlarmEventList>
+        </body>
+        """
+        let events = BaichuanClient.parseAlarmEvents(xml: xml, channelID: 0)
+        #expect(events.count == 2)
+        // Channel 0 — channelId in the block wins over the header.
+        #expect(events[0].channelID == 0)
+        #expect(events[0].kind == .motionStop)
+        // Channel 1 — same, dispatching across channels in one msg.
+        #expect(events[1].channelID == 1)
+        #expect(events[1].kind == .motionStop)
+    }
+
+    @Test func parsesHomeHubProAIEvent() {
+        let xml = """
+        <AlarmEventList version="1.1">
+        <AlarmEvent version="1.1">
+        <channelId>3</channelId>
+        <status>MD</status>
+        <AItype>people</AItype>
+        </AlarmEvent>
+        </AlarmEventList>
+        """
+        let events = BaichuanClient.parseAlarmEvents(xml: xml, channelID: 0)
+        #expect(events.count == 1)
+        #expect(events.first?.channelID == 3)
+        #expect(events.first?.kind == .ai("people"))
+    }
+
+    @Test func parsesHomeHubProMotionEvent() {
+        let xml = """
+        <AlarmEventList version="1.1">
+        <AlarmEvent version="1.1">
+        <channelId>5</channelId>
+        <status>MD</status>
+        <AItype>none</AItype>
+        </AlarmEvent>
+        </AlarmEventList>
+        """
+        let events = BaichuanClient.parseAlarmEvents(xml: xml, channelID: 0)
+        #expect(events.count == 1)
+        #expect(events.first?.channelID == 5)
+        #expect(events.first?.kind == .motionStart)
+    }
 }
 
 @Suite("Nonce extraction")

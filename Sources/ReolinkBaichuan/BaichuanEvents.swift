@@ -54,9 +54,12 @@ extension BaichuanClient {
                     }
                     let xml = String(data: msg.body, encoding: .utf8) ?? ""
                     let events = Self.parseAlarmEvents(xml: xml, channelID: msg.header.channelID)
-                    if !events.isEmpty {
-                        log.info("Parsed \(events.count) alarm events from msgID=33")
-                    }
+                    // Trace at debug — these messages arrive every few
+                    // seconds per channel, so logging at info here would
+                    // flood the unified log. Maintainers can flip to
+                    // info via `log config --subsystem com.reolens.baichuan
+                    // --mode "level:info"` when chasing a missed event.
+                    log.debug("msgID=33 parsed \(events.count) events")
                     for event in events {
                         continuation.yield(event)
                     }
@@ -69,28 +72,47 @@ extension BaichuanClient {
     }
 
     static func parseAlarmEvents(xml: String, channelID: UInt8) -> [BaichuanEvent] {
-        // The camera emits an `<AlarmEventList>` containing one or more
-        // `<AlarmEvent>` blocks. Each has fields like:
+        // The hub emits an `<AlarmEventList>` containing one
+        // `<AlarmEvent ...>` block per channel. Real shape on a Reolink
+        // Home Hub Pro running v3.3.0:
         //
-        //     <AlarmEvent>
+        //     <AlarmEvent version="1.1">
         //       <channelId>0</channelId>
-        //       <status>MD</status>          (or "none")
+        //       <status>MD</status>            (or "none")
+        //       <AItype>people</AItype>        (or "none")
         //       <recording>0</recording>
         //       <timeStamp>1747...</timeStamp>
-        //       <ai_type>people</ai_type>    (newer firmware)
         //     </AlarmEvent>
         //
-        // We pick out `status` and `ai_type` to classify.
+        // We must:
+        //   - tolerate `<AlarmEvent>` *and* `<AlarmEvent version="…">`
+        //     (and any other future attribute) — match the open tag
+        //     prefix, then find the next `>` to close it
+        //   - look for the AI tag under both casings: newer hub
+        //     firmware sends `<AItype>`, older builds and the
+        //     community PDF doc use `<ai_type>`
+        //   - also accept the per-channel ID embedded in the block
+        //     itself, so a single multi-camera msgID=33 dump can route
+        //     each event to its correct channel
         var events: [BaichuanEvent] = []
         var searchRange = xml.startIndex..<xml.endIndex
-        while let blockOpen = xml.range(of: "<AlarmEvent>", range: searchRange),
-              let blockClose = xml.range(of: "</AlarmEvent>", range: blockOpen.upperBound..<xml.endIndex) {
-            let blockText = String(xml[blockOpen.upperBound..<blockClose.lowerBound])
+        while let openTagStart = xml.range(of: "<AlarmEvent", range: searchRange),
+              let openTagEnd = xml.range(of: ">", range: openTagStart.upperBound..<xml.endIndex),
+              let blockClose = xml.range(of: "</AlarmEvent>", range: openTagEnd.upperBound..<xml.endIndex) {
+            let blockText = String(xml[openTagEnd.upperBound..<blockClose.lowerBound])
             let status = BcXmlBody.firstTagContent(in: blockText, tag: "status") ?? ""
-            let aiType = BcXmlBody.firstTagContent(in: blockText, tag: "ai_type")
+            let aiType = BcXmlBody.firstTagContent(in: blockText, tag: "AItype")
+                ?? BcXmlBody.firstTagContent(in: blockText, tag: "ai_type")
+            // If the block carries a `<channelId>` use it; otherwise
+            // fall back to the message-header channel passed in.
+            let inner = BcXmlBody.firstTagContent(in: blockText, tag: "channelId")
+            let resolvedChannel: UInt8 = {
+                if let inner, let n = UInt8(inner) { return n }
+                return channelID
+            }()
 
             let kind: BaichuanEvent.Kind
-            if let aiType, !aiType.isEmpty, aiType != "none" {
+            if let aiType, !aiType.isEmpty, aiType.lowercased() != "none" {
                 kind = .ai(aiType)
             } else if status == "MD" {
                 kind = .motionStart
@@ -99,7 +121,7 @@ extension BaichuanClient {
             } else {
                 kind = .other
             }
-            events.append(BaichuanEvent(channelID: channelID, kind: kind, raw: blockText))
+            events.append(BaichuanEvent(channelID: resolvedChannel, kind: kind, raw: blockText))
             searchRange = blockClose.upperBound..<xml.endIndex
         }
         return events
