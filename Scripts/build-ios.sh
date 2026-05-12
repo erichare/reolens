@@ -146,6 +146,16 @@ echo "==> Regenerating Xcode project from spec"
 mkdir -p "${BUILD_DIR}"
 
 echo "==> Archiving for generic/iOS"
+# Force Apple Distribution signing for the archive. Without an explicit
+# CODE_SIGN_IDENTITY, xcodebuild's automatic signing defaults to Apple
+# Development — which then errors with "Your team has no devices" on a
+# fresh CI runner because Development profiles require at least one
+# registered device. Archive for App Store distribution doesn't need
+# any devices, but we have to tell xcodebuild that explicitly.
+#
+# `-allowProvisioningUpdates` (already set above) lets xcodebuild
+# auto-create the Apple Distribution certificate + App Store
+# provisioning profile on first run using the ASC API key.
 xcodebuild \
     -project "${PROJECT}" \
     -scheme "${SCHEME}" \
@@ -154,6 +164,7 @@ xcodebuild \
     -archivePath "${ARCHIVE_PATH}" \
     -allowProvisioningUpdates \
     ${AC_AUTH_FLAGS[@]+"${AC_AUTH_FLAGS[@]}"} \
+    CODE_SIGN_IDENTITY="Apple Distribution" \
     archive
 
 if [[ "${MODE}" == "archive" ]]; then
