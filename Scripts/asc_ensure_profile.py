@@ -160,30 +160,68 @@ def request(method: str, path: str, body: dict | None = None) -> dict:
 
 
 def find_bundle_id_resource(bundle_id: str, platform: str) -> str:
-    """Return the ASC resource id for our bundle id (creates if missing)."""
+    """Return the ASC resource id for our bundle id (creates if missing).
+
+    ASC's `filter[identifier]` is a *prefix* match, not exact — asking
+    for `com.reolens.Reolens` happily returns
+    `com.reolens.Reolens.iOS` if that's the only thing registered. We
+    iterate up to a page of results and only accept an exact match;
+    otherwise we treat the bundle as missing and try to POST. If the
+    POST fails (often does, because creating bundle ids needs Admin
+    role just like profiles), we exit with the precise developer-portal
+    URL the maintainer should visit to register it manually.
+    """
     res = request(
         "GET",
-        "/bundleIds?" + _query({"filter[identifier]": bundle_id, "limit": 1}),
+        # Bump limit so the prefix-match noise doesn't push the exact
+        # match off the page. 200 is the API max.
+        "/bundleIds?" + _query({"filter[identifier]": bundle_id, "limit": 200}),
     )
-    data = res.get("data") or []
-    if data:
-        return data[0]["id"]
+    for entry in (res.get("data") or []):
+        if (entry.get("attributes") or {}).get("identifier") == bundle_id:
+            return entry["id"]
 
     sys.stderr.write(f"    bundleId {bundle_id} not registered — creating ({platform})\n")
-    res = request(
-        "POST",
-        "/bundleIds",
-        body={
-            "data": {
-                "type": "bundleIds",
-                "attributes": {
-                    "identifier": bundle_id,
-                    "name": bundle_id.replace(".", " "),
-                    "platform": platform,
-                },
-            }
-        },
-    )
+    try:
+        res = request(
+            "POST",
+            "/bundleIds",
+            body={
+                "data": {
+                    "type": "bundleIds",
+                    "attributes": {
+                        "identifier": bundle_id,
+                        "name": bundle_id.replace(".", " "),
+                        "platform": platform,
+                    },
+                }
+            },
+        )
+    except urllib.error.HTTPError as e:
+        if e.code == 403:
+            sys.exit(
+                "\n"
+                "  ⚠️  ASC API rejected POST /v1/bundleIds with 403 FORBIDDEN.\n"
+                "\n"
+                f"  Bundle id '{bundle_id}' isn't registered in your Apple\n"
+                "  Developer account, and your ASC API key doesn't have\n"
+                "  permission to create one. Bundle id creation needs the\n"
+                "  Admin role (App Manager doesn't cut it). Same constraint\n"
+                "  applies to provisioning profiles.\n"
+                "\n"
+                "  Easiest fix — register it manually, once:\n"
+                "    https://developer.apple.com/account/resources/identifiers/list/bundleId\n"
+                "    • '+' → App IDs → App\n"
+                f"    • Description: 'Reolens {platform}'\n"
+                "    • Bundle ID: Explicit\n"
+                f"    • Identifier: '{bundle_id}'\n"
+                "    • Capabilities: enable any your entitlements need\n"
+                "      (e.g. iCloud — and don't forget to attach the\n"
+                "      iCloud container under 'Edit / Configure')\n"
+                "\n"
+                "  Then re-run; the script's GET path will pick it up.\n"
+            )
+        raise
     return res["data"]["id"]
 
 
