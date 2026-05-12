@@ -103,8 +103,8 @@ Drag tiles to rearrange them. Right-click a tile for "Make primary",
 |---|---|
 | ![Adaptive grid](docs/screenshots/grid-adaptive.png) | ![Spotlight layout](docs/screenshots/spotlight.png) |
 | Adaptive multi-camera grid | Spotlight layout |
-| ![Detail + PTZ](docs/screenshots/detail-ptz.png) | ![Rich alarm notification](docs/screenshots/notification.png) |
-| Detail view with PTZ | Rich macOS alarm notifications |
+| ![Detail + PTZ](docs/screenshots/detail-ptz.png) | ![About panel](docs/screenshots/about.png) |
+| Detail view with full PTZ controls | About panel — version + Check for Updates |
 
 ## Architecture
 
