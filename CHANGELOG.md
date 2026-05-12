@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.3.0] — TBD
+## [0.3.0] — 2026-05-12
 
 The first release with full platform parity between macOS, iPadOS, and
 iPhone. Three blocker bugs in the iOS/iPadOS app are fixed, and tile
