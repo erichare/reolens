@@ -232,27 +232,58 @@ def find_or_create_profile(
             return name, p["id"]
 
     sys.stderr.write(f"    profile {name!r} ({profile_type}) missing — creating\n")
-    res = request(
-        "POST",
-        "/profiles",
-        body={
-            "data": {
-                "type": "profiles",
-                "attributes": {
-                    "name": name,
-                    "profileType": profile_type,
-                },
-                "relationships": {
-                    "bundleId": {
-                        "data": {"type": "bundleIds", "id": bundle_id_resource}
+    try:
+        res = request(
+            "POST",
+            "/profiles",
+            body={
+                "data": {
+                    "type": "profiles",
+                    "attributes": {
+                        "name": name,
+                        "profileType": profile_type,
                     },
-                    "certificates": {
-                        "data": [{"type": "certificates", "id": cert_id}]
+                    "relationships": {
+                        "bundleId": {
+                            "data": {"type": "bundleIds", "id": bundle_id_resource}
+                        },
+                        "certificates": {
+                            "data": [{"type": "certificates", "id": cert_id}]
+                        },
                     },
-                },
-            }
-        },
-    )
+                }
+            },
+        )
+    except urllib.error.HTTPError as e:
+        if e.code == 403:
+            sys.exit(
+                "\n"
+                "  ⚠️  ASC API rejected POST /v1/profiles with 403 FORBIDDEN.\n"
+                "\n"
+                "  Your ASC API key has Read permission on profiles\n"
+                "  (which is why the pre-flight check passed) but not\n"
+                "  Write/Create. Profile creation requires the Admin role,\n"
+                "  but ASC API keys can't be promoted after the fact.\n"
+                "\n"
+                "  Two ways to unblock:\n"
+                "\n"
+                "  (a) FAST — pre-create the profile manually, once:\n"
+                f"      • https://developer.apple.com/account/resources/profiles/add\n"
+                f"      • Type: pick the one matching {profile_type}\n"
+                f"        (e.g. Distribution → App Store for IOS_APP_STORE)\n"
+                f"      • App ID: the bundle id this script just used\n"
+                f"      • Certificate: the matching Apple Distribution / Developer ID cert\n"
+                f"      • Profile Name: '{name}'  (must match exactly)\n"
+                "      • Generate. The script will then find it on the next run\n"
+                "        without ever hitting the POST.\n"
+                "\n"
+                "  (b) PROPER — recreate the ASC API key with Admin role:\n"
+                "      • https://appstoreconnect.apple.com/access/integrations/api\n"
+                "      • Generate API Key → Access: Admin → download .p8\n"
+                "      • Update GitHub secrets AC_API_KEY_ID and\n"
+                "        AC_API_KEY_P8_BASE64 (issuer id stays the same)\n"
+            )
+        raise
     return name, res["data"]["id"]
 
 
