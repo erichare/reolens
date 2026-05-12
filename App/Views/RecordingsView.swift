@@ -736,7 +736,11 @@ struct RecordingPlayerSheet: View {
         }
         .onDisappear {
             downloader.cancel()
-            downloader.cleanupTempFile()
+            // The downloader's cache promotes successful downloads
+            // into ~/Library/Caches/Reolens/recordings/ — re-tapping
+            // the same recording later is a cache hit. cleanupTempFile
+            // is now cache-aware (no-op for cached files), but skipping
+            // the call entirely keeps intent obvious.
         }
     }
 

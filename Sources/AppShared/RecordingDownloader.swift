@@ -74,6 +74,93 @@ public final class RecordingDownloader {
         self.session = URLSession(configuration: config)
     }
 
+    // MARK: - Cache
+
+    /// Cache directory under `~/Library/Caches/Reolens/recordings/`.
+    /// iOS may purge it under disk pressure; macOS persists it until
+    /// the user clears system caches. The downloader writes every
+    /// completed recording here so re-tapping a clip the user has
+    /// already watched is a zero-byte cache hit, not a fresh
+    /// download. Reolink recordings are immutable for a given
+    /// (camera, timestamp) — safe to cache without invalidation.
+    nonisolated static func cacheDirectory() -> URL? {
+        let fm = FileManager.default
+        guard let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
+        let dir = caches.appendingPathComponent("Reolens", isDirectory: true)
+            .appendingPathComponent("recordings", isDirectory: true)
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    /// Compute the cache filename for a given Reolink download URL.
+    /// Uses the `?source=` query parameter — that's the canonical
+    /// recording filename the CGI Download endpoint expects, and it
+    /// uniquely identifies the clip across cameras and time. Returns
+    /// nil if the URL doesn't have a `source` param (which means it
+    /// isn't a Reolink Download URL we should be caching anyway).
+    nonisolated static func cacheFilename(for downloadURL: URL) -> String? {
+        guard let components = URLComponents(url: downloadURL, resolvingAgainstBaseURL: false),
+              let items = components.queryItems,
+              let source = items.first(where: { $0.name == "source" })?.value,
+              !source.isEmpty
+        else { return nil }
+        // Source names are filesystem-friendly on Reolink hubs
+        // (Mp4Record_2026-05-12_06h44m13s_xxx.mp4 style), but defend
+        // against the rare colon / slash anyway.
+        var safe = source
+        for bad in ["/", ":", "\\"] {
+            safe = safe.replacingOccurrences(of: bad, with: "_")
+        }
+        // Ensure .mp4 extension so the OS recognizes the type when
+        // AVPlayer loads from disk.
+        if !safe.lowercased().hasSuffix(".mp4") {
+            safe += ".mp4"
+        }
+        return safe
+    }
+
+    /// Return the cached file URL for `downloadURL` if one exists on
+    /// disk, otherwise nil. Used by `start(url:)` to short-circuit
+    /// the download flow.
+    nonisolated static func cachedFile(for downloadURL: URL) -> URL? {
+        guard let dir = cacheDirectory(),
+              let name = cacheFilename(for: downloadURL) else { return nil }
+        let path = dir.appendingPathComponent(name)
+        return FileManager.default.fileExists(atPath: path.path) ? path : nil
+    }
+
+    /// Move a freshly-downloaded temp file into the cache so subsequent
+    /// taps don't re-download. Returns the cache URL on success, or
+    /// the original temp URL if the move failed (we still hand the
+    /// caller a playable file even if caching failed).
+    nonisolated static func promoteToCache(tempURL: URL, downloadURL: URL) -> URL {
+        guard let dir = cacheDirectory(),
+              let name = cacheFilename(for: downloadURL) else { return tempURL }
+        let cachePath = dir.appendingPathComponent(name)
+        // Overwrite any stale cache entry (shouldn't happen since we
+        // check the cache before downloading, but harmless and keeps
+        // the move from failing with "file exists").
+        try? FileManager.default.removeItem(at: cachePath)
+        do {
+            try FileManager.default.moveItem(at: tempURL, to: cachePath)
+            return cachePath
+        } catch {
+            log.warning("Cache promote failed: \(error.localizedDescription, privacy: .public)")
+            return tempURL
+        }
+    }
+
+    /// Whether `url` lives inside our recordings cache directory.
+    /// Used by `cleanupTempFile` to avoid deleting cached files —
+    /// only partial / cancelled downloads outside the cache should
+    /// be cleaned up on dismiss.
+    nonisolated static func isInCacheDirectory(_ url: URL) -> Bool {
+        guard let cacheDir = cacheDirectory() else { return false }
+        return url.path.hasPrefix(cacheDir.path)
+    }
+
+    // MARK: - Logging helpers
+
     /// Return a description of `url` safe to write to the unified log:
     /// drops `user`, `password`, and `token` query parameters which Reolink's
     /// CGI endpoints accept as plaintext credentials when no session cookie
@@ -93,11 +180,29 @@ public final class RecordingDownloader {
 
     public func start(url: URL) {
         cancel()
-        state = .downloading
         bytesReceived = 0
         totalBytes = 0
         localURL = nil
 
+        // Cache check: if we've already downloaded this recording in a
+        // previous session, jump straight to .ready with the cached
+        // file. Reolink recordings are immutable (a given timestamped
+        // clip never changes), so a content-stable cache hit is always
+        // safe to serve without re-downloading.
+        if let cached = Self.cachedFile(for: url) {
+            log.info("Using cached recording at \(cached.path, privacy: .public)")
+            localURL = cached
+            // Report the full size up front so the UI doesn't flash a
+            // progress bar at zero before switching to .ready.
+            if let size = (try? FileManager.default.attributesOfItem(atPath: cached.path)[.size] as? Int64) {
+                totalBytes = size
+                bytesReceived = size
+            }
+            state = .ready
+            return
+        }
+
+        state = .downloading
         // The download URL embeds Reolink session tokens (and, in the
         // tokenless fallback, the camera username and password as query
         // parameters). Strip those before logging — `os.Logger` keeps the
@@ -118,11 +223,18 @@ public final class RecordingDownloader {
         legacyObservations.removeAll()
     }
 
+    /// Clean up a partial / mid-cancel download. NO-OP for fully
+    /// cached files — those persist across sessions so taps that
+    /// re-open a previously-watched recording skip the download
+    /// entirely (the cache hit in `start(url:)` handles it).
     public func cleanupTempFile() {
-        if let url = localURL {
-            try? FileManager.default.removeItem(at: url)
-            localURL = nil
-        }
+        guard let url = localURL else { return }
+        // Files inside the cache directory are kept; the system
+        // purges them under disk pressure. Files outside are
+        // partial-download artifacts that should be deleted.
+        if Self.isInCacheDirectory(url) { return }
+        try? FileManager.default.removeItem(at: url)
+        localURL = nil
     }
 
     // MARK: - Strategy selection
@@ -338,7 +450,13 @@ public final class RecordingDownloader {
 
         await writer.close()
         let finalSize = (try? FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? Int64) ?? total
-        log.info("Parallel download complete: \(finalSize) bytes → \(dest.lastPathComponent, privacy: .public)")
+        // Move the completed file into the cache directory so a future
+        // tap on the same recording skips the download entirely. The
+        // promote helper returns the new path on success, or the temp
+        // path unchanged on failure (still playable, just not cached).
+        let final = Self.promoteToCache(tempURL: dest, downloadURL: url)
+        log.info("Parallel download complete: \(finalSize) bytes → \(final.lastPathComponent, privacy: .public)")
+        localURL = final
         bytesReceived = total
         state = .ready
     }
@@ -353,7 +471,7 @@ public final class RecordingDownloader {
                 // hop to MainActor first or the file will already be gone.
                 let outcome = Self.relocateDownload(tmpURL: tmpURL, response: response, error: error)
                 Task { @MainActor [weak self] in
-                    self?.finishSingleStream(outcome: outcome)
+                    self?.finishSingleStream(outcome: outcome, downloadURL: url)
                     cont.resume()
                 }
             }
@@ -413,7 +531,7 @@ public final class RecordingDownloader {
         }
     }
 
-    private func finishSingleStream(outcome: SingleStreamOutcome) {
+    private func finishSingleStream(outcome: SingleStreamOutcome, downloadURL: URL) {
         legacyObservations.forEach { $0.invalidate() }
         legacyObservations.removeAll()
         legacyTask = nil
@@ -425,10 +543,14 @@ public final class RecordingDownloader {
             log.error("Download failed: \(message, privacy: .public)")
             state = .failed(message)
         case .success(let dest, let size):
-            log.info("Single-stream download done: \(size) bytes → \(dest.lastPathComponent, privacy: .public)")
+            // Move the completed file into the cache so re-taps don't
+            // re-download. Falls back to the original temp path on
+            // failure — the file is still playable, just not cached.
+            let final = Self.promoteToCache(tempURL: dest, downloadURL: downloadURL)
+            log.info("Single-stream download done: \(size) bytes → \(final.lastPathComponent, privacy: .public)")
             if totalBytes <= 0 { totalBytes = size }
             bytesReceived = size
-            localURL = dest
+            localURL = final
             state = .ready
         }
     }

@@ -412,7 +412,13 @@ struct RecordingPlayerSheet: View {
                     player?.replaceCurrentItem(with: nil)
                     player = nil
                     downloader.cancel()
-                    downloader.cleanupTempFile()
+                    // Note: NO cleanupTempFile() here. The downloader
+                    // promotes completed files to the cache directory
+                    // (see RecordingDownloader.promoteToCache), so a
+                    // re-tap on the same recording later is a cache
+                    // hit. cleanupTempFile() is now also cache-aware
+                    // and won't delete cached files, but skipping the
+                    // call entirely keeps the intent obvious.
                 }
         }
     }
