@@ -122,15 +122,20 @@ struct RecordingsView: View {
 
         let calendar = Calendar.current
         let start = calendar.startOfDay(for: selectedDate)
-        let end = calendar.date(byAdding: .day, value: 1, to: start) ?? start
+        // Match the macOS app's end: 23:59:59 of the SAME day (one
+        // second before midnight of day+1) rather than 00:00:00 of
+        // the next day. Reolink's Search treats both as inclusive,
+        // and using the end-of-same-day form avoids any ambiguity.
+        guard let end = calendar.date(byAdding: .day, value: 1, to: start)?.addingTimeInterval(-1) else { return }
 
-        // Fire both Search requests in parallel — the CGI client
-        // serializes them through the actor anyway, but `async let`
-        // keeps the call sites readable.
-        async let mainOutcome = fetchSearch(streamType: "main", start: start, end: end)
-        async let subOutcome = fetchSearch(streamType: "sub", start: start, end: end)
-        let (mainResult, subResult) = await (mainOutcome, subOutcome)
-
+        // Run main → sub SERIALLY. Reolink Home Hub Pro returns
+        // `rcv failed` (rspCode=-17) when two Search commands hit it
+        // concurrently on the same channel, which makes both calls
+        // return an empty file list — user sees "No recordings" even
+        // when there are plenty. The macOS app learned this the hard
+        // way too; same serialization comment lives in
+        // App/Views/RecordingsView.swift.
+        let mainResult = await fetchSearch(streamType: "main", start: start, end: end)
         switch mainResult {
         case .success(let mainList):
             var seen = Set<String>()
@@ -138,14 +143,18 @@ struct RecordingsView: View {
             files = unique.sorted { ($0.startDate ?? .distantPast) > ($1.startDate ?? .distantPast) }
         case .failure(let message):
             errorMessage = message
+            return
         }
-        // Sub-stream failures aren't fatal — the user can still play
-        // the main stream. Log and carry on.
+
+        // Sub-stream failure is non-fatal — battery cameras and some
+        // firmware don't produce a sub-stream recording. We just skip
+        // the SD size pill and quality picker for those rows.
+        let subResult = await fetchSearch(streamType: "sub", start: start, end: end)
         if case .success(let subList) = subResult {
             var seen = Set<String>()
             subFiles = subList.filter { seen.insert($0.name).inserted }
         } else if case .failure(let message) = subResult {
-            log.warning("Sub-stream Search failed: \(message, privacy: .public)")
+            log.info("Sub-stream Search unavailable on channel \(channel.channel): \(message, privacy: .public)")
         }
     }
 
