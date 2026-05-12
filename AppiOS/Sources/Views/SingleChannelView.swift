@@ -28,6 +28,7 @@ struct SingleChannelView: View {
     let channel: ChannelStatus
 
     @State private var pipController: LiveVideoPiP?
+    @State private var pipObservable: PiPObservable?
     @State private var attachedPlayerID: ObjectIdentifier?
     @State private var controlsVisible: Bool = true
     @State private var showingFullscreen: Bool = false
@@ -64,32 +65,57 @@ struct SingleChannelView: View {
                 } label: {
                     Label(
                         controlsVisible ? "Hide Controls" : "Show Controls",
-                        systemImage: controlsVisible ? "slider.horizontal.3" : "slider.horizontal.3"
+                        systemImage: "slider.horizontal.3"
                     )
                     .symbolVariant(controlsVisible ? .fill : .none)
                 }
                 .accessibilityLabel(controlsVisible ? "Hide controls" : "Show controls")
 
-                if let pip = pipController {
-                    PiPToolbarButton(controller: pip)
+                if let observable = pipObservable {
+                    PiPToolbarButton(observable: observable)
                 }
             }
         }
         .fullScreenCover(isPresented: $showingFullscreen) {
             FullscreenLiveView(session: session, channel: channel)
         }
+        // Create the PiP observable exactly once per LiveVideoPiP
+        // instance. Previously `PiPToolbarButton(controller:)`'s init
+        // built a fresh PiPObservable on every parent re-render — each
+        // one registered two KVO observers on the same controller, and
+        // they accumulated until the main actor was saturated with
+        // queued notification tasks. Symptom: iPad freezes a few
+        // seconds after opening a camera.
+        .onChange(of: pipControllerIdentity) { _, _ in
+            if let controller = pipController {
+                pipObservable = PiPObservable(controller: controller)
+            } else {
+                pipObservable = nil
+            }
+        }
+    }
+
+    /// Identity-based change key so SwiftUI's onChange can fire when
+    /// the underlying object is swapped (player paused/resumed cycles
+    /// produce a new LiveVideoPiP), without needing the class itself
+    /// to be Equatable.
+    private var pipControllerIdentity: ObjectIdentifier? {
+        pipController.map { ObjectIdentifier($0) }
     }
 }
 
 /// Toolbar button that toggles Picture-in-Picture. Greyed out until the
 /// system signals that PiP is possible (display layer attached to a
 /// window, screen recording not in progress, etc.).
+///
+/// Receives an *already-constructed* `PiPObservable` from the parent
+/// view — does NOT build its own in `init`. Building one here per
+/// re-render leaked KVO observers on the underlying controller
+/// (multiplied by every pinch-zoom or toolbar update), saturating the
+/// main actor with queued notification dispatches and freezing the
+/// app on iPad after a few interactions.
 private struct PiPToolbarButton: View {
-    @ObservedObject private var observable: PiPObservable
-
-    init(controller: LiveVideoPiP) {
-        _observable = ObservedObject(wrappedValue: PiPObservable(controller: controller))
-    }
+    @ObservedObject var observable: PiPObservable
 
     var body: some View {
         Button {
@@ -116,7 +142,7 @@ private struct PiPToolbarButton: View {
 /// requiring the @Observable macro on a class that needs to inherit
 /// from NSObject for KVO.
 @MainActor
-private final class PiPObservable: ObservableObject {
+final class PiPObservable: ObservableObject {
     let controller: LiveVideoPiP
     @Published var isActive: Bool = false
     @Published var isPossible: Bool = false
