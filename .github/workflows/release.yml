@@ -183,7 +183,11 @@ jobs:
           # ran into the repo's branch-protection rule, which we want
           # to keep.
           DMG="dist/build/Reolens-${VERSION}.dmg"
-          LENGTH=$(stat -f %z "${DMG}")
+          # Note: don't compute LENGTH here — `sign_update` already
+          # emits both `length="..."` and `sparkle:edSignature="..."`
+          # as part of ED_SIG. Adding our own length= produced a
+          # duplicate XML attribute that broke Sparkle's parser
+          # (v0.1.1 hotfix re-uploaded the asset directly).
           PUBDATE=$(date -u +"%a, %d %b %Y %H:%M:%S +0000")
           URL="https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.tag }}/Reolens-${VERSION}.dmg"
           cat > appcast.xml <<EOF
@@ -203,7 +207,6 @@ jobs:
                 <description><![CDATA[See <a href="https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md">CHANGELOG</a> for full release notes.]]></description>
                 <enclosure
                   url="${URL}"
-                  length="${LENGTH}"
                   type="application/octet-stream"
                   ${ED_SIG} />
               </item>
