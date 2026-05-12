@@ -30,10 +30,12 @@ struct CameraDetailView: View {
     @State private var slowConnect = false
 
     /// How long the session may sit in `.connecting` before the UI
-    /// surfaces a retry option. ~12 seconds is past the user's "the
-    /// camera is working today" patience window but short of
-    /// URLSession's 60-second default.
-    private static let connectionTimeoutSeconds: UInt64 = 12
+    /// surfaces a retry option. ~25 seconds covers first-launch
+    /// scenarios where iOS is still showing the Local Network
+    /// permission dialog (which blocks the login HTTP request until
+    /// the user taps Allow), and is comfortably short of URLSession's
+    /// 60-second default.
+    private static let connectionTimeoutSeconds: UInt64 = 25
 
     var body: some View {
         Group {

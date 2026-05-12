@@ -27,9 +27,16 @@ struct SingleChannelView: View {
     let session: CameraSession
     let channel: ChannelStatus
 
+    /// The most recent `LiveVideoPlayer` produced by the inline tile.
+    /// We hold a reference so the PiP button can construct an
+    /// `AVPictureInPictureController` against its display layer on
+    /// demand — but we do NOT construct one eagerly. Constructing
+    /// PiP against an `AVSampleBufferDisplayLayer` during a SwiftUI
+    /// render pass (before the layer is in a window) hangs the main
+    /// thread on iPad. Lazy construction sidesteps the issue entirely.
+    @State private var currentPlayer: LiveVideoPlayer?
     @State private var pipController: LiveVideoPiP?
     @State private var pipObservable: PiPObservable?
-    @State private var attachedPlayerID: ObjectIdentifier?
     @State private var controlsVisible: Bool = true
     @State private var showingFullscreen: Bool = false
 
@@ -38,7 +45,16 @@ struct SingleChannelView: View {
             LiveTab(
                 session: session,
                 channel: channel,
-                onPlayerChanged: attachPiPIfNeeded(to:),
+                onPlayerChanged: { newPlayer in
+                    currentPlayer = newPlayer
+                    // If the player went away, discard the PiP
+                    // controller and observable so we don't hold a
+                    // dangling reference to a destroyed display layer.
+                    if newPlayer == nil {
+                        pipController = nil
+                        pipObservable = nil
+                    }
+                },
                 controlsVisible: $controlsVisible,
                 pausedForFullscreen: showingFullscreen
             )
@@ -70,9 +86,7 @@ struct SingleChannelView: View {
                 }
                 .accessibilityLabel(controlsVisible ? "Hide controls" : "Show controls")
 
-                if let observable = pipObservable {
-                    PiPToolbarButton(observable: observable)
-                }
+                pipToolbar
             }
         }
         .fullScreenCover(isPresented: $showingFullscreen) {
@@ -80,44 +94,37 @@ struct SingleChannelView: View {
         }
     }
 
-    /// Called when the LiveTileView's internal player is created or
-    /// torn down. Atomically updates `pipController` and
-    /// `pipObservable` in the same render pass, and defers actual
-    /// `AVPictureInPictureController` construction by one runloop turn
-    /// so the display layer has time to be added to a window —
-    /// constructing PiP against an unwindowed `AVSampleBufferDisplayLayer`
-    /// can stall the main thread on iPad. Symptom: tapping a thumbnail
-    /// freezes the iPad UI.
-    private func attachPiPIfNeeded(to player: LiveVideoPlayer?) {
-        guard let player else {
-            pipController = nil
-            pipObservable = nil
-            attachedPlayerID = nil
-            return
+    /// Lazily-constructed PiP toolbar. While no controller exists, the
+    /// button is a plain "Start Picture-in-Picture" that constructs
+    /// the controller on first tap. After that, hands off to
+    /// `PiPToolbarButton` which observes the controller's state.
+    @ViewBuilder
+    private var pipToolbar: some View {
+        if let observable = pipObservable {
+            PiPToolbarButton(observable: observable)
+        } else if currentPlayer != nil {
+            Button {
+                startPiPLazily()
+            } label: {
+                Label("Start Picture-in-Picture", systemImage: "pip.enter")
+            }
+            .accessibilityLabel("Start Picture-in-Picture")
         }
-        let id = ObjectIdentifier(player)
-        guard id != attachedPlayerID else { return }
-        attachedPlayerID = id
-        // Defer construction by one runloop turn. By the time this
-        // task resumes, SwiftUI has committed the layer into the
-        // UIView hierarchy and AVKit will see a windowed layer.
+    }
+
+    private func startPiPLazily() {
+        guard let player = currentPlayer else { return }
+        guard let controller = LiveVideoPiP(player: player) else { return }
+        let observable = PiPObservable(controller: controller)
+        pipController = controller
+        pipObservable = observable
+        // Give SwiftUI one runloop turn to mount the now-observed
+        // PiPToolbarButton, then start PiP. Starting immediately would
+        // race the button rebinding and could miss the active-state
+        // KVO toggle.
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 50_000_000)
-            // Bail if the player has since been replaced (e.g. user
-            // toggled fullscreen, paused/resumed) so we don't bind a
-            // stale player to PiP.
-            guard attachedPlayerID == id else { return }
-            let newController = LiveVideoPiP(player: player)
-            // Single render pass: write both pieces of state together
-            // so the toolbar evaluates with consistent values rather
-            // than going through a 3-pass cascade
-            // (pipController → onChange → pipObservable → render).
-            pipController = newController
-            if let newController {
-                pipObservable = PiPObservable(controller: newController)
-            } else {
-                pipObservable = nil
-            }
+            controller.start()
         }
     }
 }
