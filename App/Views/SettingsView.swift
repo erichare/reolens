@@ -5,6 +5,9 @@ import AppShared
 struct SettingsView: View {
     @Environment(CameraStore.self) private var store
     @State private var notifier = EventNotifier.shared
+    @AppStorage(GridPreviewSetting.liveGridDefaultsKey) private var liveGridEnabled: Bool = false
+    @AppStorage(MenuBarController.menuBarModeKey) private var menuBarMode: Bool = false
+    @AppStorage(MenuBarController.launchAtLoginKey) private var launchAtLogin: Bool = false
 
     var body: some View {
         TabView {
@@ -12,6 +15,8 @@ struct SettingsView: View {
                 .tabItem { Label("General", systemImage: "gearshape") }
             notificationsTab
                 .tabItem { Label("Notifications", systemImage: "bell") }
+            privacyTab
+                .tabItem { Label("Privacy", systemImage: "lock.shield") }
             developerTab
                 .tabItem { Label("Developer", systemImage: "hammer") }
             aboutTab
@@ -25,9 +30,50 @@ struct SettingsView: View {
             LabeledContent("Cameras configured") {
                 Text("\(store.cameras.count)")
             }
-            Text("Settings UI is a placeholder. Camera-specific options will move here (snapshot interval, polling cadence, preferred stream).")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            Section("Grid previews") {
+                Toggle("Live previews in grid", isOn: $liveGridEnabled)
+                Text("New in 0.4.0. By default, the multi-camera grid shows the last snapshot from each camera and only streams live when you open a single camera. Turn this on to bring back continuous live grids (uses more CPU and bandwidth).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Run in the menu bar") {
+                Toggle("Run in the menu bar when closed", isOn: $menuBarMode)
+                    .onChange(of: menuBarMode) { _, newValue in
+                        if newValue {
+                            MenuBarController.shared.install(store: store)
+                        } else {
+                            MenuBarController.shared.uninstall()
+                            // Launch-at-login without menu-bar mode is
+                            // surprising — disable it together.
+                            if launchAtLogin {
+                                launchAtLogin = false
+                                if #available(macOS 13.0, *) {
+                                    MenuBarController.shared.setLaunchAtLogin(false)
+                                }
+                            }
+                        }
+                    }
+                Text("New in 0.4.0. Closing the window keeps Reolens running in the menu bar so motion notifications keep firing. Quit from the menu bar item to fully stop the app.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if #available(macOS 13.0, *) {
+                    Toggle("Launch at login", isOn: $launchAtLogin)
+                        .disabled(!menuBarMode)
+                        .onChange(of: launchAtLogin) { _, newValue in
+                            MenuBarController.shared.setLaunchAtLogin(newValue)
+                        }
+                    Text("Reolens starts in the menu bar at login so events from the moment you sit down at the Mac aren't missed.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var privacyTab: some View {
+        Form {
+            ICloudKeychainSyncSection()
         }
         .formStyle(.grouped)
     }
@@ -48,6 +94,7 @@ struct SettingsView: View {
                     .foregroundStyle(.tertiary)
             }
             .disabled(!notifier.enabled)
+            NotificationCategoriesSection(notifier: notifier)
             Section("System permission") {
                 permissionRow
             }

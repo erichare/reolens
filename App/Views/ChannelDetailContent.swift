@@ -46,6 +46,15 @@ struct ChannelDetailContent: View {
             Divider()
             content
         }
+        // Advertise this camera for Continuity / Handoff so the user
+        // can pick it up on iPhone or iPad. AGENTS.md §11 — userInfo
+        // carries only the UUID + channel index, never the host,
+        // username, or display name beyond the `title`.
+        .reolensCameraActivity(
+            cameraID: session.entry.id,
+            cameraName: session.entry.displayName,
+            channelID: channel.channel
+        )
     }
 
     @ViewBuilder
@@ -61,10 +70,21 @@ struct ChannelDetailContent: View {
     }
 
     private var liveTab: some View {
-        VStack(spacing: 0) {
-            LiveCameraTile(session: session, channel: channel, stream: .main)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(.black)
+        // Dual-lens cameras encode the two lenses side-by-side as a
+        // stitched ~32:9 frame. Without an explicit aspect ratio the
+        // detail view stretches that frame to fill the pane and the
+        // image either crops aggressively or looks comically wide —
+        // letterbox top + bottom is the right idiom for a fixed
+        // aspect that doesn't match the window.
+        let isDual = channel.isDualLens
+            || store.isDualLensOverride(deviceID: session.entry.id, channel: channel.channel)
+        return VStack(spacing: 0) {
+            ZStack {
+                Color.black
+                LiveCameraTile(session: session, channel: channel, stream: .main)
+                    .aspectRatio(isDual ? 32.0 / 9.0 : 16.0 / 9.0, contentMode: .fit)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             Divider()
             controlBar
         }

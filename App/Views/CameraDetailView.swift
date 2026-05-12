@@ -8,15 +8,19 @@ struct CameraDetailView: View {
     let session: CameraSession
     let focusedChannel: Int?
 
-    @State private var didStart = false
-
     var body: some View {
         VStack(spacing: 0) {
             content
         }
-        .task(id: session.entry.id) {
-            guard !didStart else { return }
-            didStart = true
+        // Task id is `ObjectIdentifier(session)` — re-fires whenever
+        // the parent hands us a freshly-built `CameraSession`. That's
+        // what makes the "Reconnect" context-menu action actually
+        // re-establish the connection: `CameraStore.reconnect(_:)`
+        // tears down the old session and creates a new instance, but
+        // the camera UUID stays the same. Keying the task off the
+        // UUID alone left the new session sitting at `.disconnected`
+        // forever because the task never re-ran.
+        .task(id: ObjectIdentifier(session)) {
             await session.connect()
         }
         .navigationTitle(titleLine)
@@ -65,6 +69,11 @@ struct MultiChannelGridView: View {
     /// the user can drag without accidentally launching the full-screen
     /// player. Escape or the Done button exits.
     @State private var isReordering: Bool = false
+    /// User's preference for the grid: live RTSP per tile (0.3.0
+    /// behavior, now opt-in) vs. cached still previews (0.4.0 default).
+    /// Bound to the same UserDefaults key the iOS app uses, but
+    /// per-device — `@AppStorage` does not sync across platforms.
+    @AppStorage(GridPreviewSetting.liveGridDefaultsKey) private var liveGridEnabled: Bool = false
 
     private var visibleChannels: [ChannelStatus] {
         store.orderedChannels(for: session.entry.id, channels: session.liveChannels)
@@ -90,16 +99,41 @@ struct MultiChannelGridView: View {
     /// Preset picker + helpful hint about drag-to-rearrange. Lives above the
     /// grid so the chrome is visible regardless of scroll position.
     private var gridControlBar: some View {
-        HStack(spacing: 10) {
-            Picker("Layout", selection: gridPresetBinding) {
-                ForEach(GridPreset.allCases) { p in
-                    Label(p.label, systemImage: p.systemImage).tag(p)
+        let currentPreset = store.gridPreset(for: session.entry.id)
+        return HStack(spacing: 10) {
+            // Layout menu doubles as the non-gesture path into reorder
+            // mode (AGENTS.md §9 — every gesture needs a keyboard /
+            // pointer alternative). Long-press is the discoverable
+            // gesture; the menu item + the ⌘E shortcut below cover
+            // accessibility users who can't long-press.
+            Menu {
+                Section("Layout") {
+                    ForEach(GridPreset.allCases) { p in
+                        Button {
+                            store.setGridPreset(p, for: session.entry.id)
+                        } label: {
+                            if p == currentPreset {
+                                Label(p.label, systemImage: "checkmark")
+                            } else {
+                                Label(p.label, systemImage: p.systemImage)
+                            }
+                        }
+                    }
                 }
+                Section {
+                    Button {
+                        withAnimation(.easeIn(duration: 0.2)) { isReordering = true }
+                    } label: {
+                        Label("Rearrange Cameras", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
+                    }
+                    .disabled(visibleChannels.count < 2)
+                }
+            } label: {
+                Label(currentPreset.label, systemImage: currentPreset.systemImage)
             }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            .frame(minWidth: 130, maxWidth: 170)
-            .help("Choose how many cameras to fit in the grid")
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Choose a grid layout, or enter rearrange mode")
             // Spotlight has a "primary camera" concept (the big top-left
             // tile). Surface a picker so users can choose it directly
             // instead of having to drag the right thumbnail into place.
@@ -123,13 +157,41 @@ struct MultiChannelGridView: View {
                 .keyboardShortcut(.escape, modifiers: [])
                 .buttonStyle(.borderedProminent)
             } else {
-                Button {
-                    withAnimation(.easeIn(duration: 0.2)) { isReordering = true }
-                } label: {
-                    Label("Edit Layout", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
+                // Inline preview / live toggle — same flag the Settings
+                // pane uses, surfaced where the user actually looks at
+                // it. Flipping here flips Settings → General too.
+                Toggle(isOn: $liveGridEnabled) {
+                    Label(
+                        liveGridEnabled ? "Live" : "Stills",
+                        systemImage: liveGridEnabled ? "dot.radiowaves.left.and.right" : "photo.stack"
+                    )
                 }
-                .help("Enter rearrange mode (or long-press any tile). ⌘E.")
+                .toggleStyle(.button)
+                .help(liveGridEnabled
+                      ? "Streaming live in every grid tile. Click to switch back to still previews."
+                      : "Showing still previews. Click to stream live in every grid tile (more CPU and bandwidth).")
+                if !liveGridEnabled {
+                    Button {
+                        Task { await refreshAllPreviews() }
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                    .help("Pull fresh still snapshots from every camera in the grid. ⌘R.")
+                    .keyboardShortcut("r", modifiers: .command)
+                }
+                // Invisible shortcut button so ⌘E still enters reorder
+                // mode for keyboard-driven and accessibility users —
+                // the visible toolbar button is gone because long-press
+                // (and the menu item above) cover the discoverable
+                // entry points. AGENTS.md §9: every gesture must have
+                // a non-gesture alternative.
+                Button("") {
+                    withAnimation(.easeIn(duration: 0.2)) { isReordering = true }
+                }
                 .keyboardShortcut("e", modifiers: .command)
+                .frame(width: 0, height: 0)
+                .opacity(0)
+                .accessibilityHidden(true)
             }
             Text("\(visibleChannels.count) camera\(visibleChannels.count == 1 ? "" : "s")")
                 .font(.caption.monospacedDigit())
@@ -174,43 +236,45 @@ struct MultiChannelGridView: View {
     }
 
     /// Adaptive grid — fits as many tiles as the window width allows,
-    /// expanding each tile to fill the leftover space. Tile heights are
-    /// computed from the resolved tile width to keep a 16:9 aspect
-    /// (Reolink default) so widening the window makes tiles larger
-    /// instead of leaving rivers of dead space along the edges. Dual-lens
-    /// cameras use a wider 8:3 aspect so their stitched frames don't get
-    /// center-cropped by `.resizeAspectFill`.
+    /// expanding each tile to fill the leftover space.
+    ///
+    /// Tile *width* is uniform per column (every tile in a row is the
+    /// same width). Tile *height* depends on the camera's native
+    /// aspect ratio: 16:9 single-lens cameras get a 16:9 tile, 32:9
+    /// dual-lens stitched frames get a shorter 32:9 tile. LazyVGrid
+    /// sizes each row to the tallest item in it, so single + dual
+    /// rows align cleanly — single tiles leave a margin of empty
+    /// space below them, but no tile is letterboxed into a too-tall
+    /// cell. `.fixed(tileWidth)` columns ensure cells never drift in
+    /// width and overlap.
     private func adaptiveGrid(richViewerOpen: Bool) -> some View {
         return GeometryReader { geo in
             let spacing: CGFloat = 8
             let padding: CGFloat = 8
-            // 280 px is the smallest a tile gets before the camera name
-            // and motion / AI badges start crowding the corner. Above
-            // that width, each tile shares the leftover horizontal space
-            // equally with its siblings.
             let minTileWidth: CGFloat = 280
-            let availableWidth = max(minTileWidth, geo.size.width - 2 * padding)
+            let availableWidth = max(0, geo.size.width - 2 * padding)
             let columnCount = max(
                 1,
                 Int((availableWidth + spacing) / (minTileWidth + spacing))
             )
-            let tileWidth = (availableWidth - CGFloat(columnCount - 1) * spacing) / CGFloat(columnCount)
+            let tileWidth = max(
+                0,
+                (availableWidth - CGFloat(columnCount - 1) * spacing) / CGFloat(columnCount)
+            )
             let standardTileHeight = tileWidth * 9 / 16
-            let dualTileHeight = tileWidth * 3 / 8
+            let dualTileHeight = tileWidth * 9 / 32
 
             let columns = Array(
-                repeating: GridItem(.fixed(tileWidth), spacing: spacing),
+                repeating: GridItem(.fixed(tileWidth), spacing: spacing, alignment: .top),
                 count: columnCount
             )
             ScrollView {
                 LazyVGrid(columns: columns, spacing: spacing) {
                     ForEach(visibleChannels) { channel in
                         let isDual = session.isDualLens(channel: channel.channel)
+                            || store.isDualLensOverride(deviceID: session.entry.id, channel: channel.channel)
                         tile(for: channel, richViewerOpen: richViewerOpen)
-                            .frame(
-                                width: tileWidth,
-                                height: isDual ? dualTileHeight : standardTileHeight
-                            )
+                            .frame(width: tileWidth, height: isDual ? dualTileHeight : standardTileHeight)
                     }
                 }
                 .padding(padding)
@@ -225,23 +289,43 @@ struct MultiChannelGridView: View {
     private func fixedGrid(preset: GridPreset, richViewerOpen: Bool) -> some View {
         let cols = preset.columns ?? 1
         let rows = preset.rowsOnScreen ?? 1
-        let columns = Array(
-            repeating: GridItem(.flexible(), spacing: 8),
-            count: cols
-        )
         return GeometryReader { geo in
             let spacing: CGFloat = 8
             let totalHSpacing = spacing * CGFloat(cols + 1)
             let totalVSpacing = spacing * CGFloat(rows + 1)
-            let tileWidth = (geo.size.width - totalHSpacing) / CGFloat(cols)
-            let tileHeight = (geo.size.height - totalVSpacing) / CGFloat(rows)
+            // Pick a tile dimension that fits the available space at a
+            // uniform 16:9. The cell may end up narrower than a perfect
+            // grid would (we never grow rows past 16:9 height-wise),
+            // but cells never overlap regardless of window size.
+            let widthFromWidth = max(0, (geo.size.width - totalHSpacing) / CGFloat(cols))
+            let widthFromHeight = max(0, (geo.size.height - totalVSpacing) / CGFloat(rows)) * 16 / 9
+            let tileWidth = min(widthFromWidth, widthFromHeight)
+            let tileHeight = tileWidth * 9 / 16
+            // `.fixed(tileWidth)` gives LazyVGrid the exact column
+            // dimensions we computed — `.flexible()` would let columns
+            // drift and overlap on fractional rounding.
+            let columns = Array(
+                repeating: GridItem(.fixed(tileWidth), spacing: spacing, alignment: .top),
+                count: cols
+            )
             ScrollView {
                 LazyVGrid(columns: columns, spacing: spacing) {
                     ForEach(visibleChannels) { channel in
-                        tile(for: channel, richViewerOpen: richViewerOpen)
+                        // Fixed grids keep uniform 16:9 cells for a
+                        // regular layout. Dual-lens (32:9) snapshots
+                        // would letterbox to a thin strip inside —
+                        // user-visible as "the dual-lens cameras are
+                        // too long" — so we center-crop them to fill
+                        // the cell, matching what the live-mode
+                        // AVSampleBufferDisplayLayer already does
+                        // (.resizeAspectFill).
+                        let isDual = session.isDualLens(channel: channel.channel)
+                            || store.isDualLensOverride(deviceID: session.entry.id, channel: channel.channel)
+                        tile(for: channel, richViewerOpen: richViewerOpen, centerCrop: isDual)
                             .frame(width: tileWidth, height: tileHeight)
                     }
                 }
+                .frame(maxWidth: .infinity)
                 .padding(spacing)
             }
         }
@@ -395,7 +479,7 @@ struct MultiChannelGridView: View {
     /// the spotlight overrides to `.main` for the primary so it doesn't
     /// look pixelated blown up to 75% of the window.
     @ViewBuilder
-    private func tile(for channel: ChannelStatus, stream: StreamKind = .sub, richViewerOpen: Bool) -> some View {
+    private func tile(for channel: ChannelStatus, stream: StreamKind = .sub, richViewerOpen: Bool, centerCrop: Bool = false) -> some View {
         LiveCameraTile(
             session: session,
             channel: channel,
@@ -408,7 +492,9 @@ struct MultiChannelGridView: View {
                     richViewerChannel = channel
                 }
             },
-            paused: richViewerOpen
+            paused: richViewerOpen,
+            preferPreview: !liveGridEnabled,
+            centerCropPreview: centerCrop
         )
         // Force a fresh view (and therefore a fresh `LiveCameraTile`
         // @State + `LiveVideoPlayer`) whenever a slot's channel changes.
@@ -442,6 +528,30 @@ struct MultiChannelGridView: View {
                 allChannels: visibleChannels
             )
             return true
+        }
+    }
+
+    /// Refresh handler for the toolbar Refresh button. Re-fetches
+    /// `cmd=Snap` for every visible channel concurrently; the actor
+    /// dedupes overlapping requests so a rapid double-click coalesces
+    /// to a single HTTP call per channel.
+    private func refreshAllPreviews() async {
+        let channels = visibleChannels
+        await withTaskGroup(of: Void.self) { group in
+            for channel in channels {
+                let cameraID = session.entry.id
+                let channelID = channel.channel
+                let session = self.session
+                group.addTask {
+                    guard let url = await session.snapshotURL(channel: channelID) else { return }
+                    await CameraPreviewService.shared.refresh(
+                        snapshotURL: url,
+                        cameraID: cameraID,
+                        channel: channelID
+                    )
+                }
+            }
+            await group.waitForAll()
         }
     }
 }

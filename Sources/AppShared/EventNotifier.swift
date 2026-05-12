@@ -46,8 +46,9 @@ public final class EventNotifier {
         didSet { UserDefaults.standard.set(enabled, forKey: Self.enabledKey) }
     }
 
-    /// True when the user has explicitly opted in to AI-triggered
-    /// notifications (person, vehicle, pet, …). Defaults on.
+    /// Master toggle for AI-triggered notifications. When off, no
+    /// AI-classified event fires regardless of per-tag preferences below.
+    /// Defaults on.
     public var notifyAI: Bool {
         didSet { UserDefaults.standard.set(notifyAI, forKey: Self.aiKey) }
     }
@@ -59,6 +60,19 @@ public final class EventNotifier {
         didSet { UserDefaults.standard.set(notifyMotion, forKey: Self.motionKey) }
     }
 
+    /// Per-AI-tag notification preferences (added in 0.4.0). Lets the
+    /// user keep "person" alerts on while muting frequent "pet" ones,
+    /// etc. Reading these as a dictionary so the format/filter loop
+    /// can do a single lookup per event. All default true so opted-in
+    /// AI notifications behave as in 0.3.0 unless the user customizes.
+    public var notifyPerTag: [DetectionType: Bool] {
+        didSet {
+            for (tag, on) in notifyPerTag {
+                UserDefaults.standard.set(on, forKey: Self.perTagKey(tag))
+            }
+        }
+    }
+
     /// Current OS authorization state. Updated on app launch and after
     /// every `requestPermission(...)` call.
     public private(set) var permissionStatus: UNAuthorizationStatus = .notDetermined
@@ -66,6 +80,9 @@ public final class EventNotifier {
     private static let enabledKey = "com.reolens.notifications.enabled"
     private static let aiKey = "com.reolens.notifications.ai"
     private static let motionKey = "com.reolens.notifications.motion"
+    private static func perTagKey(_ tag: DetectionType) -> String {
+        "com.reolens.notifications.tag.\(tag.rawValue)"
+    }
     private static let cooldown: TimeInterval = 30
 
     // userInfo dictionary keys used to carry the routing payload from a
@@ -101,6 +118,16 @@ public final class EventNotifier {
         self.enabled = UserDefaults.standard.bool(forKey: Self.enabledKey)
         self.notifyAI = UserDefaults.standard.bool(forKey: Self.aiKey)
         self.notifyMotion = UserDefaults.standard.bool(forKey: Self.motionKey)
+        // Load per-tag preferences. Missing keys (i.e. users upgrading
+        // from 0.3.0 where these didn't exist) default to true so
+        // existing AI notifications keep firing exactly as before.
+        var loaded: [DetectionType: Bool] = [:]
+        for tag in DetectionType.allCases where tag != .motion {
+            let key = Self.perTagKey(tag)
+            let stored = UserDefaults.standard.object(forKey: key) as? Bool
+            loaded[tag] = stored ?? true
+        }
+        self.notifyPerTag = loaded
         Task { await refreshPermissionStatus() }
     }
 
@@ -258,6 +285,14 @@ public final class EventNotifier {
         case .ai(let tag):
             guard notifyAI else { return ("", "", "") }
             let detection = DetectionType.fromReolinkString(tag)
+            // Per-tag filter (0.4.0). When the detection maps to a
+            // known DetectionType, honor the user's per-tag toggle.
+            // Unknown tags fall through with the master `notifyAI`
+            // gate above so the firmware can roll out new categories
+            // without us silently dropping them.
+            if let detection, notifyPerTag[detection] == false {
+                return ("", "", "")
+            }
             let label = detection?.label ?? tag.capitalized
             return ("\(label) detected", cameraName, "\(event.channelID)-ai-\(tag)")
         case .motionStart:

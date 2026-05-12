@@ -61,6 +61,8 @@ struct SingleChannelView: View {
             .tabItem { Label("Live", systemImage: "play.rectangle.fill") }
             RecordingsView(session: session, channel: channel)
                 .tabItem { Label("Recordings", systemImage: "clock.arrow.circlepath") }
+            ChannelSettingsView(session: session, channel: channel)
+                .tabItem { Label("Settings", systemImage: "gearshape") }
         }
         .navigationTitle(channel.name ?? "Channel \(channel.channel + 1)")
         .navigationBarTitleDisplayMode(.inline)
@@ -92,6 +94,15 @@ struct SingleChannelView: View {
         .fullScreenCover(isPresented: $showingFullscreen) {
             FullscreenLiveView(session: session, channel: channel)
         }
+        // Continuity / Handoff so the user can pick this camera up
+        // on the Mac (or another iPhone/iPad). Only the UUID and
+        // channel travel — no hostnames or credentials per AGENTS.md
+        // §11.
+        .reolensCameraActivity(
+            cameraID: session.entry.id,
+            cameraName: session.entry.displayName,
+            channelID: channel.channel
+        )
     }
 
     /// Lazily-constructed PiP toolbar. While no controller exists, the

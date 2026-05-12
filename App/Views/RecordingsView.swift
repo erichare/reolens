@@ -38,6 +38,15 @@ struct RecordingsView: View {
     /// `effectiveDetections`.
     @State private var alarmVideoEntries: [BaichuanAlarmVideoFile] = []
     @State private var alarmVideoLoading = false
+    /// AI-event filter chips. Empty set means "no filter — show
+    /// everything". Persists across view rebuilds via parent
+    /// re-creation only; deliberately not synced because filter
+    /// preferences are typically session-scoped.
+    @State private var aiFilter: Set<DetectionType> = []
+    /// Per-month recording-status bitfields harvested from the latest
+    /// `Search` response. Feeds the day-density calendar above the
+    /// list. New in 0.4.0.
+    @State private var monthStatuses: [SearchStatus] = []
 
     private let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -48,6 +57,19 @@ struct RecordingsView: View {
     var body: some View {
         VStack(spacing: 0) {
             controls
+            MonthRecordingDensity(selectedDate: $selectedDate, monthStatuses: monthStatuses)
+                .background(.background.secondary)
+            if !filteredFiles.isEmpty {
+                DayTimelineStrip(
+                    day: selectedDate,
+                    files: filteredFiles,
+                    events: dayEvents,
+                    onTapSegment: { preview($0) }
+                )
+                .background(.background.secondary)
+            }
+            AIEventFilterBar(selected: $aiFilter)
+                .background(.background.secondary)
             Divider()
             content
             if !files.isEmpty {
@@ -154,8 +176,14 @@ struct RecordingsView: View {
                 systemImage: "tray",
                 description: Text("No recordings on this channel for \(selectedDate, format: .dateTime.day().month().year()).")
             )
+        } else if filteredFiles.isEmpty && !isLoading {
+            ContentUnavailableView(
+                "No matching recordings",
+                systemImage: "line.3.horizontal.decrease.circle",
+                description: Text("No recordings on this channel match the selected AI filter. Tap chips to remove filters or clear them entirely.")
+            )
         } else {
-            List(files) { file in
+            List(filteredFiles) { file in
                 fileRow(file)
                     .contentShape(.rect)
                     .onTapGesture { preview(file) }
@@ -325,6 +353,31 @@ struct RecordingsView: View {
         }
     }
 
+    /// Files filtered by the AI chip selection. Empty filter → identity.
+    /// A file matches when at least one of its effective detections is
+    /// in the selected set (OR semantics — pick "people" OR "vehicle"
+    /// for a "stuff worth watching" view).
+    private var filteredFiles: [SearchFile] {
+        guard !aiFilter.isEmpty else { return files }
+        return files.filter { file in
+            let detections = Set(effectiveDetections(for: file))
+            return !detections.isDisjoint(with: aiFilter)
+        }
+    }
+
+    /// Live AI events from this session that fell on the displayed
+    /// day. Feeds the timeline strip's event-tick overlay.
+    private var dayEvents: [TimestampedAIEvent] {
+        let cal = Calendar.current
+        let startOfDay = cal.startOfDay(for: selectedDate)
+        let endOfDay = cal.date(byAdding: .day, value: 1, to: startOfDay) ?? startOfDay
+        return session.aiEventLog.filter { ev in
+            ev.channelID == channel.channel
+            && ev.timestamp >= startOfDay
+            && ev.timestamp < endOfDay
+        }
+    }
+
     private func effectiveDetections(for file: SearchFile) -> [DetectionType] {
         if !file.triggers.isEmpty { return file.triggers }
 
@@ -434,9 +487,15 @@ struct RecordingsView: View {
         // preview/download path for those rows.
         let mainOutcome = await fetchSearchResults(channel: channel.channel, streamType: "main", start: start, end: end, captureRaw: true)
         switch mainOutcome {
-        case .success(let mainFiles, let raw):
+        case .success(let mainFiles, let raw, let statuses):
             rawResponse = raw
             files = mainFiles.sorted { ($0.startDate ?? .distantPast) > ($1.startDate ?? .distantPast) }
+            // Capture the month bitfield for the day-density calendar
+            // (0.4.0). Reolink returns one Status entry per month
+            // touched by the queried range.
+            if !statuses.isEmpty {
+                monthStatuses = statuses
+            }
         case .failure(let message):
             errorMessage = message
             files = []
@@ -444,10 +503,10 @@ struct RecordingsView: View {
 
         let subOutcome = await fetchSearchResults(channel: channel.channel, streamType: "sub", start: start, end: end, captureRaw: false)
         switch subOutcome {
-        case .success(let subResults, _):
+        case .success(let subResults, _, _):
             subFiles = subResults.sorted { ($0.startDate ?? .distantPast) < ($1.startDate ?? .distantPast) }
             log.info("Sub-stream Search returned \(subResults.count) files")
-            if case .success(let mainResults, _) = mainOutcome, !mainResults.isEmpty {
+            if case .success(let mainResults, _, _) = mainOutcome, !mainResults.isEmpty {
                 let matched = mainResults.filter { subFileMatchFromList(for: $0, subs: subFiles) != nil }
                 log.info("  main↔sub time-overlap matches: \(matched.count) of \(mainResults.count)")
             }
@@ -655,7 +714,7 @@ struct RecordingsView: View {
 
     /// Per-stream Search result with raw JSON for diagnostics.
     private enum SearchOutcome {
-        case success([SearchFile], rawPretty: String)
+        case success([SearchFile], rawPretty: String, statuses: [SearchStatus])
         case failure(String)
     }
 
@@ -680,7 +739,8 @@ struct RecordingsView: View {
                 return .failure("Empty response from camera")
             }
             let result = firstValue.SearchResult.File ?? []
-            return .success(result, rawPretty: pretty)
+            let statuses = firstValue.SearchResult.Status ?? []
+            return .success(result, rawPretty: pretty, statuses: statuses)
         } catch {
             return .failure("\(error)")
         }

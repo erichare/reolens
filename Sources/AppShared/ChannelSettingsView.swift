@@ -1,11 +1,16 @@
 import SwiftUI
 import ReolinkAPI
 import ReolinkBaichuan
-import AppShared
 
 /// Per-channel settings — currently OSD (on-screen display) toggles for the
-/// camera-name and time overlays the camera bakes into the video stream.
-struct ChannelSettingsView: View {
+/// camera-name and time overlays the camera bakes into the video stream,
+/// plus the device's AI-detection capability map and battery telemetry.
+///
+/// Shared across macOS, iPadOS, and iPhone: macOS hosts it as a tab in
+/// `ChannelDetailContent`; iOS hosts it as the third tab of
+/// `SingleChannelView`. `Form { .formStyle(.grouped) }` renders natively
+/// on each platform.
+public struct ChannelSettingsView: View {
     let session: CameraSession
     let channel: ChannelStatus
 
@@ -16,10 +21,15 @@ struct ChannelSettingsView: View {
     @State private var isSaving = false
     @State private var errorMessage: String?
 
-    var body: some View {
+    public init(session: CameraSession, channel: ChannelStatus) {
+        self.session = session
+        self.channel = channel
+    }
+
+    public var body: some View {
         Form {
             Section("On-Screen Display") {
-                if let _ = osd {
+                if osd != nil {
                     osdToggles
                 } else if isLoading {
                     HStack { ProgressView().controlSize(.small); Text("Loading…") }

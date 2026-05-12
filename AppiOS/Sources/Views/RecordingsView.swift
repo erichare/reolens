@@ -35,6 +35,8 @@ struct RecordingsView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var nowPlaying: PlayableRecording?
+    @State private var aiFilter: Set<DetectionType> = []
+    @State private var monthStatuses: [SearchStatus] = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -47,6 +49,25 @@ struct RecordingsView: View {
             .datePickerStyle(.compact)
             .padding(.horizontal)
             .padding(.vertical, 8)
+
+            MonthRecordingDensity(selectedDate: $selectedDate, monthStatuses: monthStatuses)
+                .background(Color(.secondarySystemBackground))
+
+            if !filteredFiles.isEmpty {
+                DayTimelineStrip(
+                    day: selectedDate,
+                    files: filteredFiles,
+                    events: dayEvents,
+                    onTapSegment: { file in
+                        let sub = subFileMatch(for: file)
+                        playEntry(file: file, sub: sub, preferSub: true)
+                    }
+                )
+                .background(Color(.secondarySystemBackground))
+            }
+
+            AIEventFilterBar(selected: $aiFilter)
+                .background(Color(.secondarySystemBackground))
 
             Divider()
             content
@@ -78,11 +99,36 @@ struct RecordingsView: View {
                 systemImage: "moon.zzz",
                 description: Text("Nothing recorded on \(selectedDate.formatted(date: .abbreviated, time: .omitted)).")
             )
+        } else if filteredFiles.isEmpty {
+            ContentUnavailableView(
+                "No matching recordings",
+                systemImage: "line.3.horizontal.decrease.circle",
+                description: Text("No recordings match the selected AI filter. Tap chips above to remove filters.")
+            )
         } else {
-            List(files) { file in
+            List(filteredFiles) { file in
                 row(for: file)
             }
             .listStyle(.plain)
+        }
+    }
+
+    private var filteredFiles: [SearchFile] {
+        guard !aiFilter.isEmpty else { return files }
+        return files.filter { file in
+            let detections = Set(effectiveDetections(for: file))
+            return !detections.isDisjoint(with: aiFilter)
+        }
+    }
+
+    private var dayEvents: [TimestampedAIEvent] {
+        let cal = Calendar.current
+        let startOfDay = cal.startOfDay(for: selectedDate)
+        let endOfDay = cal.date(byAdding: .day, value: 1, to: startOfDay) ?? startOfDay
+        return session.aiEventLog.filter { ev in
+            ev.channelID == channel.channel
+            && ev.timestamp >= startOfDay
+            && ev.timestamp < endOfDay
         }
     }
 
@@ -144,10 +190,13 @@ struct RecordingsView: View {
         // App/Views/RecordingsView.swift.
         let mainResult = await fetchSearch(streamType: "main", start: start, end: end)
         switch mainResult {
-        case .success(let mainList):
+        case .success(let mainList, let statuses):
             var seen = Set<String>()
             let unique = mainList.filter { seen.insert($0.name).inserted }
             files = unique.sorted { ($0.startDate ?? .distantPast) > ($1.startDate ?? .distantPast) }
+            if !statuses.isEmpty {
+                monthStatuses = statuses
+            }
         case .failure(let message):
             errorMessage = message
             return
@@ -157,7 +206,7 @@ struct RecordingsView: View {
         // firmware don't produce a sub-stream recording. We just skip
         // the SD size pill and quality picker for those rows.
         let subResult = await fetchSearch(streamType: "sub", start: start, end: end)
-        if case .success(let subList) = subResult {
+        if case .success(let subList, _) = subResult {
             var seen = Set<String>()
             subFiles = subList.filter { seen.insert($0.name).inserted }
         } else if case .failure(let message) = subResult {
@@ -192,7 +241,7 @@ struct RecordingsView: View {
     }
 
     private enum SearchOutcome {
-        case success([SearchFile])
+        case success([SearchFile], statuses: [SearchStatus])
         case failure(String)
     }
 
@@ -207,7 +256,8 @@ struct RecordingsView: View {
         do {
             let raw = try await session.client.sendCapturingRaw(command)
             let envelopes = try JSONDecoder().decode([CGIResponse<SearchEnvelope>].self, from: raw)
-            return .success(envelopes.first?.value?.SearchResult.File ?? [])
+            let result = envelopes.first?.value?.SearchResult
+            return .success(result?.File ?? [], statuses: result?.Status ?? [])
         } catch {
             return .failure(error.localizedDescription)
         }

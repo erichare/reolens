@@ -256,6 +256,7 @@ public final class CameraStore {
             Task { await session.disconnect() }
         }
         Keychain.deletePassword(for: id)
+        Task { await CameraPreviewService.shared.purge(cameraID: id) }
         if selection?.deviceID == id {
             selection = cameras.first.map { .device($0.id) }
         }
@@ -290,6 +291,60 @@ public final class CameraStore {
         // value and writes the resulting CameraSession into `sessions`.
         // That write is observed by any view rendering this device.
         _ = session(for: id)
+    }
+
+    /// Reset the session for a camera without touching its Keychain
+    /// entry. Used by the "Reconnect" context-menu action when a
+    /// session gets stuck — typically the hub's session token rotated
+    /// or the LAN connection blipped, leaving the CGI client in an
+    /// indefinitely-connecting state.
+    ///
+    /// Sequenced so the old session's CGI logout fully completes
+    /// before the new session's login fires — Reolink hubs cap
+    /// concurrent CGI sessions per credential, so an overlap between
+    /// old-still-logging-out and new-trying-to-log-in made the hub
+    /// reject the new login with "too many sessions." That was the
+    /// "Reconnect doesn't work but delete-and-readd does" path on
+    /// iCloud-synced hubs.
+    public func reconnect(_ id: CameraEntry.ID) {
+        guard cameras.contains(where: { $0.id == id }) else { return }
+        if let existing = sessions.removeValue(forKey: id) {
+            Task { @MainActor in
+                await existing.disconnect()
+                _ = self.session(for: id)
+            }
+        } else {
+            _ = session(for: id)
+        }
+    }
+
+    /// User's opt-in to iCloud Keychain password sync (AGENTS.md §4
+    /// opt-in carve-out, added in 0.4.0). Default false. Bridged to
+    /// `UserDefaults` so the same flag is visible to `Keychain`
+    /// directly when it writes new items, and so the iOS app — which
+    /// consumes `AppShared` as an SPM library and can't reach the
+    /// `package`-scoped `Keychain` enum — can read/write the
+    /// preference through this public surface.
+    public var iCloudKeychainSyncEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: Keychain.syncDefaultsKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Keychain.syncDefaultsKey) }
+    }
+
+    /// Re-save every known camera password on the requested side
+    /// (iCloud-synced or device-local). Use after flipping
+    /// `iCloudKeychainSyncEnabled` so existing items move to the
+    /// chosen side rather than staying on the old one until the user
+    /// happens to re-enter the password.
+    ///
+    /// Returns the count of entries that were migrated and skipped
+    /// (skipped means no password was stored on this device for that
+    /// camera — common for newly-synced cameras awaiting "Enter
+    /// Password"). Never throws; OSStatus errors are logged.
+    @discardableResult
+    public func migrateKeychainSync(toSync syncOn: Bool) -> (migrated: Int, skipped: Int) {
+        let ids = cameras.map(\.id)
+        let result = Keychain.migrate(accounts: ids, toSync: syncOn)
+        return (result.migrated, result.skipped)
     }
 
     /// Look up the user's persisted rotation for a specific (channel, stream).

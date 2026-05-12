@@ -26,7 +26,6 @@ struct CameraDetailView: View {
     /// tile in the grid.
     var focusedChannel: Int? = nil
 
-    @State private var didStart = false
     @State private var slowConnect = false
 
     /// How long the session may sit in `.connecting` before the UI
@@ -50,7 +49,12 @@ struct CameraDetailView: View {
                 connectingPlaceholder
             }
         }
-        .task(id: session.entry.id) {
+        // Task id is `ObjectIdentifier(session)` so Reconnect — which
+        // gives us a new session instance for the same camera UUID —
+        // actually re-fires the connect. Keying off the camera UUID
+        // alone left the new session at `.disconnected` because the
+        // task didn't see the id change.
+        .task(id: ObjectIdentifier(session)) {
             slowConnect = false
             let timeout = Task { @MainActor in
                 try? await Task.sleep(nanoseconds: Self.connectionTimeoutSeconds * 1_000_000_000)
@@ -58,10 +62,7 @@ struct CameraDetailView: View {
                     slowConnect = true
                 }
             }
-            if !didStart {
-                didStart = true
-                await session.connect()
-            }
+            await session.connect()
             timeout.cancel()
         }
         .navigationTitle(session.entry.displayName)

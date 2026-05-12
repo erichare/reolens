@@ -124,6 +124,11 @@ struct DeviceSidebarRow: View {
         Button(hasSession ? "Update Password…" : "Enter Password…", systemImage: "key.fill") {
             passwordEntryEntry = entry
         }
+        if hasSession {
+            Button("Reconnect", systemImage: "arrow.clockwise.circle") {
+                store.reconnect(entry.id)
+            }
+        }
         Divider()
         Button("Remove", role: .destructive) {
             store.remove(entry.id)

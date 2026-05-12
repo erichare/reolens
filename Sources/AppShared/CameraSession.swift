@@ -98,40 +98,76 @@ public final class CameraSession {
 
     public func connect() async {
         status = .connecting
-        do {
-            _ = try await client.login()
-            let info = try await client.send(Commands.getDevInfo(), as: DeviceInfoEnvelope.self)
-            deviceInfo = info.DevInfo
+        // Bounded auto-retry. The "first launch fails, Reconnect
+        // works" case is almost always a transient: macOS hasn't
+        // finished joining Wi-Fi, the hub is still booting, mDNS
+        // hasn't resolved, etc. A single attempt buries those in
+        // `.error` and forces the user to manually click Reconnect.
+        // 4 attempts × 2/4/8 s backoff covers ~14 s of transient
+        // unavailability without spamming the hub or hanging forever
+        // on truly-broken setups. Auth failures stop early because a
+        // bad password isn't going to start working.
+        let maxAttempts = 4
+        var attempt = 0
+        var lastError: (any Error)?
+        while attempt < maxAttempts, !Task.isCancelled {
+            attempt += 1
+            do {
+                _ = try await client.login()
+                let info = try await client.send(Commands.getDevInfo(), as: DeviceInfoEnvelope.self)
+                deviceInfo = info.DevInfo
 
-            if info.DevInfo.isNVR {
-                // Capture the raw JSON before decoding so we can see EVERY
-                // field the hub returns per channel — useful when a paired
-                // camera doesn't carry `typeInfo` and we need an alternate
-                // signal for dual-lens / battery classification.
-                let raw = try await client.sendCapturingRaw(Commands.getChannelStatus())
-                if let pretty = String(data: raw, encoding: .utf8) {
-                    log.info("GetChannelstatus raw payload (first 4 KB):\n\(pretty.prefix(4096), privacy: .public)")
+                if info.DevInfo.isNVR {
+                    // Capture the raw JSON before decoding so we can see
+                    // EVERY field the hub returns per channel — useful
+                    // when a paired camera doesn't carry `typeInfo` and
+                    // we need an alternate signal for dual-lens /
+                    // battery classification.
+                    let raw = try await client.sendCapturingRaw(Commands.getChannelStatus())
+                    if let pretty = String(data: raw, encoding: .utf8) {
+                        log.info("GetChannelstatus raw payload (first 4 KB):\n\(pretty.prefix(4096), privacy: .public)")
+                    }
+                    let env = try JSONDecoder().decode([CGIResponse<ChannelStatusEnvelope>].self, from: raw)
+                    channels = env.first?.value?.status ?? []
+                } else {
+                    channels = [ChannelStatus(channel: 0, name: info.DevInfo.name, online: 1, typeInfo: info.DevInfo.model, uid: nil, sleep: 0)]
                 }
-                let env = try JSONDecoder().decode([CGIResponse<ChannelStatusEnvelope>].self, from: raw)
-                channels = env.first?.value?.status ?? []
-            } else {
-                channels = [ChannelStatus(channel: 0, name: info.DevInfo.name, online: 1, typeInfo: info.DevInfo.model, uid: nil, sleep: 0)]
+                for ch in channels {
+                    log.info("Channel \(ch.channel) name=\(ch.name ?? "<none>", privacy: .public) typeInfo=\(ch.typeInfo ?? "<nil>", privacy: .public) sleep=\(ch.sleep ?? 0) online=\(ch.online)")
+                }
+                status = .connected
+                startEventPolling()
+                startBaichuanEvents()
+                return
+            } catch {
+                lastError = error
+                // Auth-style failures are permanent — don't waste
+                // retries (and don't lock the user out of their hub by
+                // hammering it with bad credentials). Network /
+                // timeout / "host unreachable" failures fall through
+                // to the backoff sleep.
+                if Self.isAuthFailure(error) {
+                    log.warning("connect attempt \(attempt) auth-failed; stopping retries")
+                    break
+                }
+                log.warning("connect attempt \(attempt) failed: \(error.localizedDescription, privacy: .public)")
+                if attempt >= maxAttempts { break }
+                let backoffSeconds = pow(2.0, Double(attempt))   // 2, 4, 8
+                try? await Task.sleep(for: .seconds(backoffSeconds))
             }
-            // Dump the per-channel `typeInfo` so we can see exactly what
-            // string Reolink reports for each paired camera. This is the
-            // only field we use to recognize dual-lens / battery hardware,
-            // and Reolink changes its naming across firmware versions —
-            // logging it makes it cheap to add new model codes when a
-            // camera doesn't get classified correctly.
-            for ch in channels {
-                log.info("Channel \(ch.channel) name=\(ch.name ?? "<none>", privacy: .public) typeInfo=\(ch.typeInfo ?? "<nil>", privacy: .public) sleep=\(ch.sleep ?? 0) online=\(ch.online)")
-            }
-            status = .connected
-            startEventPolling()
-            startBaichuanEvents()
-        } catch {
-            status = .error("\(error)")
         }
+        if let lastError {
+            status = .error("\(lastError)")
+        }
+    }
+
+    /// Heuristic for "stop retrying" failure cases. CGIClient surfaces
+    /// auth errors with a specific message; anything else is treated
+    /// as transient. False positives just mean we retry an
+    /// unrecoverable error a few times before giving up — acceptable.
+    private static func isAuthFailure(_ error: any Error) -> Bool {
+        let text = "\(error)".lowercased()
+        return text.contains("login") || text.contains("auth") || text.contains("unauthorized") || text.contains("invalid password") || text.contains("password")
     }
 
     public func disconnect() async {
@@ -153,6 +189,13 @@ public final class CameraSession {
     /// with the same credentials, and subscribes to live alarm-event pushes.
     /// AI events are appended to `aiEventLog` for the recordings view to
     /// match against by timestamp.
+    ///
+    /// Auto-retries on failure with bounded backoff. Reolink hubs cap
+    /// concurrent Baichuan logins per credential — if another instance
+    /// of the app on a different device is connected first, the second
+    /// login fails. The retry loop covers that, plus brief network
+    /// blips and hub reboots, so pushes resume automatically without
+    /// the user having to reconnect.
     private func startBaichuanEvents() {
         baichuanTask?.cancel()
         baichuanTask = Task { @MainActor [weak self] in
@@ -162,24 +205,41 @@ public final class CameraSession {
                 username: self.credentials.username,
                 password: self.credentials.password
             )
-            let client = BaichuanClient(credentials: creds)
-            self.baichuanClient = client
-            do {
-                try await client.connect()
-                let deviceName = try await client.login()
-                log.info("Baichuan login OK device=\(deviceName, privacy: .public)")
-                // Spin up the battery-info reader alongside alarm events.
-                // Both consume the same unsolicited push stream — the hub
-                // multiplexes msgID=33 (motion) and msgID=252 (battery) on
-                // the single TCP connection it already gave us.
-                self.startBatterySubscriber(client: client)
-                let events = try await client.subscribeToAlarmEvents()
-                for await event in events {
-                    self.recordAIEvent(event)
+            var backoffSeconds: UInt64 = 2
+            let maxBackoffSeconds: UInt64 = 60
+            while !Task.isCancelled, self.status == .connected {
+                let client = BaichuanClient(credentials: creds)
+                self.baichuanClient = client
+                do {
+                    try await client.connect()
+                    let deviceName = try await client.login()
+                    log.info("Baichuan login OK device=\(deviceName, privacy: .public)")
+                    backoffSeconds = 2
+                    // Spin up the battery-info reader alongside alarm
+                    // events. Both consume the same unsolicited push
+                    // stream — the hub multiplexes msgID=33 (motion)
+                    // and msgID=252 (battery) on a single TCP
+                    // connection it already gave us.
+                    self.startBatterySubscriber(client: client)
+                    let events = try await client.subscribeToAlarmEvents()
+                    for await event in events {
+                        self.recordAIEvent(event)
+                    }
+                    // Stream finished cleanly (Baichuan TCP dropped).
+                    // Fall through to the retry below.
+                    log.info("Baichuan alarm stream ended; will retry in \(backoffSeconds, privacy: .public)s")
+                } catch {
+                    log.warning("Baichuan task error (retrying in \(backoffSeconds, privacy: .public)s): \(error.localizedDescription, privacy: .public)")
                 }
-            } catch {
-                log.warning("Baichuan task ended: \(error.localizedDescription, privacy: .public)")
+                // Tear down the failed client before sleeping so the
+                // next iteration starts fresh. Skips the wait if the
+                // session has since been disconnected.
+                await client.close()
+                if self.status != .connected || Task.isCancelled { break }
+                try? await Task.sleep(for: .seconds(Double(backoffSeconds)))
+                backoffSeconds = min(maxBackoffSeconds, backoffSeconds * 2)
             }
+            self.baichuanClient = nil
         }
     }
 
@@ -234,7 +294,13 @@ public final class CameraSession {
         let channelID = Int(event.channelID)
         let cameraName = channels.first(where: { $0.channel == channelID })?.name
             ?? "Camera \(channelID + 1)"
-        let cameraID = entry.id
+        // The cameraID we pass to `EventNotifier.notify` is the user-
+        // visible camera UUID (i.e. the `CameraEntry.id` this session
+        // is bound to), NOT the timestamped event's UUID. Notification
+        // tap routing looks up the camera by this ID; using the
+        // per-event UUID — as a previous version of this code did —
+        // made every notification tap land on a nonexistent camera.
+        let cameraID = self.entry.id
         Task { @MainActor [weak self] in
             guard let self else { return }
             let snap = await self.snapshotURL(channel: channelID)
@@ -268,6 +334,15 @@ public final class CameraSession {
     public func isBatteryPowered(channel: Int) -> Bool {
         if batteryByChannel[channel] != nil { return true }
         return channels.first(where: { $0.channel == channel })?.isBatteryPowered ?? false
+    }
+
+    /// True when the channel is either battery-powered (which implies
+    /// it sleeps between motion events) or currently asleep. Used by
+    /// preview-mode tiles to decide whether to nudge the camera awake
+    /// via Baichuan before hitting `cmd=Snap`.
+    public func isBatteryPoweredOrAsleep(channel: Int) -> Bool {
+        if isBatteryPowered(channel: channel) { return true }
+        return channels.first(where: { $0.channel == channel })?.isAsleep ?? false
     }
 
     /// Optional manual override consulted before the heuristic. When the

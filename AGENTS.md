@@ -33,17 +33,28 @@ Treat every change as touching live video feeds, authentication, and the user's 
 - Never log credentials, hostnames, or auth tokens at any level (`info`, `debug`, `verbose`).
 - Never include credentials in crash reports, error messages shown to the user, or diagnostic exports.
 
-## 4. Credentials are device-local
+## 4. Credentials are device-local by default
 
-Passwords live in `Keychain` with `kSecAttrAccessibleWhenUnlocked`. They **do not** sync across devices. This is by design.
+Passwords live in `Keychain` with `kSecAttrAccessibleWhenUnlocked`. By default they **do not** sync across devices. This is by design.
 
-The camera list (`cameras.json`) **does** sync via iCloud Drive (see `Sources/AppShared/ICloudCameraStorage.swift`). Camera metadata — host, port, username, display name, grid layout, channel order — is synced. Passwords are not.
+The camera list (`cameras.json`) **does** sync via iCloud Drive (see `Sources/AppShared/ICloudCameraStorage.swift`). Camera metadata — host, port, username, display name, grid layout, channel order — is synced. Passwords are not, unless the user has explicitly opted in (see below).
 
 Don't blur this line:
 
 - Never write a password to `UserDefaults`, `cameras.json`, or any other persisted store.
 - Never write a password to a log.
-- If a future feature needs cross-device credentials, that's an **explicit user-facing opt-in to iCloud Keychain**, not a silent change. Surface the trade-off in the UI.
+- Cross-device password sync is an **explicit user-facing opt-in to iCloud Keychain**, never a silent change. Surface the trade-off in the UI.
+
+### iCloud Keychain Sync opt-in (added in 0.4.0)
+
+Settings → Privacy → "Sync camera passwords to iCloud Keychain" is the only path that flips passwords onto the synchronizable side of Keychain. Off by default. Controlled by `Sources/AppShared/Keychain.swift` (`syncEnabled` reads `UserDefaults` for `com.reolens.iCloudKeychainSync`) and `CameraStore.iCloudKeychainSyncEnabled`.
+
+Behavior:
+
+- **Off (default):** writes set `kSecAttrSynchronizable: false`. Reads use `kSecAttrSynchronizableAny`, so a device that opted in earlier and then opted out still sees its previously-synced passwords on this device.
+- **On:** writes set `kSecAttrSynchronizable: true`. The user's existing local-only passwords are migrated to the synced side via `Keychain.migrate(accounts:toSync:)` so the toggle isn't ambient — it takes effect immediately.
+
+Don't add a third state ("partial" / "per-camera"). The opt-in is one flag for the whole device.
 
 ## 5. Privacy
 

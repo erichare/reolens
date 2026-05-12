@@ -33,11 +33,43 @@ struct ReolensiOSApp: App {
                     // it here). The delegate itself is already
                     // installed by AppDelegate.
                     store.applyPendingIntentFocus()
+
+                    // Auto-request notification permission on first
+                    // launch — matches the macOS app's behavior. Until
+                    // 0.4.0, iOS users had to dig into Settings → "Request
+                    // permission" before any motion notification could
+                    // fire, so for the vast majority of users the rich
+                    // alarm notifications listed in the README simply
+                    // never appeared. `EventNotifier.notify` is gated by
+                    // `permissionStatus == .authorized`, which can only
+                    // reach `.authorized` after a prompt the user
+                    // accepts. The status check makes this idempotent —
+                    // subsequent launches no-op because the OS records
+                    // the user's decision permanently.
+                    await EventNotifier.shared.refreshPermissionStatus()
+                    if EventNotifier.shared.permissionStatus == .notDetermined {
+                        await EventNotifier.shared.requestPermission()
+                    }
+                }
+                .onContinueUserActivity(CameraContinuity.cameraDetailActivityType) { activity in
+                    if CameraContinuity.handle(activity: activity) {
+                        store.applyPendingIntentFocus()
+                    }
                 }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active {
                         store.applyPendingIntentFocus()
                     }
+                }
+                // Drain when a focus request is written AFTER the
+                // scene's launch `.task` ran — typically the
+                // cold-launch-via-notification-tap path, where
+                // `NotificationTapDelegate.didReceive` fires after
+                // `application(_:didFinishLaunchingWithOptions:)` and
+                // the scene is already `.active`, so the scenePhase
+                // observer doesn't catch the transition.
+                .onReceive(NotificationCenter.default.publisher(for: AppIntentFocus.didUpdate)) { _ in
+                    store.applyPendingIntentFocus()
                 }
         }
     }

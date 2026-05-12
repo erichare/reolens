@@ -54,6 +54,11 @@ struct LivePlaceholderView: View {
                         Button("Enter Password", systemImage: "key.fill") {
                             passwordEntryEntry = entry
                         }
+                        if store.session(for: entry.id) != nil {
+                            Button("Reconnect", systemImage: "arrow.clockwise.circle") {
+                                store.reconnect(entry.id)
+                            }
+                        }
                         Divider()
                         Button("Delete Camera", systemImage: "trash", role: .destructive) {
                             store.remove(entry.id)
@@ -203,7 +208,6 @@ struct RecordingsPlaceholderView: View {
 /// cameras get auto-forwarded.
 private struct RecordingsCameraPicker: View {
     let session: CameraSession
-    @State private var didConnect = false
 
     var body: some View {
         Group {
@@ -226,9 +230,11 @@ private struct RecordingsCameraPicker: View {
                 .navigationTitle(session.entry.displayName)
             }
         }
-        .task(id: session.entry.id) {
-            guard !didConnect else { return }
-            didConnect = true
+        // Key the task off the session instance, not the camera UUID,
+        // so Reconnect (which gives us a new session for the same
+        // camera) actually re-fires the connect. AGENTS.md §8: avoid
+        // stale shared state across instances.
+        .task(id: ObjectIdentifier(session)) {
             await session.connect()
         }
     }

@@ -21,8 +21,28 @@ struct ReolensApp: App {
                     // place before iOS/macOS dispatches a launch-time
                     // notification response.
                     store.applyPendingIntentFocus()
+                    // Install the menu-bar status item lazily, based on
+                    // the user's persisted preference. AGENTS.md §10 —
+                    // we never add a menu-bar icon without the user
+                    // opting in.
+                    MenuBarController.shared.syncFromDefaults(store: store)
+                }
+                .onContinueUserActivity(CameraContinuity.cameraDetailActivityType) { activity in
+                    if CameraContinuity.handle(activity: activity) {
+                        store.applyPendingIntentFocus()
+                    }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                    store.applyPendingIntentFocus()
+                }
+                // Drain when a focus request is written AFTER the
+                // scene's launch `.task` ran — typically the
+                // cold-launch-via-notification-tap path, where
+                // `NotificationTapDelegate.didReceive` fires after
+                // `applicationDidFinishLaunching` and the scene is
+                // already `.active`, so `didBecomeActiveNotification`
+                // doesn't re-fire.
+                .onReceive(NotificationCenter.default.publisher(for: AppIntentFocus.didUpdate)) { _ in
                     store.applyPendingIntentFocus()
                 }
         }
@@ -152,7 +172,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// When the user has opted into menu-bar mode (Settings → General →
+    /// "Run in the menu bar when closed", 0.4.0), closing the last
+    /// window leaves the app running so the menu-bar item can keep
+    /// posting motion notifications. AGENTS.md §10 — only honors the
+    /// flag the user explicitly flipped on, so default behavior
+    /// (terminate on last window close) is unchanged.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        !UserDefaults.standard.bool(forKey: MenuBarController.menuBarModeKey)
     }
 }

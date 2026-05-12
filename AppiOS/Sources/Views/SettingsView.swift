@@ -14,6 +14,7 @@ import AppShared
 struct SettingsView: View {
     @Environment(CameraStore.self) private var store
     @State private var notifier = EventNotifier.shared
+    @AppStorage(GridPreviewSetting.liveGridDefaultsKey) private var liveGridEnabled: Bool = false
 
     var body: some View {
         Form {
@@ -33,6 +34,8 @@ struct SettingsView: View {
             }
             .disabled(!notifier.enabled)
 
+            NotificationCategoriesSection(notifier: notifier)
+
             Section("System permission") {
                 permissionRow
             }
@@ -45,6 +48,15 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+
+            Section("Grid previews") {
+                Toggle("Live previews in grid", isOn: $liveGridEnabled)
+                Text("New in 0.4.0. By default, the camera grid shows the last snapshot from each camera and only streams live when you open a single camera — friendlier on battery and cellular. Turn this on to stream every grid tile live (uses more battery and data).")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            ICloudKeychainSyncSection()
 
             Section("Developer") {
                 Toggle("Developer mode", isOn: bindable.developerMode)
@@ -64,7 +76,7 @@ struct SettingsView: View {
             }
 
             Section {
-                Text("Reolens is a native client for Reolink cameras and NVRs. Camera list and grid preferences sync via iCloud; passwords stay on each device's Keychain.")
+                Text("Reolens is a native client for Reolink cameras and NVRs. Camera list and grid preferences sync via iCloud. Passwords stay on each device's Keychain by default — opt in to iCloud Keychain Sync above to share them across your devices.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

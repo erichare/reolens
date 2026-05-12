@@ -30,13 +30,21 @@ AVFoundation/VideoToolbox — no Electron, no Java, no QtWebEngine. Cold
 launches in under a second; battery-friendly; feels like every other native
 Apple app on each platform.
 
-**As of v0.3.0**, the macOS, iPadOS, and iPhone apps are at feature parity:
-the same grid presets, tap-and-hold rearrange (with iOS-home-screen
-jiggle), camera-list search, save-snapshot, and Shortcuts/Siri
-integration on every platform — plus Picture-in-Picture and digital
-pinch-to-zoom on iOS/iPadOS. Your camera list, layouts, rotations, and
-codec preferences sync via iCloud Drive. Passwords stay per-device in
-Keychain — they never leave the device they were entered on.
+**As of v0.4.0**, the macOS, iPadOS, and iPhone apps are at feature parity
+for the live-viewing experience — same grid presets, tap-and-hold
+rearrange, search, save-snapshot, Shortcuts/Siri, and now a per-channel
+Settings tab on every platform (plus Picture-in-Picture and pinch-to-zoom
+on iOS/iPadOS). 0.4.0 layered on the **see-further** features: a
+day-density calendar + per-day segment timeline above the recordings
+list, AI event filters, Continuity / Handoff between iPhone, iPad, and
+Mac, and an **opt-in to iCloud Keychain Sync** for users who want their
+camera passwords on every device. macOS gains a **"Run in the menu bar
+when closed"** mode so motion notifications keep firing after the window
+closes, and the camera grid now defaults to **static still previews**
+(streaming only when you open a single camera — toggle in Settings to
+restore continuous live grids). Camera list and grid preferences sync
+via iCloud Drive. Passwords stay per-device in Keychain unless the user
+explicitly opts in to iCloud Keychain Sync.
 
 See [`AGENTS.md`](AGENTS.md) for the engineering principles that gate
 every change (platform parity by default, no telemetry, no credentials
@@ -275,19 +283,38 @@ construct a `CGICommand`, and call `client.send(_:as:)`. See
 
 ## Roadmap
 
+Shipped in 0.4.0:
+- Recording timeline — day-density calendar + per-day segment view with
+  AI event markers (all 3 platforms)
+- AI event filters (multi-select chips on recordings, per-tag mute on
+  notifications)
+- iCloud Keychain Sync opt-in for cross-device passwords (off by default,
+  AGENTS.md §4 amended to document the opt-in carve-out)
+- Continuity / Handoff between iPhone, iPad, and Mac
+- Static-preview-by-default grid (saves battery, thermals, and cellular
+  data; pull-to-refresh on iOS, ⌘R on macOS)
+- iOS per-channel Settings tab (parity with macOS)
+- macOS "Run in the menu bar when closed" mode + Launch at login —
+  motion notifications keep firing after the window closes
+- iOS push notifications fixed (rich alarm notifications now actually
+  appear on iPhone / iPad)
+
 Shipped in 0.3.0:
 - Cross-platform feature parity (grid presets, search, reorder, snapshot
   on iOS/iPadOS)
 - Picture-in-Picture, pinch-to-zoom, Shortcuts/Siri (iOS/iPadOS)
 - Save Snapshot on every tile
 
-Up next:
-- Recording timeline scrubber
-- Live Activities + widgets
-- iCloud Keychain opt-in for cross-device passwords (with explicit user
-  consent; see [`AGENTS.md`](AGENTS.md) §4)
-- Multi-window support on iPad (Stage Manager)
-- AI event filters (people / vehicle / package)
+Up next (planned for 0.5):
+- Home Screen / Lock Screen / Control Center widgets and iOS Live
+  Activities for in-flight motion events (motion-event pipeline is
+  ready; needs the widget-extension target setup)
+- Full custom recording scrubber with thumbnail-on-scrub and
+  cross-segment seek (the day-density calendar and segment timeline
+  shipped in 0.4.0 are phase one)
+- Stage Manager / multi-window on iPad
+- "Overnight digest" notification + widget — a once-a-day local summary
+  of motion events while you were away
 
 See the [GitHub issues](https://github.com/jestatsio/reolens/issues) for
 the full plan.

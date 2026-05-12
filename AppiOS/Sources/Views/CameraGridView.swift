@@ -19,6 +19,11 @@ struct CameraGridView: View {
     @State private var selectedChannel: ChannelStatus?
     @State private var isReordering: Bool = false
     @State private var draggingChannel: Int?
+    /// User's preference for the grid: live RTSP per tile (0.3.0
+    /// behavior, now opt-in) vs. cached still previews (0.4.0 default).
+    /// `@AppStorage` so flipping the toggle in Settings updates this
+    /// view without explicit propagation.
+    @AppStorage(GridPreviewSetting.liveGridDefaultsKey) private var liveGridEnabled: Bool = false
 
     private var visibleChannels: [ChannelStatus] {
         store.orderedChannels(for: session.entry.id, channels: session.liveChannels)
@@ -35,6 +40,9 @@ struct CameraGridView: View {
             default:
                 fixedGrid(preset: preset)
             }
+        }
+        .refreshable {
+            await refreshAllPreviews()
         }
         .background(Color(.systemGroupedBackground))
         .contentShape(Rectangle())
@@ -71,6 +79,26 @@ struct CameraGridView: View {
                     }
                     .accessibilityLabel("Done rearranging")
                 } else {
+                    // Inline live / still toggle. Bound to the same
+                    // @AppStorage flag the Settings pane uses, so
+                    // flipping here updates Settings too. Surfaced
+                    // above the grid because hunting in Settings for a
+                    // default-behavior choice felt like a regression.
+                    Button {
+                        liveGridEnabled.toggle()
+                    } label: {
+                        Image(systemName: liveGridEnabled
+                              ? "dot.radiowaves.left.and.right"
+                              : "photo.stack")
+                            .symbolVariant(liveGridEnabled ? .fill : .none)
+                    }
+                    .accessibilityLabel(liveGridEnabled
+                        ? "Switch to still previews"
+                        : "Switch to live grid")
+                    .accessibilityHint(liveGridEnabled
+                        ? "Currently streaming every camera live in the grid"
+                        : "Currently showing still previews; tap to stream live")
+
                     layoutMenu(currentPreset: preset)
                 }
             }
@@ -131,21 +159,45 @@ struct CameraGridView: View {
     // MARK: - Adaptive grid
 
     private var adaptiveGrid: some View {
-        ScrollView {
-            LazyVGrid(columns: adaptiveColumns, spacing: 12) {
-                ForEach(visibleChannels, id: \.channel) { channel in
-                    let isDual = channel.isDualLens
-                        || store.isDualLensOverride(deviceID: session.entry.id, channel: channel.channel)
-                    tile(for: channel, stream: .sub)
-                        .aspectRatio(isDual ? 32.0 / 9.0 : 16.0 / 9.0, contentMode: .fit)
+        // Tile *width* is uniform per column. Tile *height* follows
+        // the camera's native aspect — single-lens cells are 16:9,
+        // dual-lens cells are 32:9 (shorter). LazyVGrid sizes each
+        // row to the tallest item, so dual cells leave a margin but
+        // never letterbox a 32:9 stitched frame into a 16:9 cell —
+        // which users perceived as the dual-lens cameras being "too
+        // long" with huge black bars.
+        GeometryReader { geo in
+            let spacing: CGFloat = 12
+            let padding: CGFloat = 12
+            let minTileWidth: CGFloat = 280
+            let availableWidth = max(0, geo.size.width - 2 * padding)
+            let columnCount = max(
+                1,
+                Int((availableWidth + spacing) / (minTileWidth + spacing))
+            )
+            let tileWidth = max(
+                0,
+                (availableWidth - CGFloat(columnCount - 1) * spacing) / CGFloat(columnCount)
+            )
+            let standardTileHeight = tileWidth * 9 / 16
+            let dualTileHeight = tileWidth * 9 / 32
+            let columns = Array(
+                repeating: GridItem(.fixed(tileWidth), spacing: spacing, alignment: .top),
+                count: columnCount
+            )
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: spacing) {
+                    ForEach(visibleChannels, id: \.channel) { channel in
+                        let isDual = channel.isDualLens
+                            || store.isDualLensOverride(deviceID: session.entry.id, channel: channel.channel)
+                        tile(for: channel, stream: .sub)
+                            .frame(width: tileWidth, height: isDual ? dualTileHeight : standardTileHeight)
+                    }
                 }
+                .frame(maxWidth: .infinity)
+                .padding(padding)
             }
-            .padding(12)
         }
-    }
-
-    private var adaptiveColumns: [GridItem] {
-        [GridItem(.adaptive(minimum: 280, maximum: 600), spacing: 12)]
     }
 
     // MARK: - Fixed N×N grid
@@ -153,23 +205,36 @@ struct CameraGridView: View {
     private func fixedGrid(preset: GridPreset) -> some View {
         let cols = preset.columns ?? 1
         let rows = preset.rowsOnScreen ?? 1
-        let columns = Array(
-            repeating: GridItem(.flexible(), spacing: 8),
-            count: cols
-        )
         return GeometryReader { geo in
             let spacing: CGFloat = 8
             let totalHSpacing = spacing * CGFloat(cols + 1)
             let totalVSpacing = spacing * CGFloat(rows + 1)
-            let tileWidth = max(0, (geo.size.width - totalHSpacing) / CGFloat(cols))
-            let tileHeight = max(0, (geo.size.height - totalVSpacing) / CGFloat(rows))
+            // Uniform 16:9 cell that fits within both the width and
+            // height budget. Cells may end up narrower than a perfect
+            // grid would, but they're guaranteed not to overlap.
+            let widthFromWidth = max(0, (geo.size.width - totalHSpacing) / CGFloat(cols))
+            let widthFromHeight = max(0, (geo.size.height - totalVSpacing) / CGFloat(rows)) * 16 / 9
+            let tileWidth = min(widthFromWidth, widthFromHeight)
+            let tileHeight = tileWidth * 9 / 16
+            let columns = Array(
+                repeating: GridItem(.fixed(tileWidth), spacing: spacing, alignment: .top),
+                count: cols
+            )
             ScrollView {
                 LazyVGrid(columns: columns, spacing: spacing) {
                     ForEach(visibleChannels, id: \.channel) { channel in
-                        tile(for: channel, stream: .sub)
+                        // Center-crop dual-lens snapshots so a 32:9
+                        // stitched frame fills the 16:9 cell instead
+                        // of letterboxing into a thin strip. Matches
+                        // what live mode already does
+                        // (.resizeAspectFill on the display layer).
+                        let isDual = channel.isDualLens
+                            || store.isDualLensOverride(deviceID: session.entry.id, channel: channel.channel)
+                        tile(for: channel, stream: .sub, centerCrop: isDual)
                             .frame(width: tileWidth, height: tileHeight)
                     }
                 }
+                .frame(maxWidth: .infinity)
                 .padding(spacing)
             }
         }
@@ -236,7 +301,7 @@ struct CameraGridView: View {
     // MARK: - Tile
 
     @ViewBuilder
-    private func tile(for channel: ChannelStatus, stream: StreamKind) -> some View {
+    private func tile(for channel: ChannelStatus, stream: StreamKind, centerCrop: Bool = false) -> some View {
         LiveTileView(
             session: session,
             channel: channel,
@@ -245,7 +310,9 @@ struct CameraGridView: View {
                 if !isReordering {
                     selectedChannel = channel
                 }
-            }
+            },
+            preferPreview: !liveGridEnabled,
+            centerCropPreview: centerCrop
         )
         .id(channel.channel)
         .opacity(draggingChannel == channel.channel ? 0.35 : 1.0)
@@ -274,6 +341,31 @@ struct CameraGridView: View {
         .accessibilityLabel(channel.name ?? "Channel \(channel.channel + 1)")
         .accessibilityHint(isReordering ? "Drag to rearrange" : "Double-tap to view this camera")
         .accessibilityAddTraits(.isButton)
+    }
+
+    /// Pull-to-refresh handler. Re-fetches `cmd=Snap` for every visible
+    /// channel in parallel (capped via the actor's in-flight
+    /// deduplication, so even if a refresh is already running this
+    /// pull just awaits it). No-op when the user has opted into live
+    /// grids — there's nothing cached to refresh.
+    private func refreshAllPreviews() async {
+        let channels = visibleChannels
+        await withTaskGroup(of: Void.self) { group in
+            for channel in channels {
+                let cameraID = session.entry.id
+                let channelID = channel.channel
+                let session = self.session
+                group.addTask {
+                    guard let url = await session.snapshotURL(channel: channelID) else { return }
+                    await CameraPreviewService.shared.refresh(
+                        snapshotURL: url,
+                        cameraID: cameraID,
+                        channel: channelID
+                    )
+                }
+            }
+            await group.waitForAll()
+        }
     }
 }
 

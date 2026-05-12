@@ -25,6 +25,19 @@ struct LiveCameraTile: View {
     /// item. When nil, the item is hidden. Wired up by parent views that
     /// own the password-entry sheet state.
     var onEnterPassword: (() -> Void)? = nil
+    /// When true, render a cached still preview instead of starting an
+    /// RTSP stream. Default is false — matches the existing live-tile
+    /// behavior. Grid surfaces pass `true` to honor the 0.4.0 static-
+    /// preview default; single-channel and fullscreen views keep `false`
+    /// because the user explicitly asked to see live video there.
+    var preferPreview: Bool = false
+    /// When true, the preview-mode cached snapshot center-crops to fill
+    /// the cell instead of letterboxing. Fixed N×N grids set this for
+    /// dual-lens channels so a 32:9 stitched snapshot doesn't render
+    /// as a thin horizontal strip with huge black bars in a 16:9 cell.
+    /// Adaptive grids give dual-lens cells their own 32:9 aspect ratio
+    /// so this can stay false there.
+    var centerCropPreview: Bool = false
 
     @Environment(CameraStore.self) private var store
     @State private var player: LiveVideoPlayer?
@@ -53,15 +66,60 @@ struct LiveCameraTile: View {
         return ZStack(alignment: .topLeading) {
             Color.black
 
-            if isBatteryIdle {
+            if preferPreview {
+                CameraPreviewImage(
+                    cameraID: session.entry.id,
+                    cameraName: session.entry.displayName,
+                    channel: channel.channel,
+                    snapshotURLProvider: { [session, channelID = channel.channel] in
+                        await session.snapshotURL(channel: channelID)
+                    },
+                    prepareForFetch: { [session, channelID = channel.channel] in
+                        // Wake battery / sleeping cameras over Baichuan
+                        // before hitting cmd=Snap. Without this, the
+                        // JPEG endpoint either times out or returns a
+                        // long-stale frame because the camera is offline
+                        // at the radio layer. Battery cams go back to
+                        // sleep on their own after the briefest of
+                        // wakes — same flow startPlayer() uses for
+                        // live view.
+                        let (asleep, baichuan) = await MainActor.run {
+                            (session.isBatteryPoweredOrAsleep(channel: channelID),
+                             session.baichuanClient)
+                        }
+                        guard asleep, let baichuan else { return }
+                        _ = try? await baichuan.wakeBatteryCamera(channelID: UInt8(channelID))
+                    },
+                    centerCrop: centerCropPreview
+                )
+            } else if isBatteryIdle {
                 sleepingOverlay
             } else if let player {
-                LiveVideoView(player: player, rotationDegrees: rotation)
                 if case .failed(let msg) = player.state {
-                    overlay(message: msg, systemImage: "exclamationmark.triangle.fill", tint: .red)
-                } else if player.state == .connecting {
-                    ProgressView().tint(.white)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    // Fall back to the cached snapshot instead of
+                    // blanking the tile with a red error block.
+                    // Reolink hubs cap concurrent RTSP sessions per
+                    // device, so when the user toggles live mode on a
+                    // many-camera hub some tiles legitimately fail to
+                    // start until other sessions free up — those
+                    // tiles still have a recent cached preview that's
+                    // a better fallback than raw error text.
+                    CameraPreviewImage(
+                        cameraID: session.entry.id,
+                        cameraName: session.entry.displayName,
+                        channel: channel.channel,
+                        snapshotURLProvider: { [session, channelID = channel.channel] in
+                            await session.snapshotURL(channel: channelID)
+                        },
+                        centerCrop: centerCropPreview
+                    )
+                    liveUnavailableOverlay(error: msg)
+                } else {
+                    LiveVideoView(player: player, rotationDegrees: rotation)
+                    if player.state == .connecting {
+                        ProgressView().tint(.white)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 }
             } else if autoStart {
                 ProgressView().tint(.white).frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -111,6 +169,15 @@ struct LiveCameraTile: View {
                 Label("Save Snapshot…", systemImage: "camera.fill")
             }
             .disabled(player == nil)
+            Divider()
+            Button {
+                // Drops the existing session and force-rebuilds it.
+                // Use when a hub sticks on "Connecting…" indefinitely
+                // — usually a rotated session token or a LAN blip.
+                store.reconnect(session.entry.id)
+            } label: {
+                Label("Reconnect", systemImage: "arrow.clockwise.circle")
+            }
             if let onEnterPassword {
                 Divider()
                 Button {
@@ -121,7 +188,7 @@ struct LiveCameraTile: View {
             }
         }
         .task(id: channel.channel) {
-            guard autoStart, !channel.isAsleep, !session.isBatteryPowered(channel: channel.channel), !didStart, !paused else { return }
+            guard !preferPreview, autoStart, !channel.isAsleep, !session.isBatteryPowered(channel: channel.channel), !didStart, !paused else { return }
             didStart = true
             await startPlayer()
         }
@@ -143,6 +210,15 @@ struct LiveCameraTile: View {
         // for its own decoded frame size.
         .onChange(of: player?.naturalSize) { _, size in
             guard let size, size.width > 0, size.height > 0 else { return }
+            // Opportunistically refresh the preview cache from a
+            // freshly-decoded live frame. `naturalSize` becomes
+            // non-nil the moment the first sample is enqueued, but
+            // `currentSnapshot()` reads from a *parallel* VT decode
+            // session whose pixel buffer arrives ~half a second to a
+            // few seconds later. Polling on a short delay handles the
+            // race without a fragile spin loop. AGENTS.md §7: cache
+            // only, never persisted to iCloud.
+            capturePreviewWhenReady()
             let longSide = max(size.width, size.height)
             let shortSide = min(size.width, size.height)
             let ratio = longSide / shortSide
@@ -157,7 +233,33 @@ struct LiveCameraTile: View {
                 player?.stop()
                 player = nil
                 didStart = false
-            } else if autoStart, !channel.isAsleep, !session.isBatteryPowered(channel: channel.channel), !didStart {
+            } else if !preferPreview, autoStart, !channel.isAsleep, !session.isBatteryPowered(channel: channel.channel), !didStart {
+                // Preview-mode tiles must never auto-resume the player
+                // when `paused` flips off — that's the path that made
+                // grids briefly stream live after a rich-viewer close
+                // even with the static-preview toggle on.
+                Task {
+                    didStart = true
+                    await startPlayer()
+                }
+            }
+        }
+        // Flipping the grid Stills/Live toggle must actually take
+        // effect on every tile already on screen — without an explicit
+        // observer here, `.task(id: channel.channel)` doesn't re-fire
+        // (channel hasn't changed), so the user would see the toggle
+        // flip but the tiles would stay frozen on the cached snapshot.
+        .onChange(of: preferPreview) { _, nowPreview in
+            if nowPreview {
+                // Switched to Stills — tear down any running player so
+                // we stop holding an RTSP session against the hub's
+                // concurrency cap.
+                player?.stop()
+                player = nil
+                didStart = false
+            } else if autoStart, !channel.isAsleep, !session.isBatteryPowered(channel: channel.channel), !didStart, !paused {
+                // Switched to Live — start the player if eligible.
+                // Eligibility mirrors the `.task` guards above.
                 Task {
                     didStart = true
                     await startPlayer()
@@ -169,6 +271,44 @@ struct LiveCameraTile: View {
             player = nil
             didStart = false
         }
+    }
+
+    /// Compact "live unavailable" badge shown over the cached preview
+    /// when the RTSP player fails to start. Tapping retries — useful
+    /// when the hub's concurrent-session cap relaxes (another tile
+    /// closes a stream) and a re-attempt would succeed. The detailed
+    /// error message is in the context menu so users who care about
+    /// diagnostics can still inspect it without it covering the tile.
+    private func liveUnavailableOverlay(error message: String) -> some View {
+        VStack {
+            Spacer()
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.yellow)
+                Text("Live unavailable")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.white)
+                Button {
+                    Task {
+                        player?.stop()
+                        player = nil
+                        didStart = false
+                        await startPlayer()
+                    }
+                } label: {
+                    Label("Retry", systemImage: "arrow.clockwise")
+                        .labelStyle(.iconOnly)
+                        .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+                .help(message)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.black.opacity(0.7), in: Capsule())
+            .padding(8)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var sleepingOverlay: some View {
@@ -248,6 +388,29 @@ struct LiveCameraTile: View {
         rotationDegrees ?? store.rotation(for: session.entry.id, channel: channel.channel, stream: stream)
     }
 
+    /// Schedule a delayed capture of `player.currentSnapshot()` into the
+    /// preview cache. The first decoded frame's pixel buffer lands a
+    /// beat after `naturalSize` flips non-nil — so we poll a few times
+    /// before giving up rather than racing the parallel VT decode.
+    private func capturePreviewWhenReady() {
+        let cameraID = session.entry.id
+        let channelID = channel.channel
+        Task { @MainActor in
+            for attempt in 1...5 {
+                try? await Task.sleep(nanoseconds: UInt64(attempt) * 800_000_000)
+                guard let cgImage = player?.currentSnapshot() else { continue }
+                Task.detached(priority: .utility) {
+                    await CameraPreviewService.shared.storeFromLive(
+                        cgImage: cgImage,
+                        cameraID: cameraID,
+                        channel: channelID
+                    )
+                }
+                return
+            }
+        }
+    }
+
     private func saveSnapshot() async {
         guard let player else { return }
         let image = player.currentSnapshot()
@@ -261,7 +424,21 @@ struct LiveCameraTile: View {
     }
 
     private func startPlayer() async {
+        // Belt-and-suspenders: even if a caller bypasses the `.task`
+        // guard (e.g., from `.onChange(of: paused)` or a future manual
+        // "Connect" wire-up), preview mode tiles must never spin up an
+        // RTSP session. The whole point of preview mode is no live
+        // streaming until the user opens a single-channel view.
+        if preferPreview { return }
         if player != nil { return }
+        // Rate-limit concurrent RTSP starts so a 16-tile grid flipping
+        // Stills → Live doesn't open 16 sessions in parallel and trip
+        // the hub's concurrency cap. Tiles still go live progressively
+        // (~500 ms apart) rather than all-or-nothing.
+        await LivePlayerStartGate.shared.acquire()
+        // Re-check `preferPreview` after the gate wait — the user may
+        // have flipped Live → Stills while we were queued.
+        if preferPreview { return }
         didStart = true
         // For battery cameras, poke the hub via Baichuan first to wake the
         // sleeping camera. If we go straight to RTSP, the camera won't

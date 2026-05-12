@@ -117,9 +117,24 @@ public enum AppIntentFocus {
     /// pre-0.3.x build still route correctly after the user upgrades.
     private static let legacyKey = "com.reolens.intent.focusedCameraID"
 
+    /// Broadcast when a focus request is written. Subscribed to by
+    /// app scenes that need to re-drain the pending intent without
+    /// waiting for the next scene-phase or active-notification cycle
+    /// — the cold-launch-via-notification-tap path writes the intent
+    /// AFTER the scene's launch `.task` has already drained it.
+    public static let didUpdate = Notification.Name("com.reolens.intent.focusUpdated")
+
     public static func request(_ target: Target) {
         guard let data = try? JSONEncoder().encode(target) else { return }
         UserDefaults.standard.set(data, forKey: key)
+        // Posting on the main queue so SwiftUI's `.onReceive` runs on
+        // the same actor as the rest of the scene code. Notification
+        // observers (which include CameraStore's drain) hop the
+        // MainActor anyway, but going through the main queue is
+        // cheaper and avoids a brief inconsistency window.
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: didUpdate, object: nil)
+        }
     }
 
     /// Convenience wrapper for the common case (live view of a device).

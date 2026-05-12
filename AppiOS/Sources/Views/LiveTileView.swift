@@ -30,6 +30,17 @@ struct LiveTileView: View {
     /// player into a Picture-in-Picture controller. Defaults to nil for
     /// the grid-tile case where PiP is not surfaced.
     var onPlayerChanged: ((LiveVideoPlayer?) -> Void)? = nil
+    /// When true, render a cached still preview instead of starting an
+    /// RTSP stream. Default is false. Grid surfaces pass `true` to
+    /// honor the 0.4.0 static-preview default; single-channel and
+    /// fullscreen views keep `false`.
+    var preferPreview: Bool = false
+    /// Center-crop the preview-mode snapshot to fill the cell instead
+    /// of letterboxing. Fixed N×N grids set this for dual-lens
+    /// channels so a 32:9 stitched snapshot doesn't render as a thin
+    /// strip in a 16:9 cell. Adaptive grid gives dual-lens cells their
+    /// own 32:9 aspect, so it leaves this false.
+    var centerCropPreview: Bool = false
 
     @Environment(CameraStore.self) private var store
     @State private var player: LiveVideoPlayer?
@@ -45,15 +56,55 @@ struct LiveTileView: View {
 
         ZStack(alignment: .topLeading) {
             Color.black
-            if isBatteryIdle {
+            if preferPreview {
+                CameraPreviewImage(
+                    cameraID: session.entry.id,
+                    cameraName: session.entry.displayName,
+                    channel: channel.channel,
+                    snapshotURLProvider: { [session, channelID = channel.channel] in
+                        await session.snapshotURL(channel: channelID)
+                    },
+                    prepareForFetch: { [session, channelID = channel.channel] in
+                        // Wake battery / sleeping cameras over Baichuan
+                        // before hitting cmd=Snap. Battery cams go back
+                        // to sleep on their own after the briefest of
+                        // wakes — same flow startPlayer() uses for
+                        // live view.
+                        let (asleep, baichuan) = await MainActor.run {
+                            (session.isBatteryPoweredOrAsleep(channel: channelID),
+                             session.baichuanClient)
+                        }
+                        guard asleep, let baichuan else { return }
+                        _ = try? await baichuan.wakeBatteryCamera(channelID: UInt8(channelID))
+                    },
+                    centerCrop: centerCropPreview
+                )
+            } else if isBatteryIdle {
                 sleepingOverlay
             } else if let player {
-                LiveVideoView(player: player, rotationDegrees: rotation)
                 if case .failed(let msg) = player.state {
-                    overlay(message: msg, systemImage: "exclamationmark.triangle.fill", tint: .red)
-                } else if player.state == .connecting {
-                    ProgressView().tint(.white)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    // Fall back to the cached snapshot when the
+                    // player fails — typically the hub's concurrent
+                    // RTSP cap is full while the user flips Live on
+                    // a many-camera grid. The cached still is a far
+                    // better fallback than a red error block over an
+                    // otherwise-fine tile.
+                    CameraPreviewImage(
+                        cameraID: session.entry.id,
+                        cameraName: session.entry.displayName,
+                        channel: channel.channel,
+                        snapshotURLProvider: { [session, channelID = channel.channel] in
+                            await session.snapshotURL(channel: channelID)
+                        },
+                        centerCrop: centerCropPreview
+                    )
+                    liveUnavailableOverlay(error: msg)
+                } else {
+                    LiveVideoView(player: player, rotationDegrees: rotation)
+                    if player.state == .connecting {
+                        ProgressView().tint(.white)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 }
             } else if autoStart {
                 ProgressView().tint(.white)
@@ -92,6 +143,15 @@ struct LiveTileView: View {
                 Label("Save Snapshot", systemImage: "camera.fill")
             }
             .disabled(player == nil)
+            Divider()
+            Button {
+                // Drops the existing session and force-rebuilds it.
+                // Use when a camera sticks on "Connecting…" — usually
+                // a rotated session token or a Wi-Fi blip.
+                store.reconnect(session.entry.id)
+            } label: {
+                Label("Reconnect", systemImage: "arrow.clockwise.circle")
+            }
         }
         .overlay(alignment: .bottom) {
             if let snapshotHUD {
@@ -107,7 +167,7 @@ struct LiveTileView: View {
         }
         .animation(.easeInOut(duration: 0.2), value: snapshotHUD)
         .task(id: channel.channel) {
-            guard autoStart, !channel.isAsleep, !session.isBatteryPowered(channel: channel.channel), !didStart, !paused else { return }
+            guard !preferPreview, autoStart, !channel.isAsleep, !session.isBatteryPowered(channel: channel.channel), !didStart, !paused else { return }
             didStart = true
             await startPlayer()
         }
@@ -120,6 +180,11 @@ struct LiveTileView: View {
             // landscape 16:9 ≈ 1.78. Persist the override so the per-channel
             // grid layout knows to give this tile a wider aspect.
             guard let size, size.width > 0, size.height > 0 else { return }
+            // Capture a preview from the freshly-decoded live frame.
+            // The parallel VT decode that populates `latestPixelBuffer`
+            // lands a beat after `naturalSize` flips non-nil, so we
+            // poll on a short delay instead of racing the decode.
+            capturePreviewWhenReady()
             let ratio = max(size.width, size.height) / min(size.width, size.height)
             guard ratio >= 2.0 else { return }
             let alreadyMarked = store.isDualLensOverride(deviceID: session.entry.id, channel: channel.channel) || channel.isDualLens
@@ -132,7 +197,24 @@ struct LiveTileView: View {
                 player?.stop()
                 player = nil
                 didStart = false
-            } else if autoStart, !channel.isAsleep, !session.isBatteryPowered(channel: channel.channel), !didStart {
+            } else if !preferPreview, autoStart, !channel.isAsleep, !session.isBatteryPowered(channel: channel.channel), !didStart {
+                // Preview-mode tiles must never auto-resume the player
+                // when `paused` flips off — same fix as macOS.
+                Task {
+                    didStart = true
+                    await startPlayer()
+                }
+            }
+        }
+        // Flipping the grid Stills/Live toggle must take effect on
+        // every tile already on screen. `.task(id: channel.channel)`
+        // alone doesn't re-fire because the channel hasn't changed.
+        .onChange(of: preferPreview) { _, nowPreview in
+            if nowPreview {
+                player?.stop()
+                player = nil
+                didStart = false
+            } else if autoStart, !channel.isAsleep, !session.isBatteryPowered(channel: channel.channel), !didStart, !paused {
                 Task {
                     didStart = true
                     await startPlayer()
@@ -148,6 +230,44 @@ struct LiveTileView: View {
         .onChange(of: player == nil) { _, _ in
             onPlayerChanged?(player)
         }
+    }
+
+    /// Compact "live unavailable" badge shown over the cached
+    /// preview when the RTSP player fails. Tap to retry — the hub's
+    /// concurrent-session cap may have relaxed (another tile closed
+    /// a stream). The detailed error is in the help tooltip / context
+    /// menu so users who care can still inspect it; covering the
+    /// whole tile with a red error block over a perfectly good
+    /// cached snapshot was the previous, worse experience.
+    private func liveUnavailableOverlay(error message: String) -> some View {
+        VStack {
+            Spacer()
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.yellow)
+                Text("Live unavailable")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.white)
+                Button {
+                    Task {
+                        player?.stop()
+                        player = nil
+                        didStart = false
+                        await startPlayer()
+                    }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Retry live stream")
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.black.opacity(0.7), in: Capsule())
+            .padding(8)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var sleepingOverlay: some View {
@@ -222,7 +342,16 @@ struct LiveTileView: View {
     }
 
     private func startPlayer() async {
+        // Belt-and-suspenders preview-mode guard. Same rationale as
+        // macOS: no RTSP from grid tiles unless the user has opted in
+        // to live grids.
+        if preferPreview { return }
         if player != nil { return }
+        // Rate-limit concurrent RTSP starts so a 16-tile grid flipping
+        // Stills → Live doesn't open 16 sessions in parallel and trip
+        // the hub's concurrency cap.
+        await LivePlayerStartGate.shared.acquire()
+        if preferPreview { return }
         didStart = true
         if session.isBatteryPowered(channel: channel.channel) || channel.isAsleep,
            let baichuan = session.baichuanClient {
@@ -254,6 +383,29 @@ struct LiveTileView: View {
         case .main: "main"
         case .sub: "preview"
         case .ext: "ext"
+        }
+    }
+
+    /// Delayed capture of `player.currentSnapshot()` into the preview
+    /// cache. The first decoded frame's pixel buffer arrives shortly
+    /// after `naturalSize` flips non-nil; polling a few times handles
+    /// the race without spin-waiting.
+    private func capturePreviewWhenReady() {
+        let cameraID = session.entry.id
+        let channelID = channel.channel
+        Task { @MainActor in
+            for attempt in 1...5 {
+                try? await Task.sleep(nanoseconds: UInt64(attempt) * 800_000_000)
+                guard let cgImage = player?.currentSnapshot() else { continue }
+                Task.detached(priority: .utility) {
+                    await CameraPreviewService.shared.storeFromLive(
+                        cgImage: cgImage,
+                        cameraID: cameraID,
+                        channel: channelID
+                    )
+                }
+                return
+            }
         }
     }
 
