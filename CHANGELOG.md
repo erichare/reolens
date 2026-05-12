@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.1.0] — TBD
+## [0.1.1] — TBD
+
+Hotfix release.
+
+### Fixed
+- App crashed on launch with `Trace/BPT trap: 5` inside the
+  `UNUserNotificationServiceConnection.call-out` queue. Swift 6.2's
+  approachable concurrency was inferring the
+  `UNUserNotificationCenter` callback closures in `EventNotifier` as
+  inheriting `@MainActor` isolation; UN dispatches them on its own
+  serial queue, so the runtime's actor-isolation check tripped and
+  killed the process before the window could appear. The two relevant
+  closures (in `refreshPermissionStatus` and `notify`) are now
+  explicitly typed `@Sendable` to opt out of caller isolation.
+
+## [0.1.0] — 2026-05-11
 
 First public release.
 
@@ -32,5 +47,6 @@ First public release.
 - All camera passwords stored in the macOS Keychain — never in plain text
 - No analytics, no telemetry, no accounts
 
-[Unreleased]: https://github.com/jestatsio/reolens/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/jestatsio/reolens/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/jestatsio/reolens/releases/tag/v0.1.1
 [0.1.0]: https://github.com/jestatsio/reolens/releases/tag/v0.1.0
