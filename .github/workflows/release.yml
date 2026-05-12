@@ -130,11 +130,16 @@ jobs:
       # (e.g. by Scripts/make-dmg.sh during local development) is now
       # stale. Recompute against the post-staple bytes — that's what
       # `brew install --cask` will see when it downloads the asset.
-      - name: Recompute DMG sha256 (post-staple)
+      # Also publish a version-less `Reolens.dmg` alias so the landing
+      # page's "Download" button can permalink to
+      # `/releases/latest/download/Reolens.dmg` and resolve forever.
+      - name: Recompute DMG sha256 + publish version-less alias
         run: |
           set -euo pipefail
           DMG="dist/build/Reolens-${{ steps.ver.outputs.version }}.dmg"
+          ALIAS="dist/build/Reolens.dmg"
           shasum -a 256 "${DMG}" | tee "${DMG}.sha256"
+          cp "${DMG}" "${ALIAS}"
 
       - name: Install Sparkle tools
         run: |
@@ -216,4 +221,5 @@ jobs:
           files: |
             dist/build/Reolens-${{ steps.ver.outputs.version }}.dmg
             dist/build/Reolens-${{ steps.ver.outputs.version }}.dmg.sha256
+            dist/build/Reolens.dmg
             appcast.xml
