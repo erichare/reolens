@@ -43,8 +43,25 @@ struct CameraGridView: View {
                 withAnimation(.easeOut(duration: 0.2)) { isReordering = false }
             }
         }
-        .navigationDestination(item: $selectedChannel) { channel in
-            SingleChannelView(session: session, channel: channel)
+        // Present the single-channel detail via fullScreenCover rather
+        // than navigationDestination. On iPad inside the three-column
+        // NavigationSplitView, value-based programmatic navigation
+        // ambiguously routes between the content column and the detail
+        // column — SwiftUI ends up re-evaluating the entire split-view
+        // hierarchy on every render, which on a 16-channel hub appears
+        // as a hard freeze (the main thread spins through Objective-C
+        // dispatch and Swift generic-context lookups for every nested
+        // view). fullScreenCover sidesteps all of that with a normal
+        // modal presentation that's deterministic on every platform.
+        .fullScreenCover(item: $selectedChannel) { channel in
+            NavigationStack {
+                SingleChannelView(session: session, channel: channel)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") { selectedChannel = nil }
+                        }
+                    }
+            }
         }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
