@@ -160,9 +160,15 @@ mkdir -p "${BUILD_DIR}"
 PROFILE_NAME=""
 if [[ -n "${AC_API_KEY_ID:-}" && -n "${AC_API_KEY_P8_PATH:-}" ]]; then
     echo "==> Ensuring App Store provisioning profile via ASC API"
+    export PLATFORM=IOS
     export IOS_BUNDLE_ID="${IOS_BUNDLE_ID:-com.reolens.Reolens.iOS}"
     export PROFILE_NAME="${PROFILE_NAME:-Reolens iOS App Store}"
-    PROFILE_NAME="$(python3 "${REPO_ROOT}/Scripts/asc_ensure_profile.py")"
+    # Helper prints two lines: (1) profile name, (2) .mobileprovision path.
+    # We only need the name for the iOS path — xcodebuild's
+    # -allowProvisioningUpdates picks the file up from
+    # ~/Library/MobileDevice/Provisioning Profiles by name.
+    HELPER_OUT="$(python3 "${REPO_ROOT}/Scripts/asc_ensure_profile.py")"
+    PROFILE_NAME="$(printf '%s\n' "${HELPER_OUT}" | sed -n '1p')"
     echo "    using profile: ${PROFILE_NAME}"
 fi
 

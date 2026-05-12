@@ -57,14 +57,21 @@ See [`AppiOS/README.md`](AppiOS/README.md) for the iOS-specific layout.
 
 ## System requirements
 
+**macOS app**
 - macOS 14 Sonoma or later
 - Apple Silicon (M-series) or Intel — universal binary
+
+**iPad / iPhone app**
+- iPadOS 18 / iOS 18 or later
+- Any device that runs them
+
+**Both**
 - Reolink camera, NVR, or Home Hub on the local network
 - HTTP/HTTPS access to the device's CGI port (default 80 / 443)
 
 ## Install
 
-### Homebrew (recommended)
+### macOS — Homebrew (recommended)
 
 ```sh
 brew tap jestatsio/reolens
@@ -73,7 +80,7 @@ brew install --cask reolens
 
 Updates are handled by Sparkle inside the app — no `brew upgrade` needed.
 
-### Direct download
+### macOS — Direct download
 
 Grab the signed, notarized DMG from the [latest release](https://github.com/jestatsio/reolens/releases/latest):
 
@@ -83,7 +90,20 @@ https://github.com/jestatsio/reolens/releases/latest/download/Reolens.dmg
 
 Drag **Reolens.app** to your Applications folder and launch.
 
+### iPad / iPhone — TestFlight
+
+The iOS app is in TestFlight beta. Open the invite link on your device:
+
+```
+https://testflight.apple.com/join/REOLENS-TF
+```
+
+(Replace with your actual TestFlight join URL once published — see
+[`AppiOS/README.md`](AppiOS/README.md) for the testers/groups setup.)
+
 ### Build from source
+
+macOS:
 
 ```sh
 git clone https://github.com/jestatsio/reolens.git
@@ -91,7 +111,16 @@ cd reolens
 ./Scripts/build-app.sh run
 ```
 
-Requires Xcode 16 + Swift 6.
+iOS (requires Xcode 26 + an Apple Developer account):
+
+```sh
+brew install xcodegen
+cd AppiOS && xcodegen generate
+open ReolensiOS.xcodeproj
+# Set the team ID, then ⌘R to a Simulator or device
+```
+
+Requires Xcode 16 (macOS) / 26 (iOS) + Swift 6.
 
 ## Quick start
 

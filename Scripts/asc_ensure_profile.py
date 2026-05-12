@@ -1,33 +1,50 @@
 #!/usr/bin/env python3
-"""Ensure an App Store iOS provisioning profile exists for our bundle ID.
+"""Ensure a provisioning profile exists for our app, via the App Store
+Connect REST API.
 
-xcodebuild's "automatic" signing in Xcode 26 reliably picks the *wrong*
-profile type (iOS App Development) when archiving on a CI runner with no
-registered devices, and silently ignores command-line CODE_SIGN_IDENTITY
-overrides. The workaround is to drop to manual signing — but manual
-signing requires the profile to already exist.
+Why: xcodebuild's "automatic" signing in Xcode 26 either silently picks
+the wrong profile type (iOS App Development on a CI runner with no
+registered devices) or refuses to embed an iCloud-capable profile in
+Developer ID Direct macOS builds. Both failure modes leave us with an
+app whose entitlements claim capabilities the bundle isn't provisioned
+for, and AMFI rejects the launch.
 
-This script talks to the App Store Connect API to:
-  1. Find the Apple Distribution certificate for the team.
-  2. Find or create the IOS_APP_STORE provisioning profile for the
-     configured bundle ID, attached to that certificate.
-  3. Download the profile bytes into
-     ~/Library/MobileDevice/Provisioning Profiles/<UUID>.mobileprovision
-     so xcodebuild can find it by PROVISIONING_PROFILE_SPECIFIER.
-  4. Print the profile *name* on stdout — callers pipe this into
-     PROVISIONING_PROFILE_SPECIFIER.
+Workaround: drop to manual signing and pre-create the right profile via
+the API. This script does the API dance — idempotent, safe to run on
+every build.
 
-Env required:
+Two flavors covered, selected by env `PLATFORM`:
+
+  PLATFORM=IOS  (default)
+    - profile type:    IOS_APP_STORE
+    - cert type:       DISTRIBUTION  (Apple Distribution)
+    - bundle id:       IOS_BUNDLE_ID  (e.g. com.reolens.Reolens.iOS)
+    - profile name:    PROFILE_NAME   (e.g. "Reolens iOS App Store")
+
+  PLATFORM=MAC
+    - profile type:    MAC_APP_DIRECT  (Developer ID Direct distribution)
+    - cert type:       DEVELOPER_ID_APPLICATION
+    - bundle id:       MAC_BUNDLE_ID  (e.g. com.reolens.Reolens)
+    - profile name:    PROFILE_NAME   (e.g. "Reolens macOS Developer ID")
+
+Common env (both flavors):
   AC_API_KEY_ID         — ASC API key id (10-char)
   AC_API_ISSUER_ID      — issuer UUID
   AC_API_KEY_P8_PATH    — path to the .p8 private key on disk
-  IOS_BUNDLE_ID         — e.g. com.reolens.Reolens.iOS
-  PROFILE_NAME          — what to name the profile, e.g. "Reolens iOS App Store"
 
-The script is idempotent — repeated runs are no-ops once the profile
-exists. It does NOT create the Apple Distribution certificate (cert
-creation requires a CSR + private key, which only makes sense to do
-locally where the user has the keychain).
+Output:
+  stdout — two lines:
+             line 1: the profile name (caller pipes to
+                     PROVISIONING_PROFILE_SPECIFIER or to ExportOptions
+                     .plist's provisioningProfiles map)
+             line 2: the absolute path to the .mobileprovision on disk
+                     (caller can `cp` it into Contents/embedded.provisionprofile)
+  stderr — diagnostics
+
+Side effect:
+  Writes the .mobileprovision into
+  ~/Library/MobileDevice/Provisioning Profiles/<UUID>.mobileprovision
+  (the canonical location xcodebuild looks in)
 """
 from __future__ import annotations
 
@@ -39,6 +56,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 try:
@@ -48,8 +66,40 @@ except ImportError:
 
 
 API = "https://api.appstoreconnect.apple.com/v1"
-PROFILE_TYPE = "IOS_APP_STORE"
-CERT_TYPE = "DISTRIBUTION"
+
+
+@dataclass(frozen=True)
+class Flavor:
+    """Per-platform settings: which profile type to look up/create, which
+    cert type to attach, which bundle-id env var holds the identifier,
+    and which Apple platform to register the bundle id under."""
+
+    platform_label: str
+    profile_type: str
+    cert_type: str
+    bundle_env_var: str
+    bundle_platform: str  # ASC API value: IOS, MAC_OS, UNIVERSAL
+    default_profile_name: str
+
+
+FLAVORS: dict[str, Flavor] = {
+    "IOS": Flavor(
+        platform_label="iOS App Store",
+        profile_type="IOS_APP_STORE",
+        cert_type="DISTRIBUTION",
+        bundle_env_var="IOS_BUNDLE_ID",
+        bundle_platform="IOS",
+        default_profile_name="Reolens iOS App Store",
+    ),
+    "MAC": Flavor(
+        platform_label="macOS Developer ID (Direct)",
+        profile_type="MAC_APP_DIRECT",
+        cert_type="DEVELOPER_ID_APPLICATION",
+        bundle_env_var="MAC_BUNDLE_ID",
+        bundle_platform="MAC_OS",
+        default_profile_name="Reolens macOS Developer ID",
+    ),
+}
 
 
 def jwt_token() -> str:
@@ -94,9 +144,8 @@ def request(method: str, path: str, body: dict | None = None) -> dict:
         raise
 
 
-def find_bundle_id_resource(bundle_id: str) -> str:
+def find_bundle_id_resource(bundle_id: str, platform: str) -> str:
     """Return the ASC resource id for our bundle id (creates if missing)."""
-    # ASC's filter[identifier] is exact-match.
     res = request(
         "GET",
         f"/bundleIds?filter[identifier]={bundle_id}&limit=1",
@@ -105,7 +154,7 @@ def find_bundle_id_resource(bundle_id: str) -> str:
     if data:
         return data[0]["id"]
 
-    sys.stderr.write(f"    bundleId {bundle_id} not registered — creating\n")
+    sys.stderr.write(f"    bundleId {bundle_id} not registered — creating ({platform})\n")
     res = request(
         "POST",
         "/bundleIds",
@@ -115,7 +164,7 @@ def find_bundle_id_resource(bundle_id: str) -> str:
                 "attributes": {
                     "identifier": bundle_id,
                     "name": bundle_id.replace(".", " "),
-                    "platform": "IOS",
+                    "platform": platform,
                 },
             }
         },
@@ -123,48 +172,51 @@ def find_bundle_id_resource(bundle_id: str) -> str:
     return res["data"]["id"]
 
 
-def find_distribution_cert_id() -> str:
-    """Return the resource id of the first Apple Distribution cert."""
+def find_certificate_id(cert_type: str) -> str:
+    """Return the resource id of a certificate of the given type.
+
+    cert_type is the ASC API enum, e.g. DISTRIBUTION or
+    DEVELOPER_ID_APPLICATION.
+    """
     res = request(
         "GET",
-        # `certificateType` is the API's filter param. We accept either
-        # DISTRIBUTION (legacy iPhone Distribution) or IOS_DISTRIBUTION or
-        # the unified DISTRIBUTION cert that Xcode 11+ uses (also called
-        # "Apple Distribution").
-        "/certificates?filter[certificateType]=DISTRIBUTION&limit=20",
+        f"/certificates?filter[certificateType]={cert_type}&limit=20",
     )
     data = res.get("data") or []
     if not data:
         sys.exit(
-            "error: no Apple Distribution certificate found on the team.\n"
+            f"error: no {cert_type} certificate found on the team.\n"
             "  Create one once via Xcode → Settings → Accounts → Manage\n"
-            "  Certificates → '+' → 'Apple Distribution', then re-run."
+            "  Certificates → '+' (the matching kind), then re-run."
         )
     return data[0]["id"]
 
 
 def find_or_create_profile(
-    name: str, bundle_id_resource: str, cert_id: str
+    name: str,
+    profile_type: str,
+    bundle_id_resource: str,
+    cert_id: str,
 ) -> tuple[str, str]:
-    """Return (profile_name, profile_id) for the matching App Store profile.
+    """Return (profile_name, profile_id) for the matching active profile.
 
     Looks for an active profile with the right name + type; creates one
     if missing.
     """
     res = request(
         "GET",
-        f"/profiles?filter[name]={name}&limit=10&include=bundleId",
+        f"/profiles?filter[name]={name}&limit=10",
     )
     for p in res.get("data") or []:
         attrs = p.get("attributes", {})
         if (
             attrs.get("name") == name
-            and attrs.get("profileType") == PROFILE_TYPE
+            and attrs.get("profileType") == profile_type
             and attrs.get("profileState") == "ACTIVE"
         ):
             return name, p["id"]
 
-    sys.stderr.write(f"    profile {name!r} missing — creating\n")
+    sys.stderr.write(f"    profile {name!r} ({profile_type}) missing — creating\n")
     res = request(
         "POST",
         "/profiles",
@@ -173,7 +225,7 @@ def find_or_create_profile(
                 "type": "profiles",
                 "attributes": {
                     "name": name,
-                    "profileType": PROFILE_TYPE,
+                    "profileType": profile_type,
                 },
                 "relationships": {
                     "bundleId": {
@@ -198,9 +250,6 @@ def download_profile(profile_id: str) -> str:
     content_b64 = res["data"]["attributes"]["profileContent"]
     raw = base64.b64decode(content_b64)
 
-    # The bundle is a CMS-signed blob; the embedded XML plist sits between
-    # the markers. We pull the UUID out so we can name the file
-    # canonically — Xcode looks up profiles by UUID, not by filename.
     uuid = parse_uuid(raw)
     dest_dir = Path.home() / "Library" / "MobileDevice" / "Provisioning Profiles"
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -223,25 +272,38 @@ def parse_uuid(raw: bytes) -> str:
 
 
 def main() -> int:
-    bundle_id = os.environ.get("IOS_BUNDLE_ID") or "com.reolens.Reolens.iOS"
-    profile_name = os.environ.get("PROFILE_NAME") or "Reolens iOS App Store"
+    platform = (os.environ.get("PLATFORM") or "IOS").upper()
+    if platform not in FLAVORS:
+        sys.exit(f"error: PLATFORM must be IOS or MAC, got {platform!r}")
+    flavor = FLAVORS[platform]
 
-    sys.stderr.write(f"==> Ensuring App Store profile {profile_name!r} for {bundle_id}\n")
+    bundle_id = (
+        os.environ.get(flavor.bundle_env_var)
+        or os.environ.get("IOS_BUNDLE_ID")  # back-compat for the iOS-only call sites
+        or "com.reolens.Reolens.iOS"
+    )
+    profile_name = os.environ.get("PROFILE_NAME") or flavor.default_profile_name
 
-    bundle_resource = find_bundle_id_resource(bundle_id)
+    sys.stderr.write(
+        f"==> Ensuring {flavor.platform_label} profile {profile_name!r} for {bundle_id}\n"
+    )
+
+    bundle_resource = find_bundle_id_resource(bundle_id, flavor.bundle_platform)
     sys.stderr.write(f"    bundleId resource: {bundle_resource}\n")
 
-    cert_id = find_distribution_cert_id()
-    sys.stderr.write(f"    distribution cert: {cert_id}\n")
+    cert_id = find_certificate_id(flavor.cert_type)
+    sys.stderr.write(f"    {flavor.cert_type} cert: {cert_id}\n")
 
-    name, profile_id = find_or_create_profile(profile_name, bundle_resource, cert_id)
+    name, profile_id = find_or_create_profile(
+        profile_name, flavor.profile_type, bundle_resource, cert_id
+    )
     sys.stderr.write(f"    profile: {name} ({profile_id})\n")
 
     dest = download_profile(profile_id)
     sys.stderr.write(f"    installed: {dest}\n")
 
-    # stdout = profile name, so the shell can capture it cleanly.
     print(name)
+    print(dest)
     return 0
 
 
