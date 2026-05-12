@@ -84,6 +84,18 @@ public final class CameraSession {
         self.streamURLs = StreamURLs(credentials: credentials)
     }
 
+    /// Re-attempt a hung or failed connection. Tears down any half-open
+    /// CGI state, then runs `connect()` again. Used by the "Try Again"
+    /// button the UI shows after the connection has been stuck in
+    /// `.connecting` for ~12 seconds. URLSession requests in flight
+    /// don't observe Task cancellation, so a previously-hung `connect`
+    /// may still resolve in the background after this — `status` will
+    /// reflect the most recent attempt to finish either way.
+    public func reconnect() async {
+        await client.logout()
+        await connect()
+    }
+
     public func connect() async {
         status = .connecting
         do {
@@ -222,11 +234,13 @@ public final class CameraSession {
         let channelID = Int(event.channelID)
         let cameraName = channels.first(where: { $0.channel == channelID })?.name
             ?? "Camera \(channelID + 1)"
+        let cameraID = entry.id
         Task { @MainActor [weak self] in
             guard let self else { return }
             let snap = await self.snapshotURL(channel: channelID)
             await EventNotifier.shared.notify(
                 event: event,
+                cameraID: cameraID,
                 cameraName: cameraName,
                 snapshotURL: snap
             )

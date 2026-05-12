@@ -211,24 +211,36 @@ public final class CameraStore {
     }
 
     /// One-shot navigation request. Set by `applyPendingIntentFocus()`
-    /// when an App Intent fires; observed by platform-specific shells
-    /// (`iPadSplitShell`, `iPhoneTabShell`) to update their own
-    /// `selectedSection` / tab state without creating a feedback loop
-    /// with the user's `selection` choices in the sidebar.
+    /// when an App Intent or notification tap fires; observed by
+    /// platform-specific shells (`iPadSplitShell`, `iPhoneTabShell`) to
+    /// update their own `selectedSection` / tab state without creating
+    /// a feedback loop with the user's `selection` choices in the
+    /// sidebar.
     ///
     /// Consumers should reset this to nil after handling so a single
     /// intent fires exactly one navigation.
-    public var pendingIntentNavigationDeviceID: UUID?
+    public var pendingIntentNavigation: AppIntentFocus.Target?
 
     /// Apply any pending focus request written by `OpenCameraIntent`
-    /// (Shortcuts / Siri). Called by each app's scene on launch and on
-    /// foreground. Idempotent — consumes the pending key so it doesn't
-    /// re-apply across background/foreground cycles.
+    /// (Shortcuts / Siri) or by a notification tap. Called by each
+    /// app's scene on launch and on foreground. Idempotent — consumes
+    /// the pending key so it doesn't re-apply across background/
+    /// foreground cycles.
     public func applyPendingIntentFocus() {
-        guard let id = AppIntentFocus.consumePending() else { return }
-        guard cameras.contains(where: { $0.id == id }) else { return }
-        selection = .device(id)
-        pendingIntentNavigationDeviceID = id
+        guard let target = AppIntentFocus.consumePending() else { return }
+        switch target {
+        case .liveCamera(let id):
+            guard cameras.contains(where: { $0.id == id }) else { return }
+            selection = .device(id)
+        case .recording(let id, _, _):
+            guard cameras.contains(where: { $0.id == id }) else { return }
+            // We don't change `selection` for recording targets — the
+            // shells route to their own Recordings sections instead.
+            // Leaving `selection` alone keeps the user's prior choice
+            // in the sidebar.
+            break
+        }
+        pendingIntentNavigation = target
     }
 
     public func add(_ entry: CameraEntry, password: String) {
@@ -251,23 +263,33 @@ public final class CameraStore {
     }
 
     /// Store a new password for an existing device in this device's Keychain
-    /// and tear down any in-memory session so the next access rebuilds it
-    /// with the new credentials.
+    /// and rebuild the in-memory session against the new credentials.
     ///
     /// Used by the "Enter Password" flow when a device has synced in from
     /// another platform without credentials, or when the user has rotated
     /// the camera's password on the router/camera side. Does **not** touch
     /// `cameras.json` (the synced metadata), so no iCloud round-trip
     /// happens — passwords stay device-local by design.
+    ///
+    /// Eagerly creates the new session and stores it in `sessions[id]`
+    /// before returning. This is what makes the calling view re-render:
+    /// `Keychain.set` is not @Observable, so a fresh-synced device that
+    /// had no prior session would NOT trigger a re-render and the user
+    /// would stay on the "No password" placeholder until a manual
+    /// navigate-away-and-back. Writing to the observable `sessions`
+    /// dictionary closes that gap.
     public func setPassword(_ password: String, for id: CameraEntry.ID) {
         guard cameras.contains(where: { $0.id == id }) else { return }
         Keychain.set(password: password, for: id)
         // Tear down the existing session (if any) so a stale one with the
-        // old password doesn't keep serving from cache. `session(for:)`
-        // will rebuild lazily on next access.
-        if let session = sessions.removeValue(forKey: id) {
-            Task { await session.disconnect() }
+        // old password doesn't keep serving from cache.
+        if let existing = sessions.removeValue(forKey: id) {
+            Task { await existing.disconnect() }
         }
+        // Force-rebuild via session(for:), which reads the new Keychain
+        // value and writes the resulting CameraSession into `sessions`.
+        // That write is observed by any view rendering this device.
+        _ = session(for: id)
     }
 
     /// Look up the user's persisted rotation for a specific (channel, stream).
