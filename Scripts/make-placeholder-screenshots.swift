@@ -400,25 +400,105 @@ func renderNotification() {
 
 // MARK: - About panel
 
+/// Measures the rendered width of a string at a given font size + weight so
+/// we can center labels without eyeballing magic offsets.
+func measureText(_ string: String, fontSize: CGFloat, weight: CGFloat = 0) -> CGFloat {
+    let traits: [CFString: Any] = [kCTFontWeightTrait: weight]
+    let attrs: [CFString: Any] = [
+        kCTFontTraitsAttribute: traits,
+        kCTFontFamilyNameAttribute: "Helvetica Neue",
+    ]
+    let descriptor = CTFontDescriptorCreateWithAttributes(attrs as CFDictionary)
+    let font = CTFontCreateWithFontDescriptor(descriptor, fontSize, nil)
+    let lineAttrs: [CFString: Any] = [
+        kCTFontAttributeName: font,
+        kCTForegroundColorAttributeName: textPrimary,
+    ]
+    let attr = CFAttributedStringCreate(nil, string as CFString, lineAttrs as CFDictionary)!
+    let line = CTLineCreateWithAttributedString(attr)
+    var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
+    let width = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, &leading))
+    _ = ascent; _ = descent; _ = leading
+    return width
+}
+
+/// Draws `string` horizontally centered around `centerX` at baseline `y`.
+func drawTextCentered(_ ctx: CGContext, _ string: String, fontSize: CGFloat, weight: CGFloat = 0, centerX: CGFloat, y: CGFloat, color: CGColor) {
+    let w = measureText(string, fontSize: fontSize, weight: weight)
+    drawText(ctx, string, fontSize: fontSize, weight: weight, at: CGPoint(x: centerX - w / 2, y: y), color: color)
+}
+
+/// Render the macOS About panel — proper window chrome (traffic lights,
+/// title bar) and proper portrait proportions, matching the look of a real
+/// `NSApplication.orderFrontStandardAboutPanel` window.
 func renderAbout() {
-    let aw: CGFloat = 720, ah: CGFloat = 720
+    let aw: CGFloat = 540, ah: CGFloat = 720
     let ctx = newContext(width: aw, height: ah)
-    fill(ctx, CGRect(x: 0, y: 0, width: aw, height: ah), bgWindow)
-    roundedRect(ctx, CGRect(x: 20, y: 20, width: aw - 40, height: ah - 40), radius: 14, stroke: (strokeMid, 1))
+
+    // Transparent page background — the page CSS handles surroundings; the
+    // window itself fills the rounded rect.
+    fill(ctx, CGRect(x: 0, y: 0, width: aw, height: ah), rgb(0.07, 0.08, 0.10))
+
+    let margin: CGFloat = 22
+    let outer = CGRect(x: margin, y: margin, width: aw - margin * 2, height: ah - margin * 2)
+    roundedRect(ctx, outer, radius: 14, fill: bgWindow, stroke: (strokeMid, 1))
+
+    // Title bar (top of the window). CG origin is bottom-left, so the
+    // title bar sits at outer.maxY.
+    let titleBarH: CGFloat = 44
+    let titleRect = CGRect(x: outer.minX, y: outer.maxY - titleBarH, width: outer.width, height: titleBarH)
+    fill(ctx, titleRect, rgb(0.16, 0.17, 0.20))
+    fill(ctx, CGRect(x: titleRect.minX, y: titleRect.minY, width: titleRect.width, height: 1), strokeFaint)
+    for (i, c) in [rgb(0.92, 0.34, 0.32), rgb(0.95, 0.74, 0.22), rgb(0.32, 0.78, 0.34)].enumerated() {
+        ctx.setFillColor(c)
+        ctx.addArc(center: CGPoint(x: titleRect.minX + 22 + CGFloat(i) * 22, y: titleRect.midY), radius: 6.5, startAngle: 0, endAngle: .pi * 2, clockwise: false)
+        ctx.fillPath()
+    }
+    drawTextCentered(ctx, "About Reolens", fontSize: 13, weight: 0.3, centerX: outer.midX, y: titleRect.midY - 5, color: textSecondary)
+
+    // Content area. Lay out by distance from the top of the content rect.
+    let content = CGRect(x: outer.minX, y: outer.minY, width: outer.width, height: outer.height - titleBarH)
+    let centerX = content.midX
+    let topY = content.maxY  // top of content area; subtract to walk down
+
+    // App icon (128px) — pulled from the real bundle icon so it stays in sync.
+    let iconSize: CGFloat = 128
+    let iconRect = CGRect(x: centerX - iconSize / 2, y: topY - 48 - iconSize, width: iconSize, height: iconSize)
     let iconURL = repoRoot.appendingPathComponent("docs/assets/icon-256.png")
     if let src = CGImageSourceCreateWithURL(iconURL as CFURL, nil),
        let img = CGImageSourceCreateImageAtIndex(src, 0, nil) {
-        ctx.draw(img, in: CGRect(x: aw / 2 - 64, y: ah - 220, width: 128, height: 128))
+        ctx.draw(img, in: iconRect)
     } else {
-        roundedRect(ctx, CGRect(x: aw / 2 - 64, y: ah - 220, width: 128, height: 128), radius: 28, fill: accent)
+        roundedRect(ctx, iconRect, radius: 28, fill: accent)
     }
-    drawText(ctx, "Reolens", fontSize: 34, weight: 0.6, at: CGPoint(x: aw / 2 - 60, y: ah - 280), color: textPrimary)
-    drawText(ctx, "Version 0.3.0", fontSize: 14, at: CGPoint(x: aw / 2 - 50, y: ah - 320), color: textSecondary)
-    drawText(ctx, "A native client for Reolink cameras", fontSize: 13, at: CGPoint(x: aw / 2 - 140, y: ah - 360), color: textSecondary)
-    drawText(ctx, "on macOS, iPad, and iPhone.", fontSize: 13, at: CGPoint(x: aw / 2 - 110, y: ah - 380), color: textSecondary)
-    drawText(ctx, "Check for Updates…", fontSize: 13, weight: 0.4, at: CGPoint(x: aw / 2 - 80, y: ah - 440), color: accent)
-    drawText(ctx, "reolens.io", fontSize: 12, at: CGPoint(x: aw / 2 - 36, y: 60), color: textSecondary)
-    drawText(ctx, "© 2026 J&E Stats · MIT licensed", fontSize: 11, at: CGPoint(x: aw / 2 - 110, y: 36), color: textTertiary)
+
+    // App name + version + description, walking down from below the icon.
+    var cursor = iconRect.minY - 36
+    drawTextCentered(ctx, "Reolens", fontSize: 30, weight: 0.5, centerX: centerX, y: cursor, color: textPrimary)
+    cursor -= 26
+    drawTextCentered(ctx, "Version 0.3.0", fontSize: 13, centerX: centerX, y: cursor, color: textSecondary)
+    cursor -= 34
+    drawTextCentered(ctx, "A native client for Reolink cameras", fontSize: 13, centerX: centerX, y: cursor, color: textSecondary)
+    cursor -= 18
+    drawTextCentered(ctx, "on macOS, iPad, and iPhone.", fontSize: 13, centerX: centerX, y: cursor, color: textSecondary)
+
+    // "Check for Updates…" rendered as a real-looking pill button.
+    let btnLabel = "Check for Updates…"
+    let btnLabelW = measureText(btnLabel, fontSize: 13, weight: 0.4)
+    let btnPadX: CGFloat = 18
+    let btnH: CGFloat = 28
+    let btnW = btnLabelW + btnPadX * 2
+    cursor -= 36
+    let btnRect = CGRect(x: centerX - btnW / 2, y: cursor - btnH + 8, width: btnW, height: btnH)
+    roundedRect(ctx, btnRect, radius: 6, fill: rgb(0.22, 0.24, 0.28), stroke: (strokeMid, 1))
+    drawTextCentered(ctx, btnLabel, fontSize: 13, weight: 0.4, centerX: centerX, y: btnRect.midY - 5, color: accent)
+
+    // Footer — subtle divider, then domain + copyright.
+    let dividerY = content.minY + 70
+    fill(ctx, CGRect(x: content.minX + 28, y: dividerY, width: content.width - 56, height: 1), strokeFaint)
+    drawTextCentered(ctx, "reolens.io", fontSize: 12, weight: 0.3, centerX: centerX, y: dividerY - 22, color: textSecondary)
+    drawTextCentered(ctx, "© 2026 J&E Stats · MIT licensed", fontSize: 11, centerX: centerX, y: dividerY - 40, color: textTertiary)
+
     write(ctx, to: "about.png", width: aw, height: ah)
 }
 
