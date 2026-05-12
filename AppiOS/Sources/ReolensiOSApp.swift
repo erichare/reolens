@@ -9,11 +9,23 @@ struct ReolensiOSApp: App {
     /// added on the Mac (or any other signed-in device) appear here
     /// without any explicit pull on launch.
     @State private var store = CameraStore()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environment(store)
+                .task {
+                    // Drain any "Open Camera" intent the user fired before
+                    // the app was running (Shortcuts/Siri sets a focus
+                    // pointer in UserDefaults; CameraStore consumes it).
+                    store.applyPendingIntentFocus()
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active {
+                        store.applyPendingIntentFocus()
+                    }
+                }
         }
     }
 }

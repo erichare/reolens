@@ -1,8 +1,14 @@
 import Foundation
 import AVFoundation
+import CoreImage
 import Observation
 import OSLog
 @preconcurrency import CoreMedia
+#if os(macOS)
+import AppKit
+#elseif os(iOS) || os(tvOS) || os(visionOS)
+import UIKit
+#endif
 
 private let log = Logger(subsystem: "com.reolens.streaming", category: "player")
 
@@ -31,6 +37,22 @@ public final class LiveVideoPlayer {
 
     /// Clockwise rotation in degrees applied by the host view.
     public var rotationDegrees: Int = 0
+
+    /// The most recent decoded video frame (as a `CVPixelBuffer`), kept so
+    /// the UI can snapshot the current live view to Photos / disk without
+    /// stopping playback or running a parallel decode. Updated on every
+    /// successful `enqueue` of a sample buffer.
+    ///
+    /// Not `@Observable`-tracked deliberately — we don't want SwiftUI to
+    /// re-render every time a frame arrives. The snapshot UI reads the
+    /// property imperatively at the moment the user taps the button.
+    @ObservationIgnored
+    public private(set) var latestPixelBuffer: CVPixelBuffer?
+
+    /// Cached Core Image context for snapshot conversion. Created lazily
+    /// on first use so apps that never snapshot don't pay the setup cost.
+    @ObservationIgnored
+    private lazy var snapshotContext: CIContext = CIContext(options: nil)
 
     /// Optional list of URLs to try in order. If the first fails with anything other than
     /// an authentication error, we try the next. Useful for "try main as H.265, fall back
@@ -87,6 +109,11 @@ public final class LiveVideoPlayer {
             await c?.teardown()
             t?.cancel()
         }
+        // Drop the cached snapshot buffer so a stopped player doesn't
+        // hold a frame's worth of memory until the whole player object
+        // is released (which may be later than expected if SwiftUI is
+        // still mid-transition).
+        latestPixelBuffer = nil
         state = .stopped
     }
 
@@ -299,6 +326,12 @@ public final class LiveVideoPlayer {
         }
         displayLayer.enqueue(sample)
         enqueuedSampleCount += 1
+        // Cache the latest pixel buffer for snapshot capture. Just a pointer
+        // assignment; the buffer is already retained by the CMSampleBuffer
+        // we just enqueued, so this costs nothing per-frame.
+        if let imageBuffer = CMSampleBufferGetImageBuffer(sample) {
+            latestPixelBuffer = imageBuffer
+        }
         // Publish the decoded natural size once. Used by the UI to auto-mark
         // dual-lens cameras (which produce stitched ~32:9 frames).
         if naturalSize == nil, let fd = CMSampleBufferGetFormatDescription(sample) {
@@ -312,4 +345,42 @@ public final class LiveVideoPlayer {
             log.info("Enqueued \(self.enqueuedSampleCount) samples. status=\(self.displayLayer.status.rawValue) error=\(self.displayLayer.error?.localizedDescription ?? "nil", privacy: .public)")
         }
     }
+
+    // MARK: - Snapshot
+
+    /// Capture the current live frame as a `CGImage`, applying the rotation
+    /// that the host view is showing so the saved image matches what the
+    /// user sees. Returns nil if no frame has been decoded yet (player is
+    /// still connecting, camera is sleeping, etc.).
+    ///
+    /// Cheap: just runs the cached `CIContext` over the latest
+    /// `CVPixelBuffer` — no decode, no extra RTSP traffic. Safe to call
+    /// while playback continues.
+    public func currentSnapshot() -> CGImage? {
+        guard let pixelBuffer = latestPixelBuffer else { return nil }
+        var image = CIImage(cvPixelBuffer: pixelBuffer)
+        // Apply the same rotation the host view applies so saved frames
+        // come out right-side-up. Clockwise degrees → CIImage rotation
+        // counter-clockwise via the radians sign flip.
+        if rotationDegrees != 0 {
+            let radians = -CGFloat(rotationDegrees) * .pi / 180
+            image = image.transformed(by: CGAffineTransform(rotationAngle: radians))
+        }
+        return snapshotContext.createCGImage(image, from: image.extent)
+    }
+
+    #if os(iOS) || os(visionOS)
+    /// Convenience snapshot wrapper returning a `UIImage`. Caller is
+    /// responsible for routing it to PhotoKit / share sheet / disk.
+    public func currentSnapshotUIImage() -> UIImage? {
+        guard let cg = currentSnapshot() else { return nil }
+        return UIImage(cgImage: cg)
+    }
+    #elseif os(macOS)
+    /// Convenience snapshot wrapper returning an `NSImage`.
+    public func currentSnapshotNSImage() -> NSImage? {
+        guard let cg = currentSnapshot() else { return nil }
+        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+    }
+    #endif
 }

@@ -13,6 +13,15 @@ struct ReolensApp: App {
             ContentView()
                 .environment(store)
                 .frame(minWidth: 900, minHeight: 600)
+                .task {
+                    // Drain any "Open Camera" intent the user fired before
+                    // the app was running (Shortcuts/Siri sets a focus
+                    // pointer in UserDefaults; CameraStore consumes it).
+                    store.applyPendingIntentFocus()
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                    store.applyPendingIntentFocus()
+                }
         }
         .windowToolbarStyle(.unified(showsTitle: false))
         .commands {
