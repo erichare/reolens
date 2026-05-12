@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Reolens — A modern macOS client for Reolink cameras</title>
-  <meta name="description" content="Reolens is a native, Apple-silicon macOS app for live multi-camera viewing, PTZ control, and rich alarm notifications from Reolink cameras and NVRs.">
+  <title>Reolens — A modern client for Reolink cameras on Mac, iPad, and iPhone</title>
+  <meta name="description" content="Reolens is a native, Apple-silicon client for Reolink cameras and NVRs — on macOS, iPadOS, and iPhone. Live multi-camera viewing, PTZ control, rich alarm notifications, iCloud sync.">
 
   <link rel="icon" type="image/png" href="assets/icon-128.png">
   <link rel="apple-touch-icon" href="assets/icon-512.png">
@@ -12,7 +12,7 @@
 
   <!-- Social cards -->
   <meta property="og:title" content="Reolens">
-  <meta property="og:description" content="Native macOS client for Reolink cameras. Multi-camera grid, PTZ, alarm notifications.">
+  <meta property="og:description" content="Native client for Reolink cameras on Mac, iPad, and iPhone. Multi-camera grid, PTZ, alarm notifications, iCloud sync.">
   <meta property="og:image" content="https://reolens.io/assets/og.png">
   <meta property="og:url" content="https://reolens.io/">
   <meta property="og:type" content="website">
@@ -38,11 +38,12 @@
 
   <div class="hero-inner">
     <img class="hero-icon" src="assets/icon-512.png" alt="Reolens icon" width="128" height="128">
-    <h1>A modern Mac app for your Reolink cameras.</h1>
+    <h1>One Reolink app for Mac, iPad, and iPhone.</h1>
     <p class="hero-sub">
-      Native, Apple-silicon, no Electron. Live multi-camera grids, PTZ
-      control, drag-to-arrange layouts, and rich macOS notifications when
-      something moves.
+      Native on every platform. Live multi-camera grids, PTZ control,
+      drag-to-arrange layouts, rich notifications when something moves,
+      and your camera list synced via iCloud — passwords stay
+      per-device in Keychain.
     </p>
 
     <div class="cta-row">
@@ -50,7 +51,10 @@
         <svg width="18" height="18" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0a1 1 0 0 1 1 1v8.59l2.3-2.3a1 1 0 1 1 1.4 1.42l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 1 1 1.4-1.42L7 9.59V1a1 1 0 0 1 1-1Zm-7 14a1 1 0 0 1 1-1h12a1 1 0 1 1 0 2H2a1 1 0 0 1-1-1Z"/></svg>
         Download for macOS
       </a>
-      <span class="cta-meta">macOS 14 Sonoma or later · Universal · Free</span>
+      <a class="btn btn-secondary" href="#testflight">
+        Join the iPad / iPhone beta
+      </a>
+      <span class="cta-meta">macOS 14+ · iPadOS / iOS 18+ · Free</span>
     </div>
 
     <div class="brew-snippet">
@@ -96,6 +100,11 @@
       <h3>Open source</h3>
       <p>Swift, MIT-licensed, on GitHub. Tweak it, fork it, file issues.</p>
     </article>
+    <article class="feature">
+      <div class="feature-ico">☁︎</div>
+      <h3>Mac, iPad, iPhone — synced</h3>
+      <p>v0.2.0 brings native iPad and iPhone apps. Your camera list, layouts, rotations, and codec preferences sync via iCloud Drive. Passwords stay per-device in Keychain — never copied off the device they were entered on.</p>
+    </article>
   </div>
 </section>
 
@@ -139,11 +148,19 @@
       <pre><code>brew install --cask jestatsio/reolens/reolens</code></pre>
       <p class="card-meta">Auto-updates handled by Sparkle inside the app.</p>
     </article>
+    <article class="download-card" id="testflight">
+      <h3>iPad / iPhone (TestFlight)</h3>
+      <p>The iOS app is in TestFlight beta:</p>
+      <a class="btn btn-primary" href="https://testflight.apple.com/join/REOLENS-TF" rel="noopener">
+        Join the beta
+      </a>
+      <p class="card-meta">iPadOS / iOS 18+ · Open invite</p>
+    </article>
     <article class="download-card">
       <h3>Build from source</h3>
       <p>Clone the repo and run:</p>
       <pre><code>./Scripts/build-app.sh run</code></pre>
-      <p class="card-meta">Requires Xcode 16 + Swift 6.</p>
+      <p class="card-meta">macOS: Xcode 16 + Swift 6.<br>iOS: see <a href="https://github.com/jestatsio/reolens/blob/main/AppiOS/README.md" rel="noopener">AppiOS/README</a>.</p>
     </article>
   </div>
 </section>
@@ -151,10 +168,11 @@
 <section id="requirements" class="section section-quiet">
   <h2>System requirements</h2>
   <ul class="reqs">
-    <li><strong>macOS 14 Sonoma</strong> or later</li>
-    <li>Apple Silicon (M-series) or Intel</li>
+    <li><strong>Mac</strong> — macOS 14 Sonoma or later, Apple Silicon or Intel</li>
+    <li><strong>iPad / iPhone</strong> — iPadOS / iOS 18 or later</li>
     <li>Reolink cameras, NVRs, or Home Hubs reachable on the local network</li>
     <li>HTTP/HTTPS access to each device's CGI port (default 80 / 443)</li>
+    <li>iCloud account (optional) — used only to sync the camera list across your devices</li>
   </ul>
 </section>
 

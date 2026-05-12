@@ -79,6 +79,41 @@ cp "${BIN_PATH}" "${APP_DIR}/Contents/MacOS/Reolens"
 cp "${INFO_PLIST}" "${APP_DIR}/Contents/Info.plist"
 cp "${ICON_SRC}"   "${APP_DIR}/Contents/Resources/AppIcon.icns"
 
+# Embed a MAC_APP_DIRECT provisioning profile when we're signing with a
+# real Developer ID identity AND ASC API credentials are present. This
+# is required for any "managed" entitlement that needs profile backing
+# — for us, the iCloud container entitlements introduced in v0.2.0.
+# Without an embedded profile, AMFI rejects launch with -413
+# "No matching profile found".
+#
+# The python helper creates the profile via the ASC API on first run
+# and downloads it into ~/Library/MobileDevice/Provisioning Profiles/.
+# We then copy the latest matching .mobileprovision into the .app as
+# Contents/embedded.provisionprofile *before* signing, so codesign
+# binds the profile into the bundle's signature.
+if [[ "${SIGNING_IDENTITY}" != "-" \
+        && -n "${AC_API_KEY_ID:-}" \
+        && -n "${AC_API_ISSUER_ID:-}" \
+        && -n "${AC_API_KEY_P8_PATH:-}" ]]; then
+    echo "==> Ensuring MAC_APP_DIRECT provisioning profile via ASC API"
+    export PLATFORM=MAC
+    export MAC_BUNDLE_ID="${MAC_BUNDLE_ID:-com.reolens.Reolens}"
+    export PROFILE_NAME="${MAC_PROFILE_NAME:-Reolens macOS Developer ID}"
+    # Helper prints two lines on stdout: profile name, then the
+    # absolute path to the installed .mobileprovision. We use the path
+    # to embed the profile into the .app bundle before signing, which
+    # is what AMFI needs to validate the iCloud entitlements at launch.
+    HELPER_OUT="$(python3 "${REPO_ROOT}/Scripts/asc_ensure_profile.py")"
+    EMBED_PROFILE_NAME="$(printf '%s\n' "${HELPER_OUT}" | sed -n '1p')"
+    EMBED_PROFILE_PATH="$(printf '%s\n' "${HELPER_OUT}" | sed -n '2p')"
+    if [[ -n "${EMBED_PROFILE_PATH}" && -f "${EMBED_PROFILE_PATH}" ]]; then
+        cp "${EMBED_PROFILE_PATH}" "${APP_DIR}/Contents/embedded.provisionprofile"
+        echo "    embedded: ${EMBED_PROFILE_PATH##*/} (profile: ${EMBED_PROFILE_NAME})"
+    else
+        echo "    WARNING: helper reported '${EMBED_PROFILE_PATH}' but file is missing" >&2
+    fi
+fi
+
 # Embed Sparkle.framework. The SwiftPM artifact cache stores the resolved
 # XCFramework under .build/artifacts/. We pick the macOS slice
 # (`macos-arm64_x86_64`) and copy its `Sparkle.framework` into

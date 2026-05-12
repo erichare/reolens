@@ -7,7 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.2.0] — TBD
+## [0.2.1] — TBD
+
+Hotfix release.
+
+### Fixed
+- macOS app failed to launch with `Trace/BPT trap: 5` / `RBSRequestErrorDomain
+  Code=5 / NSPOSIXErrorDomain Code=163`. AMFI was rejecting the bundle
+  with `AppleMobileFileIntegrityError -413 "No matching profile found"`
+  because v0.2.0's iCloud entitlements
+  (`com.apple.developer.icloud-container-identifiers`,
+  `ubiquity-container-identifiers`, `icloud-services`) require an
+  embedded provisioning profile, and the Developer ID Direct build
+  pipeline wasn't producing one. v0.1.x didn't have iCloud entitlements
+  so the gap was invisible.
+
+  Fix: extended `Scripts/asc_ensure_profile.py` (originally for the iOS
+  App Store profile) to also create a `MAC_APP_DIRECT` profile via the
+  App Store Connect REST API; `Scripts/build-app.sh` now downloads it
+  and copies it into `Reolens.app/Contents/embedded.provisionprofile`
+  before code-signing. Idempotent — repeated builds reuse the same
+  profile.
+
+## [0.2.0] — 2026-05-12
 
 First multi-platform release. Reolens now ships natively for macOS,
 iPad, and iPhone from a single repository, with shared protocol and
@@ -77,6 +99,8 @@ First public release.
 - All camera passwords stored in the macOS Keychain — never in plain text
 - No analytics, no telemetry, no accounts
 
-[Unreleased]: https://github.com/jestatsio/reolens/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/jestatsio/reolens/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/jestatsio/reolens/releases/tag/v0.2.1
+[0.2.0]: https://github.com/jestatsio/reolens/releases/tag/v0.2.0
 [0.1.1]: https://github.com/jestatsio/reolens/releases/tag/v0.1.1
 [0.1.0]: https://github.com/jestatsio/reolens/releases/tag/v0.1.0
