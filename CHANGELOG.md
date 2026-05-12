@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.3] — TBD
+
+Hotfix release — first iOS TestFlight upload to actually land.
+
+### Fixed
+- iOS upload to App Store Connect was rejected by altool with three
+  validation errors:
+  - "Missing required icon file ... 120x120"
+  - "Missing required icon file ... 152x152"
+  - "Missing Info.plist value ... CFBundleIconName"
+
+  The `AppiOS/Resources/Assets.xcassets/AppIcon.appiconset/` directory
+  shipped with `Contents.json` declaring a 1024×1024 universal icon
+  but no actual PNG file alongside it, so the asset compiler emitted
+  an empty icon set. Apple's "single 1024 source, generate the rest"
+  workflow needs both the PNG present *and* `CFBundleIconName=AppIcon`
+  in the iOS Info.plist (declared via `project.yml`'s
+  `info.properties`).
+
+  Fix: copied `Resources/icon-master.png` into the iOS asset catalog
+  as `icon-1024.png`, referenced it from `Contents.json`, and added
+  the `CFBundleIconName` key. Also bumped the iOS marketing version
+  from `0.2.0` to `0.2.3` so it's aligned with the macOS app version.
+
 ## [0.2.2] — TBD
 
 Hotfix release — v0.2.1's macOS DMG still failed to launch.
@@ -121,7 +145,8 @@ First public release.
 - All camera passwords stored in the macOS Keychain — never in plain text
 - No analytics, no telemetry, no accounts
 
-[Unreleased]: https://github.com/jestatsio/reolens/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/jestatsio/reolens/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/jestatsio/reolens/releases/tag/v0.2.3
 [0.2.2]: https://github.com/jestatsio/reolens/releases/tag/v0.2.2
 [0.2.1]: https://github.com/jestatsio/reolens/releases/tag/v0.2.1
 [0.2.0]: https://github.com/jestatsio/reolens/releases/tag/v0.2.0

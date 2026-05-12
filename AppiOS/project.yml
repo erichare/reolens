@@ -29,8 +29,17 @@ targets:
       path: Resources/Info.plist
       properties:
         CFBundleDisplayName: Reolens
-        CFBundleShortVersionString: "0.2.0"
+        CFBundleShortVersionString: "0.2.3"
         CFBundleVersion: "1"
+        # iOS 11+ requires apps using asset-catalog icons to also
+        # declare CFBundleIconName so the OS / App Store knows which
+        # icon set to consult at runtime. Without this key, ASC's
+        # validator rejects the upload with:
+        #   Validation failed (409) Missing Info.plist value.
+        #   A value for the Info.plist key 'CFBundleIconName' is missing
+        # The matching ASSETCATALOG_COMPILER_APPICON_NAME below tells
+        # the build to put an "AppIcon" name in the asset catalog.
+        CFBundleIconName: AppIcon
         LSRequiresIPhoneOS: true
         UILaunchScreen: {}
         UIRequiresFullScreen: false
@@ -76,7 +85,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.reolens.Reolens.iOS
         PRODUCT_NAME: Reolens
-        MARKETING_VERSION: "0.2.0"
+        MARKETING_VERSION: "0.2.3"
         CURRENT_PROJECT_VERSION: "1"
         # Same Apple Developer team as the macOS app. Xcode's automatic
         # signing uses this to fetch / create the Apple Distribution
