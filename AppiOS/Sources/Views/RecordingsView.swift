@@ -7,21 +7,22 @@ import AppShared
 
 private let log = Logger(subsystem: "com.reolens.app", category: "ios-recordings")
 
-/// iOS recordings browser. Loads alarm-tagged recordings for a chosen
-/// day via Baichuan's `findAlarmVideo`, lists them with detection
-/// badges, and plays them in an AVPlayer sheet on tap.
+/// iOS recordings browser. Loads the day's recordings via the CGI
+/// `Search` command (the same path the macOS app uses), lists them
+/// with detection-trigger badges, and plays them in a downloading
+/// AVPlayer sheet on tap.
 ///
-/// The Mac app's RecordingsView is richer (CGI Search + sub-stream
-/// preview + raw JSON popover + download-to-disk + AI event matching
-/// across endpoints). For v0.2 iOS we ship the alarm-video path only —
-/// it's what users actually want most days, and the other surfaces are
-/// straightforward to add in a point release.
+/// Earlier versions used Baichuan's `findAlarmVideo` to populate the
+/// list, but that endpoint returns filenames in a format the CGI
+/// Download endpoint doesn't accept — the download then failed with
+/// "the camera or hub refused the download request". CGI Search
+/// returns the canonical filenames that work with Download.
 struct RecordingsView: View {
     let session: CameraSession
     let channel: ChannelStatus
 
     @State private var selectedDate: Date = Date()
-    @State private var entries: [BaichuanAlarmVideoFile] = []
+    @State private var entries: [SearchFile] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var nowPlaying: PlayableRecording?
@@ -66,14 +67,14 @@ struct RecordingsView: View {
             ContentUnavailableView(
                 "No recordings",
                 systemImage: "moon.zzz",
-                description: Text("No alarm-tagged recordings on \(selectedDate.formatted(date: .abbreviated, time: .omitted)).")
+                description: Text("Nothing recorded on \(selectedDate.formatted(date: .abbreviated, time: .omitted)).")
             )
         } else {
-            List(entries) { entry in
+            List(entries) { file in
                 Button {
-                    Task { await playEntry(entry) }
+                    Task { await playEntry(file) }
                 } label: {
-                    RecordingRow(entry: entry)
+                    RecordingRow(file: file)
                 }
                 .buttonStyle(.plain)
             }
@@ -87,74 +88,59 @@ struct RecordingsView: View {
         errorMessage = nil
         entries = []
 
-        // Ensure the session is connected and we have a Baichuan client
-        // and a per-channel UID. The .task wrapper on CameraDetailView
-        // kicks off connect(), but we may have navigated straight here
-        // from the iPad sidebar before that finished.
+        // CameraDetailView's .task kicks off the session connect, but
+        // we might land here straight from the iPad sidebar before
+        // the channels have populated. The Search command needs the
+        // CGI client to be authenticated.
         if session.channels.isEmpty {
             await session.connect()
-        }
-        guard let client = session.baichuanClient else {
-            errorMessage = "Baichuan client not connected yet."
-            return
         }
 
         let calendar = Calendar.current
         let start = calendar.startOfDay(for: selectedDate)
         let end = calendar.date(byAdding: .day, value: 1, to: start) ?? start
 
-        // Per-channel UID is required when the device is a hub fronting
-        // multiple cameras. Falls back to a Baichuan probe if Search
-        // didn't populate one.
-        let uid: String
-        if let cgiUID = channel.uid, !cgiUID.isEmpty {
-            uid = cgiUID
-        } else {
-            uid = await client.fetchUID(channelID: UInt8(channel.channel))
-        }
-
+        let command = Commands.search(
+            channel: channel.channel,
+            onlyStatus: false,
+            streamType: "main",
+            start: start,
+            end: end
+        )
         do {
-            let files = try await client.findAlarmVideos(
-                channel: UInt8(channel.channel),
-                start: start,
-                end: end,
-                streamType: "main",
-                uid: uid
-            )
-            // The Reolink hub occasionally returns the same fileName
-            // twice (e.g. when an alarm-marked recording and a
-            // motion-marked recording cover the exact same timestamp).
-            // Dedupe by fileName so SwiftUI ForEach doesn't warn about
-            // duplicate IDs, which makes per-row swipe / context menus
-            // misroute.
+            let raw = try await session.client.sendCapturingRaw(command)
+            let envelopes = try JSONDecoder().decode([CGIResponse<SearchEnvelope>].self, from: raw)
+            let files = envelopes.first?.value?.SearchResult.File ?? []
+            // Dedupe defensively: Reolink rarely returns dupes on Search
+            // (unlike findAlarmVideo, which did) — but still cheap to do.
             var seen = Set<String>()
-            let unique = files.filter { seen.insert($0.fileName).inserted }
+            let unique = files.filter { seen.insert($0.name).inserted }
             entries = unique.sorted { ($0.startDate ?? .distantPast) > ($1.startDate ?? .distantPast) }
         } catch {
-            log.error("findAlarmVideos failed: \(error.localizedDescription, privacy: .public)")
+            log.error("Search failed: \(error.localizedDescription, privacy: .public)")
             errorMessage = error.localizedDescription
         }
     }
 
-    private func playEntry(_ entry: BaichuanAlarmVideoFile) async {
+    private func playEntry(_ file: SearchFile) async {
         let credentials = await session.client.credentials
         let urls = StreamURLs(credentials: credentials)
-        // Use the cached token if we have one; the helper falls back to
-        // embedded user/password query params otherwise.
         let token = await session.client.currentToken?.name
-        let url = urls.recordingDownload(source: entry.fileName, token: token)
+        // Use the SearchFile's own `name` (canonical CGI filename) as
+        // the source — that's what the Download endpoint expects.
+        let url = urls.recordingDownload(source: file.name, token: token)
         nowPlaying = PlayableRecording(
-            id: entry.id,
+            id: file.name,
             url: url,
-            displayName: entry.fileName,
-            detections: entry.detections,
-            startDate: entry.startDate
+            displayName: file.name,
+            detections: file.triggers,
+            startDate: file.startDate
         )
     }
 }
 
 private struct RecordingRow: View {
-    let entry: BaichuanAlarmVideoFile
+    let file: SearchFile
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -168,9 +154,9 @@ private struct RecordingRow: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
-            if !entry.detections.isEmpty {
+            if !file.triggers.isEmpty {
                 HStack(spacing: 6) {
-                    ForEach(entry.detections, id: \.self) { detection in
+                    ForEach(file.triggers, id: \.self) { detection in
                         Label(detection.label, systemImage: detection.systemImage)
                             .labelStyle(.titleAndIcon)
                             .font(.caption)
@@ -186,16 +172,15 @@ private struct RecordingRow: View {
     }
 
     private var timeLabel: String {
-        guard let start = entry.startDate else { return entry.fileName }
+        guard let start = file.startDate else { return file.name }
         return start.formatted(date: .omitted, time: .shortened)
     }
 
     private var durationLabel: String {
-        guard let start = entry.startDate, let end = entry.endDate else { return "" }
-        let seconds = Int(end.timeIntervalSince(start))
-        guard seconds > 0 else { return "" }
-        let m = seconds / 60
-        let s = seconds % 60
+        guard let seconds = file.durationSeconds, seconds > 0 else { return "" }
+        let total = Int(seconds)
+        let m = total / 60
+        let s = total % 60
         return String(format: "%d:%02d", m, s)
     }
 }
