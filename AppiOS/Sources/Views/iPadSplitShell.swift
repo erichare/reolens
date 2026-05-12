@@ -114,14 +114,18 @@ struct iPadSplitShell: View {
         .sheet(isPresented: $showingAdd) {
             AddCameraView()
         }
-        .onChange(of: store.pendingIntentNavigationDeviceID) { _, newID in
-            // An "Open Camera" Shortcut/Siri intent fired. Route to the
-            // requested camera in the content/detail column and clear
-            // the one-shot pointer so the next change re-fires.
-            if let newID {
-                selectedSection = .device(newID)
-                store.pendingIntentNavigationDeviceID = nil
+        .onChange(of: store.pendingIntentNavigation) { _, target in
+            guard let target else { return }
+            switch target {
+            case .liveCamera(let deviceID):
+                selectedSection = .device(deviceID)
+            case .recording:
+                // Recording tap → land on the Recordings section.
+                // The user picks the camera from there; drilling all
+                // the way to the matching clip is a 0.3.x follow-up.
+                selectedSection = .recordings
             }
+            store.pendingIntentNavigation = nil
         }
     }
 

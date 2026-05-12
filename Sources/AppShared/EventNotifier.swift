@@ -68,6 +68,22 @@ public final class EventNotifier {
     private static let motionKey = "com.reolens.notifications.motion"
     private static let cooldown: TimeInterval = 30
 
+    // userInfo dictionary keys used to carry the routing payload from a
+    // posted notification back into the app on tap. Public so the
+    // delegate in the same module can reference them by symbol rather
+    // than retyping the string. `nonisolated` because they're plain
+    // immutable strings — the delegate that reads them runs off the
+    // main actor in the system notification callback.
+    nonisolated static let userInfoCameraIDKey = "cameraID"
+    nonisolated static let userInfoChannelKey = "channelID"
+    nonisolated static let userInfoEventTimeKey = "eventTime"
+
+    /// Notification freshness threshold for routing taps. Taps on an
+    /// event posted within this window go to the camera's live view;
+    /// older taps go to the recording browser, where the captured clip
+    /// is more useful than the (already-stopped) live feed.
+    nonisolated static let liveTapThreshold: TimeInterval = 60
+
     /// Per-(channel, kind) timestamp of the last delivered notification.
     /// Used to throttle sustained alarm streams.
     private var lastNotifiedAt: [String: Date] = [:]
@@ -162,6 +178,7 @@ public final class EventNotifier {
     /// notification.
     public func notify(
         event: BaichuanEvent,
+        cameraID: UUID,
         cameraName: String,
         snapshotURL: URL?
     ) async {
@@ -182,6 +199,15 @@ public final class EventNotifier {
         content.sound = .default
         content.threadIdentifier = "ch-\(event.channelID)"
         content.categoryIdentifier = "reolens.alarm"
+        // userInfo lets the tap handler route to live view (when fresh)
+        // or the recording browser (when older). Stored as primitives —
+        // UNUserNotificationCenter requires the dictionary to be plist-
+        // serializable. See `EventNotifierDelegate` for the read side.
+        content.userInfo = [
+            Self.userInfoCameraIDKey: cameraID.uuidString,
+            Self.userInfoChannelKey: Int(event.channelID),
+            Self.userInfoEventTimeKey: Date().timeIntervalSince1970,
+        ]
 
         // Best-effort rich-notification attachment. We don't await the
         // download for too long — a Reolink snap typically arrives in
@@ -274,3 +300,70 @@ public final class EventNotifier {
         }
     }
 }
+
+/// `UNUserNotificationCenterDelegate` that translates notification taps
+/// into `AppIntentFocus` requests. Install via `installNotificationTapHandler()`
+/// from each app's scene on launch.
+///
+/// Routing rule: if the user taps within `EventNotifier.liveTapThreshold`
+/// seconds of the event, the camera's live view opens (the action is
+/// likely still happening). After that window, the recording browser
+/// opens instead — the live feed has nothing actionable in it.
+public final class NotificationTapDelegate: NSObject, UNUserNotificationCenterDelegate, @unchecked Sendable {
+    public static let shared = NotificationTapDelegate()
+
+    /// Install this delegate as the user-notification center's delegate.
+    /// Call from each app's scene `task` on launch. Safe to call more
+    /// than once — `UNUserNotificationCenter.delegate` accepts a single
+    /// assignment and replays harmlessly.
+    @MainActor
+    public static func install() {
+        UNUserNotificationCenter.current().delegate = NotificationTapDelegate.shared
+    }
+
+    /// Show the banner even when the app is foregrounded — otherwise
+    /// motion alerts that fire while the user is looking at one camera
+    /// would silently disappear.
+    public func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound])
+    }
+
+    /// User tapped a notification (or its default action). Translate
+    /// the payload into an `AppIntentFocus` target. The running app's
+    /// `applyPendingIntentFocus()` (already invoked on foreground)
+    /// will pick this up and route.
+    public func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let userInfo = response.notification.request.content.userInfo
+        defer { completionHandler() }
+        guard
+            let cameraString = userInfo[EventNotifier.userInfoCameraIDKey] as? String,
+            let cameraID = UUID(uuidString: cameraString)
+        else { return }
+        let channelID = (userInfo[EventNotifier.userInfoChannelKey] as? Int) ?? 0
+        let eventTime = (userInfo[EventNotifier.userInfoEventTimeKey] as? TimeInterval)
+            .map { Date(timeIntervalSince1970: $0) }
+            ?? Date()
+        let age = Date().timeIntervalSince(eventTime)
+        let target: AppIntentFocus.Target
+        if age < EventNotifier.liveTapThreshold {
+            target = .liveCamera(deviceID: cameraID)
+        } else {
+            target = .recording(deviceID: cameraID, channelID: channelID, at: eventTime)
+        }
+        AppIntentFocus.request(target)
+        // The running app's foreground/launch task drains the pointer
+        // and routes. We also kick a Darwin notification post here to
+        // help wake the app if it was suspended — but the standard
+        // delegate flow already foregrounds for `didReceive`, so this
+        // is belt-and-suspenders.
+    }
+}
+

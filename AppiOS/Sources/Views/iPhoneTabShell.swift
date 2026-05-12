@@ -63,17 +63,27 @@ struct iPhoneTabShell: View {
             .tabItem { Label("Settings", systemImage: "gear") }
             .tag(Tab.settings)
         }
-        .onChange(of: store.pendingIntentNavigationDeviceID) { _, newID in
-            guard let newID,
-                  let entry = store.cameras.first(where: { $0.id == newID })
-            else { return }
-            // Switch to Live and push the camera detail. Reset the path
-            // first so the user lands on the new camera at depth 1,
-            // not stacked on top of whatever they were last viewing.
-            selectedTab = .live
-            liveTabPath = NavigationPath()
-            liveTabPath.append(entry)
-            store.pendingIntentNavigationDeviceID = nil
+        .onChange(of: store.pendingIntentNavigation) { _, target in
+            guard let target else { return }
+            switch target {
+            case .liveCamera(let deviceID):
+                guard let entry = store.cameras.first(where: { $0.id == deviceID })
+                else { break }
+                // Switch to Live and push the camera detail. Reset the
+                // path first so the user lands on the new camera at
+                // depth 1, not stacked on whatever they were viewing.
+                selectedTab = .live
+                liveTabPath = NavigationPath()
+                liveTabPath.append(entry)
+            case .recording:
+                // Recording-aged tap → land on the Recordings tab so
+                // the user can scrub to the captured clip. Drilling
+                // all the way to a per-channel detail is a 0.3.x
+                // follow-up (also depends on the recording-playback
+                // fix landing).
+                selectedTab = .recordings
+            }
+            store.pendingIntentNavigation = nil
         }
     }
 }

@@ -16,9 +16,15 @@ struct ReolensiOSApp: App {
             RootView()
                 .environment(store)
                 .task {
-                    // Drain any "Open Camera" intent the user fired before
-                    // the app was running (Shortcuts/Siri sets a focus
-                    // pointer in UserDefaults; CameraStore consumes it).
+                    // Wire notification-tap routing once on launch.
+                    // NotificationTapDelegate is idempotent — multiple
+                    // calls just re-assign the same delegate.
+                    NotificationTapDelegate.install()
+                    // Drain any "Open Camera" intent the user fired
+                    // before the app was running (Shortcuts/Siri or a
+                    // notification tap on a cold launch — both write
+                    // to the same UserDefaults pointer; CameraStore
+                    // consumes it).
                     store.applyPendingIntentFocus()
                 }
                 .onChange(of: scenePhase) { _, phase in

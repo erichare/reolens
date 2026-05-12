@@ -91,15 +91,40 @@ public struct OpenCameraIntent: AppIntent {
     }
 }
 
-/// Shared focus pointer between the App Intents extension surface and
-/// the running app. Apps observe `pendingDeviceID` on launch and
-/// foreground; the intent writes to it. Backed by `UserDefaults` so the
-/// value survives a fresh launch from the Shortcuts app.
+/// Shared focus pointer between out-of-process surfaces (App Intents
+/// from Shortcuts/Siri, notification tap handlers) and the running app.
+/// Apps observe `consumePending()` on launch and foreground; the
+/// requesting surface writes a `Target` to it. Backed by `UserDefaults`
+/// so the value survives a fresh launch from a backgrounded state.
 public enum AppIntentFocus {
-    private static let key = "com.reolens.intent.focusedCameraID"
+    /// What the user wants to focus on after launching the app.
+    public enum Target: Sendable, Codable, Equatable {
+        /// Open the live view for the named device. Used by
+        /// `OpenCameraIntent` (Shortcuts/Siri) and by notification taps
+        /// that fire on a recent event (< 1 minute old).
+        case liveCamera(deviceID: UUID)
+        /// Open the recordings browser for the named device + channel,
+        /// positioned at `at`. Used by notification taps that fire on
+        /// an older event — the user is more likely to want to scrub
+        /// to the captured clip than re-watch the (already-stopped)
+        /// live feed.
+        case recording(deviceID: UUID, channelID: Int, at: Date)
+    }
 
+    private static let key = "com.reolens.intent.focusTarget"
+    /// Legacy key used before 0.3.0 added richer Target. Drained on
+    /// `consumePending()` so notifications/Shortcuts written by a
+    /// pre-0.3.x build still route correctly after the user upgrades.
+    private static let legacyKey = "com.reolens.intent.focusedCameraID"
+
+    public static func request(_ target: Target) {
+        guard let data = try? JSONEncoder().encode(target) else { return }
+        UserDefaults.standard.set(data, forKey: key)
+    }
+
+    /// Convenience wrapper for the common case (live view of a device).
     public static func requestFocus(deviceID: UUID) {
-        UserDefaults.standard.set(deviceID.uuidString, forKey: key)
+        request(.liveCamera(deviceID: deviceID))
     }
 
     /// Drain and return any pending focus request. Idempotent on the
@@ -107,12 +132,19 @@ public enum AppIntentFocus {
     /// foreground; consuming it here ensures we don't keep re-applying
     /// the same focus every time the user puts the app in background
     /// and brings it back.
-    public static func consumePending() -> UUID? {
-        guard let raw = UserDefaults.standard.string(forKey: key),
-              let id = UUID(uuidString: raw)
-        else { return nil }
-        UserDefaults.standard.removeObject(forKey: key)
-        return id
+    public static func consumePending() -> Target? {
+        if let data = UserDefaults.standard.data(forKey: key),
+           let target = try? JSONDecoder().decode(Target.self, from: data) {
+            UserDefaults.standard.removeObject(forKey: key)
+            return target
+        }
+        // Legacy fallback: a pre-0.3.0 build wrote a bare UUID string.
+        if let raw = UserDefaults.standard.string(forKey: legacyKey),
+           let id = UUID(uuidString: raw) {
+            UserDefaults.standard.removeObject(forKey: legacyKey)
+            return .liveCamera(deviceID: id)
+        }
+        return nil
     }
 }
 
