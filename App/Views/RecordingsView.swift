@@ -12,9 +12,18 @@ private let log = Logger(subsystem: "com.reolens.app", category: "recordings")
 struct RecordingsView: View {
     let session: CameraSession
     let channel: ChannelStatus
+    /// Optional "scroll-to-and-play" hint set by the notification-tap
+    /// routing pipeline (`AppIntentFocus.Target.recording` carries
+    /// the event timestamp). When non-nil on appear, the view auto-
+    /// selects the day containing the time, finds the closest file,
+    /// scrolls it into view, and auto-plays. Reset to nil internally
+    /// so re-renders don't loop.
+    var scrollTarget: Date? = nil
 
     @Environment(CameraStore.self) private var store
     @State private var selectedDate: Date = Date()
+    @State private var pendingScrollTarget: Date?
+    @State private var playedScrollTarget: Bool = false
     /// Canonical list shown to the user. Sourced from a Search of the **main**
     /// stream — that's the high-quality recording the hub actually stores.
     @State private var files: [SearchFile] = []
@@ -90,9 +99,64 @@ struct RecordingsView: View {
         }
         .task(id: selectedDate) {
             await reload()
+            // After the day's files load, if the user got here via a
+            // notification tap with a target time, auto-play the
+            // closest matching clip. Guarded so it fires exactly once
+            // per scrollTarget — re-renders don't keep re-opening the
+            // player.
+            if let target = pendingScrollTarget, !playedScrollTarget {
+                playedScrollTarget = true
+                pendingScrollTarget = nil
+                autoPlayClipNearest(target)
+            }
+        }
+        .onAppear {
+            // Seed `pendingScrollTarget` from the prop on first
+            // appear. Setting `selectedDate` here makes the existing
+            // `.task(id: selectedDate)` fire a reload for that day.
+            if let target = scrollTarget, !playedScrollTarget {
+                pendingScrollTarget = target
+                let day = Calendar.current.startOfDay(for: target)
+                if Calendar.current.startOfDay(for: selectedDate) != day {
+                    selectedDate = target
+                } else {
+                    // Same day — reload already done; trigger the
+                    // auto-play directly.
+                    Task {
+                        playedScrollTarget = true
+                        pendingScrollTarget = nil
+                        autoPlayClipNearest(target)
+                    }
+                }
+            }
         }
         .sheet(item: $nowPlaying) { recording in
             RecordingPlayerSheet(recording: recording)
+        }
+    }
+
+    /// Locate the file whose time range contains `target` (preferred),
+    /// or — if no file straddles the timestamp exactly — the file
+    /// with the closest start time. Opens it via the same `preview`
+    /// path a manual row tap uses.
+    private func autoPlayClipNearest(_ target: Date) {
+        // Containment first: AI-classified motion events typically
+        // fire mid-clip, so the clip that straddles the timestamp is
+        // the one the user actually wants.
+        if let containing = filteredFiles.first(where: { file in
+            guard let start = file.startDate, let end = file.endDate else { return false }
+            return start <= target && target <= end
+        }) {
+            preview(containing)
+            return
+        }
+        // Fallback: nearest by start time.
+        let withDistance = filteredFiles.compactMap { file -> (SearchFile, TimeInterval)? in
+            guard let start = file.startDate else { return nil }
+            return (file, abs(start.timeIntervalSince(target)))
+        }
+        if let (closest, _) = withDistance.min(by: { $0.1 < $1.1 }) {
+            preview(closest)
         }
     }
 
@@ -578,7 +642,12 @@ struct RecordingsView: View {
         let cmd = Commands.getEvents(channel: channel.channel, start: start, end: end)
         do {
             let raw = try await session.client.sendCapturingRaw(cmd)
-            log.info("GetEvents raw response (channel=\(self.channel.channel)):\n\(String(data: raw, encoding: .utf8) ?? "<binary>", privacy: .public)")
+            // Raw GetEvents responses include hardware-fingerprint
+            // fields. Gate behind developer mode + .debug so they
+            // don't surface in sysdiagnose for ordinary users.
+            if CameraStore.developerModeIsOn {
+                log.debug("GetEvents raw response (channel=\(self.channel.channel)):\n\(String(data: raw, encoding: .utf8) ?? "<binary>", privacy: .private)")
+            }
             let envelopes = (try? JSONDecoder().decode([CGIResponse<HubEventEnvelope>].self, from: raw)) ?? []
             if let firstError = envelopes.first?.error,
                firstError.rspCode == CGIErrorCode.notSupport.rawValue {

@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import OSLog
+import ReolinkAPI
 
 private let log = Logger(subsystem: "com.reolens.app", category: "recordings")
 
@@ -515,7 +516,13 @@ public final class RecordingDownloader {
             return .failure("\(error.localizedDescription)")
         }
         if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
-            return .failure("HTTP \(http.statusCode) from camera. URL: \(response?.url?.absoluteString ?? "?")")
+            // User-visible failure text must never carry the URL —
+            // it embeds `user=…&password=…` for the Download CGI.
+            // The status code alone is enough to tell the user the
+            // hub refused the download. Internal log line below uses
+            // `LogRedaction.redact(_:)` for the same reason.
+            log.error("Download HTTP \(http.statusCode) from \(LogRedaction.redact(response?.url), privacy: .public)")
+            return .failure("HTTP \(http.statusCode) from camera.")
         }
         guard let tmpURL else {
             return .failure("Download produced no file.")

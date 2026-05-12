@@ -50,7 +50,7 @@ extension BaichuanClient {
                     if !loggedFirstAlarm {
                         loggedFirstAlarm = true
                         let preview = String(data: msg.body.prefix(400), encoding: .utf8) ?? "<non-utf8>"
-                        log.info("First AlarmEventList (msgID=33) body preview: \(preview, privacy: .public)")
+                        log.debug("First AlarmEventList (msgID=33) body preview: \(preview, privacy: .private)")
                     }
                     let xml = String(data: msg.body, encoding: .utf8) ?? ""
                     let events = Self.parseAlarmEvents(xml: xml, channelID: msg.header.channelID)

@@ -83,6 +83,17 @@ public struct ChannelSettingsView: View {
                     }
                 }
             }
+            Section("Overlay") {
+                Toggle("Show app badges over video", isOn: Binding(
+                    get: { !store.isAppBadgeHidden(deviceID: session.entry.id, channel: channel.channel) },
+                    set: { shown in
+                        store.setAppBadgeHidden(!shown, deviceID: session.entry.id, channel: channel.channel)
+                    }
+                ))
+                Text("Reolens normally shows the camera name and a motion / AI indicator over each live tile. Turn off if you want the cleanest possible image, or if the camera's own date / time / name overlay (configured in the OSD section above) is fighting for the same corner. New in 0.4.1.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
             if let info = session.deviceInfo {
                 Section("Device") {
                     LabeledContent("Model", value: info.model ?? "—")

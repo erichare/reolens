@@ -145,11 +145,13 @@ public actor RTSPClient {
         } else {
             self.contentBase = nil
             if let cb = describeResp.header("Content-Base") {
-                log.debug("Ignoring Content-Base \(cb, privacy: .public) — host mismatch with \(self.config.url.host ?? "?", privacy: .public)")
+                log.debug("Ignoring Content-Base \(cb, privacy: .private) — host mismatch with \(self.config.url.host ?? "?", privacy: .private)")
             }
         }
 
-        log.debug("DESCRIBE body (\(describeResp.body.count) bytes):\n\(describeResp.body, privacy: .public)")
+        // SDP body can embed full rtsp:// URLs with credentials —
+        // mark `.private` so it doesn't surface in sysdiagnose.
+        log.debug("DESCRIBE body (\(describeResp.body.count) bytes):\n\(describeResp.body, privacy: .private)")
         let parsed = SDPParser.parse(describeResp.body)
         self.sdp = parsed
         guard parsed.firstVideoTrack != nil else {
@@ -174,7 +176,7 @@ public actor RTSPClient {
         guard let video = sdp?.firstVideoTrack else { throw RTSPError.noVideoTrack }
         self.rtcpInterleavedChannel = interleavedChannels.rtcp
         let uri = trackURI(control: video.control)
-        log.debug("SETUP uri=\(uri, privacy: .public)")
+        log.debug("SETUP uri=\(uri, privacy: .private)")
         let resp = try await sendRequest(
             method: "SETUP",
             uri: uri,
@@ -200,7 +202,7 @@ public actor RTSPClient {
 
     public func play() async throws -> AsyncStream<RTPChannelMessage> {
         let uri = aggregateURI
-        log.debug("PLAY uri=\(uri, privacy: .public)")
+        log.debug("PLAY uri=\(uri, privacy: .private)")
         let resp = try await sendRequest(
             method: "PLAY",
             uri: uri,

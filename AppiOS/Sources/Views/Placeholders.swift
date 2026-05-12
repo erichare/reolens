@@ -24,45 +24,9 @@ struct LivePlaceholderView: View {
                         .buttonStyle(.borderedProminent)
                 }
             } else {
-                List(store.orderedCameras(matching: searchText)) { entry in
-                    NavigationLink {
-                        if let session = store.session(for: entry.id) {
-                            CameraDetailView(session: session)
-                        } else {
-                            ContentUnavailableView {
-                                Label("No password on this device", systemImage: "key.slash")
-                            } description: {
-                                Text("\(entry.displayName) was added on another device. Enter the password on this device to stream from it.")
-                            } actions: {
-                                Button("Enter Password") { passwordEntryEntry = entry }
-                                    .buttonStyle(.borderedProminent)
-                            }
-                        }
-                    } label: {
-                        CameraRow(entry: entry)
-                    }
-                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button("Delete", systemImage: "trash", role: .destructive) {
-                            store.remove(entry.id)
-                        }
-                        Button("Enter Password", systemImage: "key.fill") {
-                            passwordEntryEntry = entry
-                        }
-                        .tint(.accentColor)
-                    }
-                    .contextMenu {
-                        Button("Enter Password", systemImage: "key.fill") {
-                            passwordEntryEntry = entry
-                        }
-                        if store.session(for: entry.id) != nil {
-                            Button("Reconnect", systemImage: "arrow.clockwise.circle") {
-                                store.reconnect(entry.id)
-                            }
-                        }
-                        Divider()
-                        Button("Delete Camera", systemImage: "trash", role: .destructive) {
-                            store.remove(entry.id)
-                        }
+                List {
+                    ForEach(store.orderedCameras(matching: searchText)) { entry in
+                        liveEntryRow(for: entry)
                     }
                 }
             }
@@ -82,6 +46,103 @@ struct LivePlaceholderView: View {
             EnterPasswordSheet(entry: entry)
         }
         .searchable(text: $searchText, placement: .automatic, prompt: "Search cameras")
+    }
+
+    /// One row per registered device. Multi-channel hubs / NVRs
+    /// render as a `DisclosureGroup` so the user can drill into a
+    /// specific camera directly — mirrors the macOS sidebar /
+    /// iPad-shell behavior. Single-channel devices stay as a flat
+    /// `NavigationLink` straight into the camera detail.
+    @ViewBuilder
+    private func liveEntryRow(for entry: CameraEntry) -> some View {
+        let session = store.session(for: entry.id)
+        // Reolink Home Hub reports all 24 paired-camera slots even
+        // when most are empty. Empty slots have no name and no
+        // typeInfo — filter so we don't show useless "Channel N"
+        // rows in the Live tab.
+        let channels = (session?.channels ?? []).filter { ch in
+            (ch.name?.isEmpty == false) || (ch.typeInfo?.isEmpty == false)
+        }
+        if channels.count > 1 {
+            DisclosureGroup(isExpanded: bindingForExpansion(deviceID: entry.id)) {
+                ForEach(channels, id: \.channel) { ch in
+                    NavigationLink(value: CameraChannelTarget(deviceID: entry.id, channel: ch.channel)) {
+                        Label(
+                            ch.name ?? "Channel \(ch.channel + 1)",
+                            systemImage: ch.isAsleep ? "moon.zzz" : "video.fill"
+                        )
+                    }
+                }
+            } label: {
+                NavigationLink(value: entry) {
+                    CameraRow(entry: entry)
+                }
+            }
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) { deviceSwipeActions(entry: entry) }
+            .contextMenu { deviceContextMenu(entry: entry, hasSession: session != nil) }
+        } else {
+            NavigationLink(value: entry) {
+                CameraRow(entry: entry)
+            }
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) { deviceSwipeActions(entry: entry) }
+            .contextMenu { deviceContextMenu(entry: entry, hasSession: session != nil) }
+        }
+    }
+
+    @ViewBuilder
+    private func deviceSwipeActions(entry: CameraEntry) -> some View {
+        Button("Delete", systemImage: "trash", role: .destructive) {
+            store.remove(entry.id)
+        }
+        Button("Enter Password", systemImage: "key.fill") {
+            passwordEntryEntry = entry
+        }
+        .tint(.accentColor)
+    }
+
+    @ViewBuilder
+    private func deviceContextMenu(entry: CameraEntry, hasSession: Bool) -> some View {
+        Button("Enter Password", systemImage: "key.fill") {
+            passwordEntryEntry = entry
+        }
+        if hasSession {
+            Button("Reconnect", systemImage: "arrow.clockwise.circle") {
+                store.reconnect(entry.id)
+            }
+        }
+        Divider()
+        Button("Delete Camera", systemImage: "trash", role: .destructive) {
+            store.remove(entry.id)
+        }
+    }
+
+    /// Per-device expanded state, persisted on the store so
+    /// re-renders (iCloud sync callbacks, scenePhase transitions)
+    /// don't collapse the group out from under the user.
+    private func bindingForExpansion(deviceID: UUID) -> Binding<Bool> {
+        Binding(
+            get: { store.expandedDevices.contains(deviceID) },
+            set: { isOpen in
+                if isOpen {
+                    store.expandedDevices.insert(deviceID)
+                } else {
+                    store.expandedDevices.remove(deviceID)
+                }
+            }
+        )
+    }
+}
+
+/// Navigation-stack value for "open this specific channel under
+/// this device" pushes on iPhone. Hashable+Codable so it survives
+/// the `NavigationPath` round-trips SwiftUI uses internally.
+public struct CameraChannelTarget: Hashable, Sendable, Codable {
+    public let deviceID: UUID
+    public let channel: Int
+
+    public init(deviceID: UUID, channel: Int) {
+        self.deviceID = deviceID
+        self.channel = channel
     }
 }
 

@@ -33,6 +33,8 @@ struct ChannelDetailContent: View {
         }
     }
 
+    @State private var pendingRecordingScroll: Date?
+
     var body: some View {
         VStack(spacing: 0) {
             Picker("", selection: $tab) {
@@ -55,6 +57,14 @@ struct ChannelDetailContent: View {
             cameraName: session.entry.displayName,
             channelID: channel.channel
         )
+        .onAppear { consumeRecordingScrollIfAny() }
+        // ChannelDetailContent is re-used across channel changes (the
+        // sidebar selection swaps which channel we render). Pick up
+        // a freshly-arrived scroll target whenever the channel
+        // changes.
+        .onChange(of: channel.channel) { _, _ in
+            consumeRecordingScrollIfAny()
+        }
     }
 
     @ViewBuilder
@@ -63,9 +73,27 @@ struct ChannelDetailContent: View {
         case .live:
             liveTab
         case .recordings:
-            RecordingsView(session: session, channel: channel)
+            RecordingsView(
+                session: session,
+                channel: channel,
+                scrollTarget: pendingRecordingScroll
+            )
+            .id(channel.channel)
         case .settings:
             ChannelSettingsView(session: session, channel: channel)
+        }
+    }
+
+    /// If a notification tap is waiting to deep-link into this
+    /// channel's Recordings tab, flip the tab AND copy the target
+    /// time so the inner `RecordingsView` can auto-play the clip.
+    private func consumeRecordingScrollIfAny() {
+        if let at = store.consumePendingRecordingScroll(
+            deviceID: session.entry.id,
+            channel: channel.channel
+        ) {
+            tab = .recordings
+            pendingRecordingScroll = at
         }
     }
 
@@ -83,6 +111,14 @@ struct ChannelDetailContent: View {
                 Color.black
                 LiveCameraTile(session: session, channel: channel, stream: .main)
                     .aspectRatio(isDual ? 32.0 / 9.0 : 16.0 / 9.0, contentMode: .fit)
+                    // Force SwiftUI to rebuild the tile when the user
+                    // switches channels. Without an explicit identity,
+                    // the persisting `@State` `player` keeps showing
+                    // the previous channel's stream because the
+                    // `.task(id: channel.channel)` guard sees
+                    // `didStart=true` from the prior session and bails.
+                    // The macOS grid uses the same idiom on its tiles.
+                    .id(channel.channel)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             Divider()

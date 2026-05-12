@@ -2,13 +2,15 @@ import SwiftUI
 import ReolinkAPI
 import AppShared
 
-/// iOS add-camera sheet. v0.2 ships **manual entry only** — local-
-/// network discovery on iOS requires the user to grant the Local
-/// Network permission AND for the app to register Bonjour services
-/// the OS will let it browse, both of which gate the existing
-/// `CameraDiscovery` actor. We'll wire that into the iOS app in a
-/// point release; for v0.2 the Mac app can populate the camera list
-/// and iCloud sync brings it to the iPad/iPhone instantly.
+/// iOS add-camera sheet. As of 0.4.1, supports both manual entry AND
+/// local-network discovery via `CameraDiscovery`. Discovery runs
+/// Bonjour/mDNS browse + an HTTP /24 sweep concurrently and prefills
+/// the form with the device's host + display name; the user enters
+/// the username + password to finish.
+///
+/// AGENTS.md §3 — the Local Network permission prompt fires the first
+/// time the user opens the discovery sheet, which is contextually
+/// justified ("I asked to scan, so iOS is asking permission").
 struct AddCameraView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(CameraStore.self) private var store
@@ -20,6 +22,7 @@ struct AddCameraView: View {
     @State private var password: String = ""
     @State private var useHTTPS: Bool = false
     @State private var preferredCodec: VideoCodec = .h264
+    @State private var showingDiscovery: Bool = false
 
     private var isValid: Bool {
         !host.trimmingCharacters(in: .whitespaces).isEmpty
@@ -31,6 +34,17 @@ struct AddCameraView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    Button {
+                        showingDiscovery = true
+                    } label: {
+                        Label("Scan local network for cameras", systemImage: "antenna.radiowaves.left.and.right")
+                    }
+                } footer: {
+                    Text("Reolens looks for cameras on your Wi-Fi network using Bonjour and a one-time HTTP scan. iOS will ask for Local Network permission the first time.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
                 Section("Device") {
                     TextField("Display name (optional)", text: $displayName)
                         .textInputAutocapitalization(.words)
@@ -70,6 +84,11 @@ struct AddCameraView: View {
                     Button("Add", action: submit).disabled(!isValid)
                 }
             }
+            .sheet(isPresented: $showingDiscovery) {
+                DiscoveryPickerSheet { device in
+                    apply(device)
+                }
+            }
         }
     }
 
@@ -86,5 +105,103 @@ struct AddCameraView: View {
         )
         store.add(entry, password: password)
         dismiss()
+    }
+
+    private func apply(_ device: DiscoveredDevice) {
+        host = device.host
+        if displayName.isEmpty || displayName == host {
+            displayName = device.displayName
+        }
+        // Discovery picks up the HTTP port the device responded on —
+        // 80 for nearly every Reolink. The user can override on the
+        // form before saving.
+        port = "\(device.port)"
+        // Reolink cameras don't advertise HTTPS-only by default; the
+        // discovery sweep is HTTP. Leave `useHTTPS` at whatever the
+        // user picked.
+    }
+}
+
+/// Modal that runs `CameraDiscovery.scan` and renders the results in
+/// a tappable list. Picking a row dismisses the sheet and hands the
+/// selected `DiscoveredDevice` back to the parent.
+private struct DiscoveryPickerSheet: View {
+    let onSelect: (DiscoveredDevice) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var devices: [DiscoveredDevice] = []
+    @State private var isScanning: Bool = false
+    @State private var scanProgress: Double = 0
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if isScanning && devices.isEmpty {
+                    VStack(spacing: 12) {
+                        ProgressView(value: scanProgress) {
+                            Text("Scanning local network…")
+                                .font(.callout)
+                        }
+                        .padding()
+                        Text("This usually takes 5–10 seconds.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding()
+                } else if devices.isEmpty {
+                    ContentUnavailableView {
+                        Label("No cameras found", systemImage: "antenna.radiowaves.left.and.right.slash")
+                    } description: {
+                        Text("Reolens couldn't find any Reolink devices on this Wi-Fi network. Add by IP address using the form instead.")
+                    } actions: {
+                        Button("Scan again") {
+                            Task { await runScan() }
+                        }
+                    }
+                } else {
+                    List(devices) { device in
+                        Button {
+                            onSelect(device)
+                            dismiss()
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(device.displayName)
+                                    .font(.body.weight(.medium))
+                                Text("\(device.host) · \(device.kindHint)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .navigationTitle("Discover cameras")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                if !isScanning {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("Scan again") {
+                            Task { await runScan() }
+                        }
+                    }
+                }
+            }
+        }
+        .task {
+            await runScan()
+        }
+    }
+
+    private func runScan() async {
+        isScanning = true
+        scanProgress = 0
+        defer { isScanning = false }
+        let results = await CameraDiscovery.shared.scan(progress: { p in
+            Task { @MainActor in self.scanProgress = p }
+        })
+        devices = results
     }
 }

@@ -33,29 +33,98 @@ package enum Keychain {
         UserDefaults.standard.bool(forKey: syncDefaultsKey)
     }
 
-    package static func set(password: String, for id: UUID) {
-        set(password: password, for: id, synchronized: syncEnabled)
+    @discardableResult
+    package static func set(password: String, for id: UUID) -> Bool {
+        // Try the user's chosen sync side first. If it fails because
+        // the binary lacks the iCloud Keychain entitlement (common on
+        // ad-hoc-signed `swift build` outputs, whose `dev`
+        // entitlements deliberately drop the iCloud container to
+        // avoid AMFI launch failures), retry with sync off. The
+        // local-only side has no entitlement requirement at all, so
+        // the fallback should always succeed on a working keychain.
+        // The user can re-enable sync later from a Developer-ID-
+        // signed build that has the iCloud entitlement.
+        let preferred = syncEnabled
+        if set(password: password, for: id, synchronized: preferred) {
+            return true
+        }
+        if preferred {
+            log.warning("Keychain set with synchronized=true failed; retrying synchronized=false (likely a dev / ad-hoc signing build missing the iCloud entitlement)")
+            return set(password: password, for: id, synchronized: false)
+        }
+        return false
     }
 
     /// Explicit form used by the migration helper, where the caller knows
-    /// the target sync side.
-    package static func set(password: String, for id: UUID, synchronized: Bool) {
+    /// the target sync side. Returns true iff the password is readable
+    /// back from Keychain after the write — call sites use this to
+    /// surface failures (the previous version silently logged and
+    /// returned, which made "set the password" silently fail when a
+    /// stale iCloud-synced Keychain item resisted deletion).
+    @discardableResult
+    package static func set(password: String, for id: UUID, synchronized: Bool) -> Bool {
         let account = id.uuidString
-        guard let data = password.data(using: .utf8) else { return }
+        guard let data = password.data(using: .utf8) else { return false }
+
+        // Try a best-effort delete first to make room for the add.
+        // `kSecAttrSynchronizableAny` matches local + iCloud-synced
+        // items so a sync-on → sync-off → set sequence doesn't leave
+        // a stale synced item shadowing the local one. Status is
+        // tolerated: errSecItemNotFound is normal (first set), and
+        // errSecDuplicateItem can't happen on a delete.
         deletePassword(for: id)
-        let query: [String: Any] = [
+
+        let baseAttrs: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked,
             kSecAttrSynchronizable as String: synchronized ? kCFBooleanTrue as Any
                                                            : kCFBooleanFalse as Any
         ]
-        let status = SecItemAdd(query as CFDictionary, nil)
-        if status != errSecSuccess {
-            Self.log.error("SecItemAdd failed status=\(status, privacy: .public) sync=\(synchronized, privacy: .public)")
+        let addQuery = baseAttrs.merging([
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked
+        ]) { _, new in new }
+
+        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+        if addStatus == errSecSuccess {
+            return verifyAfterWrite(id: id)
         }
+        if addStatus == errSecDuplicateItem {
+            // Apple's Keychain occasionally returns this when an
+            // iCloud-synced item the `delete` should have caught
+            // sneaks back in via sync replication mid-operation.
+            // Fall through to `SecItemUpdate` against the same item
+            // — that succeeds where add wouldn't.
+            log.info("Keychain SecItemAdd returned errSecDuplicateItem; falling back to SecItemUpdate")
+            let updateAttrs: [String: Any] = [
+                kSecValueData as String: data,
+                kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked
+            ]
+            let updateStatus = SecItemUpdate(baseAttrs as CFDictionary, updateAttrs as CFDictionary)
+            if updateStatus == errSecSuccess {
+                return verifyAfterWrite(id: id)
+            }
+            log.error("SecItemUpdate fallback failed status=\(updateStatus, privacy: .public) sync=\(synchronized, privacy: .public)")
+            return false
+        }
+        log.error("SecItemAdd failed status=\(addStatus, privacy: .public) sync=\(synchronized, privacy: .public)")
+        return false
+    }
+
+    /// Read-after-write probe so callers can distinguish "system
+    /// reported success" from "the data is actually retrievable."
+    /// Some Keychain failure modes still return errSecSuccess on
+    /// the write but the subsequent read finds nothing — usually a
+    /// keychain-access-group entitlement mismatch under a fresh
+    /// signing identity. Surfacing this turns silent regressions
+    /// into observable ones.
+    private static func verifyAfterWrite(id: UUID) -> Bool {
+        if password(for: id) != nil {
+            return true
+        }
+        log.error("Keychain write reported success but read-back found nothing for \(id, privacy: .private)")
+        return false
     }
 
     package static func password(for id: UUID) -> String? {

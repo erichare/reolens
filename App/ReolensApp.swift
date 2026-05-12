@@ -45,6 +45,35 @@ struct ReolensApp: App {
                 .onReceive(NotificationCenter.default.publisher(for: AppIntentFocus.didUpdate)) { _ in
                     store.applyPendingIntentFocus()
                 }
+                // TLS pinning mismatches surface as a global sheet so
+                // they can't be missed in any specific view. The sheet
+                // either records the new cert (user "trusts new") or
+                // cancels (connection stays rejected). AGENTS.md §3.
+                .sheet(item: Binding(
+                    get: { store.pendingTrustChange },
+                    set: { store.pendingTrustChange = $0 }
+                )) { request in
+                    TrustChangedSheet(request: request)
+                        .environment(store)
+                }
+                // Keychain write failures bubble up here as an alert
+                // so the user sees them instead of bouncing back to
+                // "No password on this Mac" silently after entering
+                // a password.
+                .alert(
+                    "Couldn't save password",
+                    isPresented: Binding(
+                        get: { store.passwordSaveError != nil },
+                        set: { isShown in if !isShown { store.passwordSaveError = nil } }
+                    ),
+                    presenting: store.passwordSaveError
+                ) { _ in
+                    Button("OK", role: .cancel) {
+                        store.passwordSaveError = nil
+                    }
+                } message: { err in
+                    Text(err.message)
+                }
         }
         .windowToolbarStyle(.unified(showsTitle: false))
         .commands {

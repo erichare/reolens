@@ -2,6 +2,40 @@ import Foundation
 import Observation
 import ReolinkAPI
 
+/// Surfaced when a Keychain password write silently fails — usually
+/// either a stale iCloud-synced item resisting deletion (now handled
+/// internally via SecItemUpdate fallback) or a keychain-access-group
+/// entitlement mismatch from a signing-identity change. Views
+/// observe `CameraStore.passwordSaveError` and present an alert,
+/// then clear the field by setting it back to nil.
+public struct PasswordSaveError: Sendable, Equatable, Identifiable {
+    public let deviceID: UUID
+    public let message: String
+
+    public var id: UUID { deviceID }
+
+    public init(deviceID: UUID, message: String) {
+        self.deviceID = deviceID
+        self.message = message
+    }
+}
+
+/// Snapshot of a notification-tap routing destination that points at
+/// a specific recording. Held briefly on `CameraStore` between the
+/// shell's selection-change handler and the RecordingsView's appear,
+/// then cleared.
+public struct PendingRecordingScroll: Sendable, Equatable {
+    public let deviceID: UUID
+    public let channel: Int
+    public let at: Date
+
+    public init(deviceID: UUID, channel: Int, at: Date) {
+        self.deviceID = deviceID
+        self.channel = channel
+        self.at = at
+    }
+}
+
 /// Persisted camera definition (no password — that's in Keychain).
 public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
     public let id: UUID
@@ -30,6 +64,19 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
     /// list are appended in the device's natural order. Empty means
     /// "show in natural order" — same effect as nothing-customized.
     public var channelOrder: [Int] = []
+    /// Base64-encoded SHA-256 of the leaf certificate's DER, recorded
+    /// on the first successful HTTPS handshake. Subsequent connections
+    /// verify against this and refuse on mismatch. nil means "not yet
+    /// recorded" (TOFU first-use). Added in 0.4.1. Forward-compatible
+    /// per AGENTS.md §7 — older apps decode-and-ignore this field;
+    /// newer apps tolerate it being absent.
+    public var tlsFingerprint: String? = nil
+    /// Channels where the user has hidden Reolens' in-tile app badges
+    /// (camera name, motion / AI icons) so the camera's own OSD
+    /// overlay isn't fought over. Per-channel because some channels
+    /// on a Hub may have OSD off (top-left clear) while others have
+    /// it on. Added in 0.4.1; forward-compatible decode-and-ignore.
+    public var hiddenAppBadgeChannels: Set<Int> = []
 
     public init(
         id: UUID = UUID(),
@@ -42,7 +89,9 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
         channelStreamRotations: [String: Int] = [:],
         dualLensOverrides: Set<Int> = [],
         gridPreset: GridPreset = .adaptive,
-        channelOrder: [Int] = []
+        channelOrder: [Int] = [],
+        tlsFingerprint: String? = nil,
+        hiddenAppBadgeChannels: Set<Int> = []
     ) {
         self.id = id
         self.displayName = displayName
@@ -55,6 +104,8 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
         self.dualLensOverrides = dualLensOverrides
         self.gridPreset = gridPreset
         self.channelOrder = channelOrder
+        self.tlsFingerprint = tlsFingerprint
+        self.hiddenAppBadgeChannels = hiddenAppBadgeChannels
     }
 
     /// Codable conformance: serialize the dict with String keys so JSON is round-trip clean.
@@ -64,7 +115,9 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
              channelStreamRotations,   // new: per-(channel, stream) rotation
              dualLensOverrides,
              gridPreset,
-             channelOrder
+             channelOrder,
+             tlsFingerprint,           // 0.4.1: TOFU TLS pinning
+             hiddenAppBadgeChannels    // 0.4.1: per-channel "hide app badges"
     }
 
     public init(from decoder: any Decoder) throws {
@@ -100,6 +153,12 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
         // Grid layout state — also optional for older files.
         self.gridPreset = (try? c.decode(GridPreset.self, forKey: .gridPreset)) ?? .adaptive
         self.channelOrder = (try? c.decode([Int].self, forKey: .channelOrder)) ?? []
+        // 0.4.1 fields: optional + default-empty, so older
+        // cameras.json files (or future schema revisions that drop
+        // them) deserialize cleanly per AGENTS.md §7.
+        self.tlsFingerprint = try? c.decodeIfPresent(String.self, forKey: .tlsFingerprint)
+        let hiddenBadgesList = (try? c.decode([Int].self, forKey: .hiddenAppBadgeChannels)) ?? []
+        self.hiddenAppBadgeChannels = Set(hiddenBadgesList)
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -115,6 +174,11 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
         try c.encode(Array(dualLensOverrides).sorted(), forKey: .dualLensOverrides)
         try c.encode(gridPreset, forKey: .gridPreset)
         try c.encode(channelOrder, forKey: .channelOrder)
+        try c.encodeIfPresent(tlsFingerprint, forKey: .tlsFingerprint)
+        // Encode hidden-badge channels even when empty, so a user's
+        // explicit "all visible" stays distinguishable from "never
+        // configured" in downstream tooling.
+        try c.encode(Array(hiddenAppBadgeChannels).sorted(), forKey: .hiddenAppBadgeChannels)
     }
 }
 
@@ -143,7 +207,16 @@ public final class CameraStore {
     public var developerMode: Bool {
         didSet { UserDefaults.standard.set(developerMode, forKey: Self.developerModeKey) }
     }
-    private static let developerModeKey = "com.reolens.developerMode"
+
+    /// Non-isolated peek at the developer-mode flag for code that
+    /// runs outside the MainActor (logging hooks in `CameraSession`
+    /// task continuations, background relay observers, etc.). Reads
+    /// directly from `UserDefaults` so it doesn't need to hop the
+    /// actor just to decide whether to emit a `.debug` log line.
+    public static var developerModeIsOn: Bool {
+        UserDefaults.standard.bool(forKey: developerModeKey)
+    }
+    static let developerModeKey = "com.reolens.developerMode"
     private static let cameraOrderKey = "com.reolens.cameraOrder"
 
     public init() {
@@ -221,6 +294,13 @@ public final class CameraStore {
     /// intent fires exactly one navigation.
     public var pendingIntentNavigation: AppIntentFocus.Target?
 
+    /// "Open the recordings tab and scroll-to-and-play this clip"
+    /// hint, set by `applyPendingIntentFocus` whenever a recording-
+    /// aged notification tap routes in. RecordingsView consumes
+    /// (and clears) it on appear. Added in 0.4.1 to deliver
+    /// notification-tap → exact-clip routing.
+    public var pendingRecordingScroll: PendingRecordingScroll?
+
     /// Apply any pending focus request written by `OpenCameraIntent`
     /// (Shortcuts / Siri) or by a notification tap. Called by each
     /// app's scene on launch and on foreground. Idempotent — consumes
@@ -232,15 +312,32 @@ public final class CameraStore {
         case .liveCamera(let id):
             guard cameras.contains(where: { $0.id == id }) else { return }
             selection = .device(id)
-        case .recording(let id, _, _):
+        case .recording(let id, let channelID, let at):
             guard cameras.contains(where: { $0.id == id }) else { return }
-            // We don't change `selection` for recording targets — the
-            // shells route to their own Recordings sections instead.
-            // Leaving `selection` alone keeps the user's prior choice
-            // in the sidebar.
-            break
+            // Surface the user straight into the channel's Recordings
+            // tab + auto-play the closest clip. `pendingRecordingScroll`
+            // is consumed by `RecordingsView` on appear; `selection`
+            // points to the specific channel so the shell's
+            // sidebar/tab routing lands the user on the right view.
+            selection = .channel(deviceID: id, channel: channelID)
+            pendingRecordingScroll = PendingRecordingScroll(
+                deviceID: id,
+                channel: channelID,
+                at: at
+            )
         }
         pendingIntentNavigation = target
+    }
+
+    /// Read-and-clear accessor for `pendingRecordingScroll`. Used by
+    /// `RecordingsView` on appear so the scroll target only triggers
+    /// once per notification tap.
+    public func consumePendingRecordingScroll(deviceID: UUID, channel: Int) -> Date? {
+        guard let pending = pendingRecordingScroll,
+              pending.deviceID == deviceID,
+              pending.channel == channel else { return nil }
+        pendingRecordingScroll = nil
+        return pending.at
     }
 
     public func add(_ entry: CameraEntry, password: String) {
@@ -279,9 +376,30 @@ public final class CameraStore {
     /// would stay on the "No password" placeholder until a manual
     /// navigate-away-and-back. Writing to the observable `sessions`
     /// dictionary closes that gap.
-    public func setPassword(_ password: String, for id: CameraEntry.ID) {
-        guard cameras.contains(where: { $0.id == id }) else { return }
-        Keychain.set(password: password, for: id)
+    @discardableResult
+    public func setPassword(_ password: String, for id: CameraEntry.ID) -> Bool {
+        guard cameras.contains(where: { $0.id == id }) else { return false }
+        let saved = Keychain.set(password: password, for: id)
+        if !saved {
+            // Surface the failure so the UI can show an error instead
+            // of silently going back to "No password on this Mac".
+            // `passwordSaveError` is observable; views present it via
+            // an alert.
+            let message: String
+            #if os(macOS)
+            message = """
+                The system Keychain rejected the password write.
+
+                If you're running a locally-built Reolens (./Scripts/build-app.sh) and you previously enabled iCloud Keychain Sync, that's the cause — ad-hoc-signed dev builds don't have the iCloud-Keychain entitlement. Turn off iCloud Keychain Sync in Settings → Privacy, or use the Developer-ID-signed release DMG.
+
+                Otherwise, run \u{0060}log show --predicate 'subsystem == "com.reolens.Reolens" AND category == "Keychain"' --info --last 5m\u{0060} in Terminal to see the exact OSStatus.
+                """
+            #else
+            message = "The iOS Keychain rejected the password write. If you've enabled iCloud Keychain Sync, try turning it off in Settings → iCloud Keychain Sync and entering the password again."
+            #endif
+            passwordSaveError = PasswordSaveError(deviceID: id, message: message)
+            return false
+        }
         // Tear down the existing session (if any) so a stale one with the
         // old password doesn't keep serving from cache.
         if let existing = sessions.removeValue(forKey: id) {
@@ -291,7 +409,14 @@ public final class CameraStore {
         // value and writes the resulting CameraSession into `sessions`.
         // That write is observed by any view rendering this device.
         _ = session(for: id)
+        return true
     }
+
+    /// Latest password-save failure, surfaced from `setPassword(_:for:)`
+    /// when Keychain reports the write succeeded but the read-back
+    /// finds nothing (or both add and update outright fail). Views
+    /// observe and present as an alert, then clear. Added in 0.4.1.
+    public var passwordSaveError: PasswordSaveError?
 
     /// Reset the session for a camera without touching its Keychain
     /// entry. Used by the "Reconnect" context-menu action when a
@@ -374,6 +499,24 @@ public final class CameraStore {
 
     private static func rotationKey(channel: Int, stream: StreamKind) -> String {
         "\(channel):\(stream.rawValue)"
+    }
+
+    /// Whether the user has hidden Reolens' in-tile badges (camera
+    /// name, motion / AI dots) for this channel. Per-channel so
+    /// users with mixed-OSD setups (some channels with OSD on, some
+    /// off) can hide badges only on the ones that clash. New in 0.4.1.
+    public func isAppBadgeHidden(deviceID: UUID, channel: Int) -> Bool {
+        cameras.first(where: { $0.id == deviceID })?.hiddenAppBadgeChannels.contains(channel) ?? false
+    }
+
+    public func setAppBadgeHidden(_ hidden: Bool, deviceID: UUID, channel: Int) {
+        guard let i = cameras.firstIndex(where: { $0.id == deviceID }) else { return }
+        if hidden {
+            cameras[i].hiddenAppBadgeChannels.insert(channel)
+        } else {
+            cameras[i].hiddenAppBadgeChannels.remove(channel)
+        }
+        save()
     }
 
     /// User-set dual-lens override for a given channel. Empty when the user
@@ -488,7 +631,8 @@ public final class CameraStore {
             password: password,
             useHTTPS: entry.useHTTPS
         )
-        let session = CameraSession(entry: entry, credentials: creds)
+        let tlsPolicy = makeTLSPolicy(for: id, expecting: entry.tlsFingerprint)
+        let session = CameraSession(entry: entry, credentials: creds, tlsPolicy: tlsPolicy)
         // Inject the store's persistent dual-lens override map so the
         // session can answer `isDualLens(channel:)` correctly when the
         // hub doesn't tell us via `typeInfo`.
@@ -498,6 +642,64 @@ public final class CameraStore {
         sessions[id] = session
         return session
     }
+
+    /// Per-camera TLS pinning policy. First-use HTTPS handshake
+    /// records the leaf cert's fingerprint to the entry; subsequent
+    /// mismatches surface via `pendingTrustChange` so a SwiftUI sheet
+    /// can present the user's "Trust new cert" / "Cancel" choice.
+    /// HTTP-only entries fall through to `alwaysAccept` since the
+    /// delegate is never consulted on plain HTTP.
+    private func makeTLSPolicy(for id: CameraEntry.ID, expecting fingerprint: String?) -> TLSPinningPolicy {
+        // Weak self avoids retain cycles; the policy is held by the
+        // CGIClient's URLSession delegate for the session lifetime.
+        TLSPinningPolicy(
+            expectedFingerprint: fingerprint,
+            onObserved: { [weak self] fp in
+                Task { @MainActor [weak self] in
+                    self?.recordTLSFingerprint(fp, for: id)
+                }
+            },
+            onMismatch: { [weak self] expected, observed in
+                Task { @MainActor [weak self] in
+                    self?.pendingTrustChange = TrustChangeRequest(
+                        deviceID: id,
+                        expected: expected,
+                        observed: observed
+                    )
+                }
+            }
+        )
+    }
+
+    /// Persist the just-observed leaf-cert fingerprint to the entry.
+    /// Idempotent: writing the same fingerprint is a no-op, so the
+    /// callback can fire on every connection without thrashing the
+    /// iCloud sync.
+    public func recordTLSFingerprint(_ fingerprint: String, for id: CameraEntry.ID) {
+        guard let i = cameras.firstIndex(where: { $0.id == id }) else { return }
+        guard cameras[i].tlsFingerprint != fingerprint else { return }
+        cameras[i].tlsFingerprint = fingerprint
+        save()
+    }
+
+    /// Clear the stored fingerprint so the next successful connect
+    /// re-records (used by the trust-change sheet's "Trust new cert"
+    /// confirmation). Also tears down the cached session so the new
+    /// pinning policy takes effect on next access.
+    public func clearTLSFingerprint(for id: CameraEntry.ID) {
+        guard let i = cameras.firstIndex(where: { $0.id == id }) else { return }
+        cameras[i].tlsFingerprint = nil
+        save()
+        if let existing = sessions.removeValue(forKey: id) {
+            Task { await existing.disconnect() }
+        }
+        _ = session(for: id)
+    }
+
+    /// Latest TLS trust-change event for the foreground UI to surface
+    /// as a sheet. The view that observes this resets it to nil after
+    /// the user chooses (accept new cert / cancel).
+    public var pendingTrustChange: TrustChangeRequest?
 
     private func load() {
         guard let data = ICloudCameraStorage.shared.read(),

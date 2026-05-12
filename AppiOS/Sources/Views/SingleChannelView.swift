@@ -39,9 +39,12 @@ struct SingleChannelView: View {
     @State private var pipObservable: PiPObservable?
     @State private var controlsVisible: Bool = true
     @State private var showingFullscreen: Bool = false
+    @State private var selectedTab: Int = 0
+    @State private var pendingRecordingScroll: Date?
+    @Environment(CameraStore.self) private var store
 
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             LiveTab(
                 session: session,
                 channel: channel,
@@ -59,10 +62,25 @@ struct SingleChannelView: View {
                 pausedForFullscreen: showingFullscreen
             )
             .tabItem { Label("Live", systemImage: "play.rectangle.fill") }
-            RecordingsView(session: session, channel: channel)
-                .tabItem { Label("Recordings", systemImage: "clock.arrow.circlepath") }
+            .tag(0)
+            RecordingsView(
+                session: session,
+                channel: channel,
+                scrollTarget: pendingRecordingScroll
+            )
+            .tabItem { Label("Recordings", systemImage: "clock.arrow.circlepath") }
+            .tag(1)
             ChannelSettingsView(session: session, channel: channel)
                 .tabItem { Label("Settings", systemImage: "gearshape") }
+                .tag(2)
+        }
+        // Recording-aged notification taps land here pre-routed by
+        // the shell's selection-handler; flip to the Recordings tab
+        // and pass the timestamp down so the inner RecordingsView
+        // auto-plays the clip.
+        .onAppear { consumeRecordingScrollIfAny() }
+        .onChange(of: channel.channel) { _, _ in
+            consumeRecordingScrollIfAny()
         }
         .navigationTitle(channel.name ?? "Channel \(channel.channel + 1)")
         .navigationBarTitleDisplayMode(.inline)
@@ -103,6 +121,19 @@ struct SingleChannelView: View {
             cameraName: session.entry.displayName,
             channelID: channel.channel
         )
+    }
+
+    /// If a notification tap has stashed a recording target for this
+    /// channel, flip to the Recordings tab and propagate the
+    /// timestamp into the inner `RecordingsView`.
+    private func consumeRecordingScrollIfAny() {
+        if let at = store.consumePendingRecordingScroll(
+            deviceID: session.entry.id,
+            channel: channel.channel
+        ) {
+            pendingRecordingScroll = at
+            selectedTab = 1
+        }
     }
 
     /// Lazily-constructed PiP toolbar. While no controller exists, the

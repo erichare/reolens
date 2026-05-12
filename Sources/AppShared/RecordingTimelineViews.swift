@@ -107,6 +107,12 @@ public struct DayTimelineStrip: View {
     public let events: [TimestampedAIEvent]
     public let onTapSegment: (SearchFile) -> Void
 
+    /// X-position (in strip-local pixels) the user is currently
+    /// hovering / scrubbing. Drives the time-cursor overlay added in
+    /// 0.4.1 — phase-two of the recordings timeline.
+    @State private var scrubX: CGFloat?
+    @State private var stripWidth: CGFloat = 0
+
     public init(
         day: Date,
         files: [SearchFile],
@@ -155,9 +161,37 @@ public struct DayTimelineStrip: View {
                                 .accessibilityHidden(true)
                         }
                     }
+                    // Scrub cursor — vertical line at the current
+                    // drag position, surfaced when the user is
+                    // actively scrubbing across the strip. Added in
+                    // 0.4.1 as phase-two of the timeline.
+                    if let x = scrubX {
+                        Rectangle()
+                            .fill(.primary.opacity(0.85))
+                            .frame(width: 1.5, height: 26)
+                            .offset(x: max(0, min(x, geo.size.width - 1.5)))
+                            .accessibilityHidden(true)
+                    }
                 }
+                .contentShape(.rect)
+                .onAppear { stripWidth = geo.size.width }
+                .onChange(of: geo.size.width) { _, newWidth in stripWidth = newWidth }
+                .gesture(scrubGesture(width: geo.size.width))
             }
             .frame(height: 22)
+            .overlay(alignment: .top) {
+                if let x = scrubX, dayInterval > 0, stripWidth > 0 {
+                    let fraction = max(0, min(1, x / stripWidth))
+                    let scrubTime = startOfDay.addingTimeInterval(dayInterval * Double(fraction))
+                    Text(scrubTime, format: .dateTime.hour().minute().second())
+                        .font(.caption2.weight(.medium).monospacedDigit())
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.regularMaterial, in: Capsule())
+                        .offset(x: max(0, min(x - 32, stripWidth - 64)), y: -22)
+                        .accessibilityHidden(true)
+                }
+            }
 
             // Hour-tick labels — 0, 6, 12, 18, 24 — quick orientation
             // for the strip without rendering full chrome.
@@ -182,6 +216,48 @@ public struct DayTimelineStrip: View {
     private struct SegmentFrame {
         let x: CGFloat
         let width: CGFloat
+    }
+
+    /// DragGesture used to scrub a cursor across the strip. While
+    /// scrubbing, `scrubX` drives a time-cursor overlay; on release,
+    /// if the scrub landed on a file, we trigger playback. This
+    /// gives the user a more controllable "jump to a point in the
+    /// day" idiom than the tap-each-segment-individually model.
+    private func scrubGesture(width: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                scrubX = value.location.x
+            }
+            .onEnded { value in
+                defer { scrubX = nil }
+                guard width > 0 else { return }
+                let fraction = max(0, min(1, value.location.x / width))
+                let cal = Calendar.current
+                let startOfDay = cal.startOfDay(for: day)
+                let endOfDay = cal.date(byAdding: .day, value: 1, to: startOfDay) ?? startOfDay
+                let dayInterval = endOfDay.timeIntervalSince(startOfDay)
+                let scrubbedTime = startOfDay.addingTimeInterval(dayInterval * Double(fraction))
+                // Containment first — play the file that includes
+                // this exact time. Falls back to nearest start if
+                // the user landed in a gap (and the closest is within
+                // a 90-second window — beyond that, treat the gap as
+                // empty and don't auto-play anything stale).
+                if let containing = files.first(where: { file in
+                    guard let s = file.startDate, let e = file.endDate else { return false }
+                    return s <= scrubbedTime && scrubbedTime <= e
+                }) {
+                    onTapSegment(containing)
+                    return
+                }
+                let withinWindow: TimeInterval = 90
+                let nearest = files.compactMap { file -> (SearchFile, TimeInterval)? in
+                    guard let s = file.startDate else { return nil }
+                    return (file, abs(s.timeIntervalSince(scrubbedTime)))
+                }
+                if let (closest, dist) = nearest.min(by: { $0.1 < $1.1 }), dist < withinWindow {
+                    onTapSegment(closest)
+                }
+            }
     }
 
     private func frame(for file: SearchFile, startOfDay: Date, dayInterval: TimeInterval, width: CGFloat) -> SegmentFrame? {

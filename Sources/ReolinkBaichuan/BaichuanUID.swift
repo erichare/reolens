@@ -23,7 +23,11 @@ extension BaichuanClient {
         do {
             let reply = try await sendAndAwait(request, timeout: 4, stage: "getUID")
             let body = String(data: reply.body, encoding: .utf8) ?? ""
-            log.info("UID reply (channel=\(channelID) code=\(reply.header.responseCode)): \(body.prefix(300), privacy: .public)")
+            // UID reply body carries the camera's globally-unique
+            // hardware identifier. Diagnostic only; `.private` +
+            // `.debug` so it doesn't surface in sysdiagnose for
+            // ordinary users.
+            log.debug("UID reply (channel=\(channelID) code=\(reply.header.responseCode)): \(body.prefix(300), privacy: .private)")
             return BcXmlBody.firstTagContent(in: body, tag: "uid")
                 ?? BcXmlBody.firstTagContent(in: body, tag: "Uid")
                 ?? ""

@@ -98,8 +98,9 @@ private func parseDate(_ v: AnyJSON) -> Date? {
 
 public extension DetectionType {
     /// Map common Reolink string labels (from `GetAiState`/`aiType`/etc.) to
-    /// our enum.
-    package static func fromReolinkString(_ s: String) -> DetectionType? {
+    /// our enum. Public so the iOS app's CloudKit push handler can
+    /// decode relayed motion-event detection strings.
+    static func fromReolinkString(_ s: String) -> DetectionType? {
         switch s.lowercased() {
         case "motion", "md": .motion
         case "people", "person", "human": .person

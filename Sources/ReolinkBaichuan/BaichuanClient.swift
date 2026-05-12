@@ -77,7 +77,9 @@ public actor BaichuanClient {
         guard connection == nil else { return }
         let host = NWEndpoint.Host(credentials.host)
         let port = NWEndpoint.Port(rawValue: credentials.port) ?? .init(integerLiteral: 9000)
-        log.info("Connecting to \(self.credentials.host, privacy: .public):\(self.credentials.port)")
+        // Host is the user's LAN endpoint — `.private` so it's
+        // elided in sysdiagnose / Console.app exports.
+        log.info("Connecting to \(self.credentials.host, privacy: .private):\(self.credentials.port)")
         let conn = NWConnection(host: host, port: port, using: .tcp)
         self.connection = conn
 
@@ -159,8 +161,12 @@ public actor BaichuanClient {
             continuation.finish()
         }
 
-        // Send synchronously (still actor-isolated).
-        log.info("TX msgNum=\(msgNum) stage=\(stage, privacy: .public) bytes=\(bytes.count) hex=\(bytes.prefix(20).map { String(format: "%02x", $0) }.joined(separator: " "), privacy: .public)")
+        // Send synchronously (still actor-isolated). Hex dump is
+        // diagnostic-only; mark `.private` so it doesn't leak the
+        // protocol's auth state into sysdiagnose, and drop to
+        // `.debug` so it only fires when developers enable
+        // subsystem-level verbose logging.
+        log.debug("TX msgNum=\(msgNum) stage=\(stage, privacy: .public) bytes=\(bytes.count) hex=\(bytes.prefix(20).map { String(format: "%02x", $0) }.joined(separator: " "), privacy: .private)")
         do {
             try await sendRaw(bytes, via: connection)
             log.info("TX done msgNum=\(msgNum)")
@@ -231,7 +237,9 @@ public actor BaichuanClient {
             totalBytesReceived += data.count
             if totalBytesReceived <= 1024 {
                 let hex = data.prefix(40).map { String(format: "%02x", $0) }.joined(separator: " ")
-                log.info("RX \(data.count) bytes (total=\(self.totalBytesReceived)): \(hex, privacy: .public)\(data.count > 40 ? "..." : "")")
+                // Hex dump is diagnostic-only; mark `.private` so it
+                // doesn't surface protocol bytes in sysdiagnose.
+                log.debug("RX \(data.count) bytes (total=\(self.totalBytesReceived)): \(hex, privacy: .private)\(data.count > 40 ? "..." : "")")
             }
             readBuffer.append(data)
             while !readBuffer.isEmpty {

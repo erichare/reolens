@@ -111,6 +111,16 @@ let package = Package(
             name: "ReolensE2ETests",
             dependencies: ["ReolinkAPI"],
             path: "Tests/ReolensE2ETests"
+        ),
+        // AppShared privacy / sync semantics tests. The protocol
+        // tests cover Reolink wire format; this target covers the
+        // app's *differentiator* — Keychain sync, notification
+        // routing, log redaction, preview-cache atomicity, and the
+        // recording-downloader URL-leak prevention. AGENTS.md §12.
+        .testTarget(
+            name: "AppSharedTests",
+            dependencies: ["AppShared", "ReolinkAPI"],
+            path: "Tests/AppSharedTests"
         )
     ]
 )

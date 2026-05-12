@@ -109,6 +109,10 @@ When you bump the schema, write the migration in the PR description.
 - Choose log levels deliberately: `.debug` for developer-only signal, `.info` for user-relevant events, `.error` for failures the user might see, `.fault` for invariant violations.
 - Subsystems should be the bundle ID; categories should describe the subsystem (e.g. `category: "RTSP"`, `category: "iCloudSync"`).
 - Credentials, tokens, full URLs with auth, or hostnames the user explicitly enters: never logged.
+- **Use `LogRedaction.redact(_:)`** for any URL going through unified logging. Don't `\(url.absoluteString, privacy: .public)` — RTSP URLs embed `user:password@host`, and CGI URLs embed `token=` / `user=` / `password=` query params. The helper drops userInfo and sensitive query items while preserving the LAN host + path for diagnosis.
+- **User-visible error strings must never carry URLs.** Internal log line gets the redacted URL with `privacy: .public`; user-facing message gets a status code or short error name only.
+- **Raw protocol payloads** (`GetChannelstatus` / `GetEvents` JSON, Baichuan `findAlarmVideo` reply bodies, RTSP DESCRIBE / SDP bodies, hex dumps of TX/RX frames) carry hardware UIDs and other fingerprinting data — gate behind `CameraStore.developerModeIsOn`, emit at `.debug`, and mark the payload itself `privacy: .private`. Operational metadata (status code, length, count) can stay `.public` for support purposes.
+- **Hostnames and subnet prefixes** are LAN-fingerprint material — `privacy: .private` for IP / hostname interpolations even though the log line stays at `.info`. Apple's unified-logging redaction handles the elision in sysdiagnose / Console.app exports.
 
 ## 12. Testing
 

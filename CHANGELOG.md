@@ -7,6 +7,197 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-05-12
+
+A trust-and-polish release on top of 0.4.0. Headlines: **CloudKit
+motion-event relay** for iOS background notifications (no Reolens
+server — events ride through the user's own iCloud account),
+**trust-on-first-use TLS pinning** for HTTPS cameras, a **logging
+redaction sweep** to close gaps between AGENTS.md §11's promise
+and reality, two **real bugs from 0.4.0 user feedback** (macOS
+camera-switching, iPad/iPhone sidebar showing only the device), and
+the **notification-tap → exact-clip routing** that the 0.4.0
+release notes acknowledged was still landing broadly.
+
+### Added
+
+- **CloudKit motion-event relay (push notifications to iPhone /
+  iPad).** New shared `MotionEventRelay` infrastructure in
+  `AppShared` (`MotionEvent`, `CloudKitMotionEventPublisher`,
+  `CloudKitMotionEventSubscriber`). The macOS app (running 24/7 in
+  menu-bar mode shipped in 0.4.0) writes motion / AI events to the
+  user's *private* CloudKit database; iOS subscribes via
+  `CKQuerySubscription` and posts a local notification when CloudKit
+  delivers a silent push. **No Reolens server — events ride
+  through Apple's CloudKit under the user's own iCloud account**
+  (AGENTS.md §5). Opt-in via Settings → Privacy → "Relay motion
+  events to my other Apple devices" on the macOS app. iOS app
+  installs the subscription idempotently on every launch (opt-out
+  via `MotionEventRelaySettings.subscriberEnabledKey`). CloudKit
+  silent-push delivery is throttled by Apple for free-tier
+  accounts; busy households may not receive every event but the
+  steady stream is preserved.
+- **Trust-on-first-use TLS pinning** for HTTPS cameras. New
+  `TLSPinningPolicy` in `ReolinkAPI` records the leaf cert's
+  SHA-256 on the first successful HTTPS handshake; subsequent
+  connections reject any mismatch. Mismatch surfaces as a global
+  modal (`TrustChangedSheet`) with the expected vs. observed
+  fingerprints and "Cancel" / "Trust new certificate" actions —
+  hard block per AGENTS.md §3. HTTP-only cameras skip pinning.
+  Schema bump: optional `CameraEntry.tlsFingerprint: String?`,
+  forward-compatible (older apps decode-and-ignore).
+- **Per-channel sidebar rows on iPad / iPhone**, matching the macOS
+  `DeviceSidebarRow` behavior since 0.3. Multi-channel hubs / NVRs
+  expand into a `DisclosureGroup` of channels; tapping a channel
+  opens its single-channel detail directly. `SidebarSection.channel`
+  case added to `iPadSplitShell.SidebarSection`.
+- **Notification-tap → exact-clip routing.** Tapping a
+  recording-aged motion notification (>60 s old) now drills into
+  the camera's Recordings tab and auto-plays the clip whose time
+  range contains the event (or the closest clip by start time).
+  New `PendingRecordingScroll` struct on `CameraStore` holds the
+  hand-off between the shell's intent-routing handler and the
+  inner `RecordingsView.scrollTarget` parameter; both consumed
+  read-once.
+- **Hide-app-badges toggle in Channel Settings.** New per-channel
+  preference (`CameraEntry.hiddenAppBadgeChannels: Set<Int>`,
+  forward-compatible schema) and a "Show app badges over video"
+  toggle in Channel Settings → Overlay. Hides the in-tile camera
+  name + motion / AI icons for users who want the cleanest possible
+  image, or whose camera OSD overlaps the upper-left.
+- **Local-network camera discovery on iOS.** `AddCameraView` gains a
+  "Scan local network for cameras" entry that opens a discovery
+  sheet powered by the existing `CameraDiscovery` actor (Bonjour +
+  HTTP /24 sweep). Picking a discovered device prefills the host
+  and display name. The "v0.2 ships manual entry only" copy is
+  gone. iOS Local Network permission prompt now fires in the right
+  context.
+- **Time-cursor scrub overlay on the recording timeline.** Drag
+  across the day's segment strip to surface a live time-cursor
+  with the current scrub position; release inside a segment plays
+  that clip, release near a segment (≤90 s) plays the closest.
+  Phase one of the recordings timeline shipped in 0.4.0; the full
+  thumbnail-preview-on-scrub + cross-segment seek is on the 0.5
+  roadmap (requires replacing AVPlayerView with a custom AVPlayer-
+  backed scrubber).
+- **`Tests/AppSharedTests/`** target. 22 new Swift Testing tests
+  covering `LogRedaction` round-trip, `TLSPinningPolicy`
+  fingerprint computation, `AppIntentFocus` notification routing,
+  `CameraEntry` Codable schema (forward + backward compatible),
+  `PendingRecordingScroll` equality, and `CameraPreviewService`
+  atomic-write + purge contracts. Total test count 74 → 96.
+
+### Fixed
+
+- **macOS: switching cameras in the sidebar leaves the live view
+  stuck on the previous camera until you tab to Recordings or
+  Settings and back.** Root cause: `ChannelDetailContent.liveTab`
+  didn't `.id(channel.channel)` its inner `LiveCameraTile`, so
+  SwiftUI treated the tile as the same view across channel changes;
+  the persisting `@State` `player` kept showing the previous
+  camera's RTSP stream, and the `.task(id: channel.channel)`
+  guard short-circuited the restart because `didStart` was still
+  true from the previous channel. Added the missing `.id(...)`
+  and a defensive copy on the iOS `SingleChannelView`.
+- **iPad / iPhone sidebar shows only the device row** ("Home Hub"),
+  not the individual cameras the device exposes. Now expands into
+  a per-channel list — same idiom macOS has had since 0.3. iPhone
+  Live tab uses the same `DisclosureGroup` idiom too.
+- **Dev build crash when CloudKit relay is enabled.**
+  `CKContainer.init(identifier:)` calls Apple's
+  `EXC_BREAKPOINT` trap when the running binary lacks the iCloud-
+  container entitlement — observed on ad-hoc-signed
+  `./Scripts/build-app.sh` outputs whose `Reolens.dev.entitlements`
+  deliberately drop iCloud to keep AMFI happy. Wrapped both the
+  publisher and subscriber paths in a `CloudKitAvailability` probe
+  (`FileManager.default.url(forUbiquityContainerIdentifier:)` —
+  doesn't trap, just returns nil) so dev builds silently no-op
+  instead of crashing. The Settings toggle is also disabled with
+  an explanatory note when iCloud isn't reachable, so users on
+  dev builds see the "install the DMG" hint rather than a mystery
+  crash.
+- **"No password on this Mac" persisted after entering a password.**
+  Root cause: `Keychain.set` silently swallowed `SecItemAdd`
+  failures (most commonly `errSecDuplicateItem` from a stale
+  iCloud-synced item that `delete`'s `kSecAttrSynchronizableAny`
+  didn't reach). Now falls back to `SecItemUpdate` on duplicate,
+  reads the password back after every write to verify, and bubbles
+  failures up via a new `CameraStore.passwordSaveError` published
+  property → user-visible alert on both platforms. Silent password-
+  save regressions become observable.
+
+### Changed
+
+- **Logging redaction sweep across protocol + app layers.** Every
+  URL going through unified logging now flows through a new
+  `LogRedaction.redact(_:)` helper that strips embedded
+  `user:password@host` userInfo segments and elides sensitive
+  query parameters (`token`, `user`, `password`) with the
+  ASCII placeholder `REDACTED`. Defense-in-depth regex scrub
+  applies on the result so even malformed-but-URL-encodable
+  inputs can't leak credentials. Specifically:
+  - `LiveVideoPlayer.swift:174` no longer logs the bare
+    `rtsp://user:password@host/...` URL.
+  - `RecordingDownloader` failure messages no longer carry the
+    download URL — that's logged internally with redaction; the
+    user-visible error gets the status code only.
+  - `CameraSession.swift:128` raw `GetChannelstatus` payload now
+    gated behind `CameraStore.developerModeIsOn` and emitted at
+    `.debug` with `.private` privacy.
+  - `RecordingsView.swift:581` `GetEvents` raw response —
+    same treatment.
+  - `CameraDiscovery.swift:62` subnet prefix marked `.private`.
+  - Baichuan TX/RX hex dumps, UID replies, alarm-video reply
+    bodies, nonces, RTSP DESCRIBE / SETUP / PLAY URIs — all
+    marked `.private`, raw bodies demoted to `.debug`.
+  - AGENTS.md §11 amended to codify the new rules (URL helper,
+    user-visible error strings without URLs, dev-mode-gated raw
+    payloads, `.private` on hostnames / subnets).
+- `Sources/AppShared/CameraStore.swift` — `CameraEntry` schema
+  gains `tlsFingerprint` and `hiddenAppBadgeChannels` fields,
+  both forward-compatible.
+- `Sources/ReolinkAPI/CGIClient.swift` —
+  `PermissiveTLSDelegate` replaced with `PinningTLSDelegate`
+  consuming a `TLSPinningPolicy`. `CGIClient.init` takes a
+  policy parameter (default `.alwaysAccept` for tests / legacy
+  call sites).
+- `EventNotifier.notify(...)` on macOS now publishes the event to
+  CloudKit *before* the local-notification gates, so an opted-in
+  Mac with locally-muted notifications still relays to iPhone /
+  iPad. Per-tag + master AI / motion mutes apply to both local
+  and relayed notifications.
+- iOS `aps-environment` entitlement set to `production`, plus
+  `remote-notification` added to `UIBackgroundModes`, so CloudKit
+  silent pushes wake the app. macOS entitlements gain `CloudKit`
+  under `com.apple.developer.icloud-services`.
+- `AppiOS/README.md` refreshed for the 0.4.x state — parity
+  bullets, iOS-only carve-outs, and the 0.5 roadmap.
+
+### Security
+
+- **TLS pinning is a hard block on mismatch** (not a warning).
+  AGENTS.md §3 — TLS changes require explicit user re-consent. The
+  trust-changed sheet surfaces both fingerprints for out-of-band
+  verification before the user accepts the new cert.
+- Logging redaction sweep eliminated five enumerated leak sites
+  from the 0.4.0 audit plus several others spotted while sweeping.
+  Run `os_log show --predicate 'subsystem == "com.reolens.app" or
+  subsystem == "com.reolens.Reolens"'` on a session that includes
+  a download failure to verify no `user:` / `password=` / `token=`
+  values appear.
+
+### Deferred to 0.5
+
+- Full custom recording scrubber with thumbnail-preview while
+  dragging and cross-segment seek. Requires replacing the system
+  `AVPlayerView` with a custom `AVPlayer`-backed scrubber UI
+  that fetches keyframes via `AVAssetImageGenerator` against
+  cached MP4s.
+- Home Screen / Lock Screen / Control Center widgets and iOS Live
+  Activities (deferred from 0.4.0).
+- Stage Manager / multi-window iPad (deferred from 0.4.0).
+- "Overnight digest" notification + widget (deferred from 0.4.0).
+
 ## [0.4.0] — 2026-05-12
 
 The "see further, see faster" release. 0.3.0 brought parity across
@@ -521,7 +712,8 @@ First public release.
 - All camera passwords stored in the macOS Keychain — never in plain text
 - No analytics, no telemetry, no accounts
 
-[Unreleased]: https://github.com/jestatsio/reolens/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/jestatsio/reolens/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/jestatsio/reolens/releases/tag/v0.4.1
 [0.4.0]: https://github.com/jestatsio/reolens/releases/tag/v0.4.0
 [0.3.0]: https://github.com/jestatsio/reolens/releases/tag/v0.3.0
 [0.2.3]: https://github.com/jestatsio/reolens/releases/tag/v0.2.3

@@ -23,6 +23,12 @@ struct iPadSplitShell: View {
         case devices
         case settings
         case device(UUID)
+        /// A specific channel under a multi-channel hub / NVR.
+        /// macOS sidebar has had this since 0.3 via
+        /// `DeviceSidebarRow`'s DisclosureGroup — iPad caught up in
+        /// 0.4.1 so a Reolink hub's individual cameras are
+        /// addressable from the sidebar.
+        case channel(deviceID: UUID, channel: Int)
     }
 
     var body: some View {
@@ -41,35 +47,7 @@ struct iPadSplitShell: View {
                 if !store.cameras.isEmpty {
                     Section("Cameras") {
                         ForEach(store.orderedCameras()) { entry in
-                            Label(entry.displayName, systemImage: "video.fill")
-                                .tag(SidebarSection.device(entry.id))
-                                .opacity(draggingDevice == entry.id ? 0.35 : 1.0)
-                                .jiggle(isActive: isReorderingCameras)
-                                .onLongPressGesture(minimumDuration: 0.7) {
-                                    if !isReorderingCameras {
-                                        withAnimation(.easeIn(duration: 0.2)) {
-                                            isReorderingCameras = true
-                                        }
-                                    }
-                                }
-                                .draggable(DeviceDragPayload(deviceID: entry.id)) {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "video.fill")
-                                            .foregroundStyle(.white)
-                                        Text(entry.displayName)
-                                            .foregroundStyle(.white)
-                                            .lineLimit(1)
-                                    }
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 6)
-                                    .background(.black.opacity(0.85), in: .rect(cornerRadius: 6))
-                                    .onAppear { draggingDevice = entry.id }
-                                    .onDisappear { draggingDevice = nil }
-                                }
-                                .dropDestination(for: DeviceDragPayload.self) { payload, _ in
-                                    guard let source = payload.first, source.deviceID != entry.id else { return false }
-                                    return store.reorderCamera(source: source.deviceID, before: entry.id)
-                                }
+                            cameraRow(for: entry)
                         }
                     }
                 }
@@ -119,14 +97,89 @@ struct iPadSplitShell: View {
             switch target {
             case .liveCamera(let deviceID):
                 selectedSection = .device(deviceID)
-            case .recording:
-                // Recording tap → land on the Recordings section.
-                // The user picks the camera from there; drilling all
-                // the way to the matching clip is a 0.3.x follow-up.
-                selectedSection = .recordings
+            case .recording(let deviceID, let channelID, _):
+                // Drill straight into the channel's detail; the inner
+                // SingleChannelView reads `pendingRecordingScroll`
+                // off the store on appear, flips to its Recordings
+                // tab, and auto-plays the closest clip.
+                selectedSection = .channel(deviceID: deviceID, channel: channelID)
             }
             store.pendingIntentNavigation = nil
         }
+    }
+
+    /// Sidebar row for a single device. Multi-channel hubs / NVRs
+    /// render as a `DisclosureGroup` so the user can drill into a
+    /// specific channel directly from the sidebar — mirrors how the
+    /// macOS `DeviceSidebarRow` has worked since 0.3.
+    @ViewBuilder
+    private func cameraRow(for entry: CameraEntry) -> some View {
+        let session = store.session(for: entry.id)
+        // Reolink Home Hub reports all 24 paired-camera slots even
+        // when most are empty. Empty slots have no name and no
+        // typeInfo — filter so the sidebar doesn't fill up with
+        // 24 useless "Channel N" entries.
+        let channels = (session?.channels ?? []).filter { ch in
+            (ch.name?.isEmpty == false) || (ch.typeInfo?.isEmpty == false)
+        }
+        let deviceLabel = Label(entry.displayName, systemImage: "video.fill")
+            .opacity(draggingDevice == entry.id ? 0.35 : 1.0)
+            .jiggle(isActive: isReorderingCameras)
+            .onLongPressGesture(minimumDuration: 0.7) {
+                if !isReorderingCameras {
+                    withAnimation(.easeIn(duration: 0.2)) {
+                        isReorderingCameras = true
+                    }
+                }
+            }
+            .draggable(DeviceDragPayload(deviceID: entry.id)) {
+                HStack(spacing: 6) {
+                    Image(systemName: "video.fill")
+                        .foregroundStyle(.white)
+                    Text(entry.displayName)
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.black.opacity(0.85), in: .rect(cornerRadius: 6))
+                .onAppear { draggingDevice = entry.id }
+                .onDisappear { draggingDevice = nil }
+            }
+            .dropDestination(for: DeviceDragPayload.self) { payload, _ in
+                guard let source = payload.first, source.deviceID != entry.id else { return false }
+                return store.reorderCamera(source: source.deviceID, before: entry.id)
+            }
+
+        if channels.count > 1 {
+            DisclosureGroup(isExpanded: bindingForExpansion(deviceID: entry.id)) {
+                ForEach(channels, id: \.channel) { ch in
+                    Label(ch.name ?? "Channel \(ch.channel + 1)", systemImage: ch.isAsleep ? "moon.zzz" : "video.fill")
+                        .tag(SidebarSection.channel(deviceID: entry.id, channel: ch.channel))
+                }
+            } label: {
+                deviceLabel
+                    .tag(SidebarSection.device(entry.id))
+            }
+        } else {
+            deviceLabel
+                .tag(SidebarSection.device(entry.id))
+        }
+    }
+
+    /// Per-device expanded state, persisted in `CameraStore` so it
+    /// survives sidebar re-renders (e.g. iCloud-sync callbacks).
+    private func bindingForExpansion(deviceID: UUID) -> Binding<Bool> {
+        Binding(
+            get: { store.expandedDevices.contains(deviceID) },
+            set: { isOpen in
+                if isOpen {
+                    store.expandedDevices.insert(deviceID)
+                } else {
+                    store.expandedDevices.remove(deviceID)
+                }
+            }
+        )
     }
 
     @ViewBuilder
@@ -144,6 +197,26 @@ struct iPadSplitShell: View {
         case .settings:
             SettingsPlaceholderView()
                 .navigationTitle("Settings")
+        case .channel(let deviceID, let channelID):
+            if let entry = store.cameras.first(where: { $0.id == deviceID }),
+               let session = store.session(for: deviceID),
+               let channel = session.channels.first(where: { $0.channel == channelID }) {
+                SingleChannelView(session: session, channel: channel)
+                    .navigationTitle(channel.name ?? "Channel \(channelID + 1)")
+                    // Belt-and-suspenders so SwiftUI rebuilds the
+                    // detail when the user picks a different channel
+                    // — same idiom we just added to macOS
+                    // `ChannelDetailContent`.
+                    .id(SidebarSection.channel(deviceID: deviceID, channel: channelID))
+            } else if let entry = store.cameras.first(where: { $0.id == deviceID }) {
+                // Session not ready yet (still connecting). Surface a
+                // placeholder rather than blanking the detail pane.
+                DevicePlaceholderView(entry: entry)
+                    .navigationTitle(entry.displayName)
+            } else {
+                Text("Camera not found")
+                    .foregroundStyle(.secondary)
+            }
         case .device(let id):
             if let entry = store.cameras.first(where: { $0.id == id }) {
                 DevicePlaceholderView(entry: entry)

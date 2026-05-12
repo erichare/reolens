@@ -22,8 +22,14 @@ private let log = Logger(subsystem: "com.reolens.app", category: "ios-recordings
 struct RecordingsView: View {
     let session: CameraSession
     let channel: ChannelStatus
+    /// "Scroll-to-and-play" hint passed by the notification-tap
+    /// pipeline (see `AppIntentFocus.Target.recording`). Non-nil →
+    /// jump to the day, find the closest file, auto-play.
+    var scrollTarget: Date? = nil
 
     @State private var selectedDate: Date = Date()
+    @State private var pendingScrollTarget: Date?
+    @State private var playedScrollTarget: Bool = false
     @State private var files: [SearchFile] = []
     @State private var subFiles: [SearchFile] = []
     /// Baichuan `findAlarmVideo` results for the same day. Cross-
@@ -76,9 +82,51 @@ struct RecordingsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task(id: selectedDate) {
             await load()
+            if let target = pendingScrollTarget, !playedScrollTarget {
+                playedScrollTarget = true
+                pendingScrollTarget = nil
+                autoPlayClipNearest(target)
+            }
+        }
+        .onAppear {
+            if let target = scrollTarget, !playedScrollTarget {
+                pendingScrollTarget = target
+                let day = Calendar.current.startOfDay(for: target)
+                if Calendar.current.startOfDay(for: selectedDate) != day {
+                    selectedDate = target
+                } else {
+                    Task {
+                        playedScrollTarget = true
+                        pendingScrollTarget = nil
+                        autoPlayClipNearest(target)
+                    }
+                }
+            }
         }
         .sheet(item: $nowPlaying) { recording in
             RecordingPlayerSheet(recording: recording)
+        }
+    }
+
+    /// Locate the file whose time range contains `target` (preferred)
+    /// or the file with the closest start time. Plays via the same
+    /// `playEntry` path a manual tap uses.
+    private func autoPlayClipNearest(_ target: Date) {
+        if let containing = filteredFiles.first(where: { file in
+            guard let start = file.startDate, let end = file.endDate else { return false }
+            return start <= target && target <= end
+        }) {
+            let sub = subFileMatch(for: containing)
+            playEntry(file: containing, sub: sub, preferSub: true)
+            return
+        }
+        let withDistance = filteredFiles.compactMap { file -> (SearchFile, TimeInterval)? in
+            guard let start = file.startDate else { return nil }
+            return (file, abs(start.timeIntervalSince(target)))
+        }
+        if let (closest, _) = withDistance.min(by: { $0.1 < $1.1 }) {
+            let sub = subFileMatch(for: closest)
+            playEntry(file: closest, sub: sub, preferSub: true)
         }
     }
 

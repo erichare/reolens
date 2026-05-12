@@ -29,8 +29,8 @@ targets:
       path: Resources/Info.plist
       properties:
         CFBundleDisplayName: Reolens
-        CFBundleShortVersionString: "0.4.0"
-        CFBundleVersion: "4"
+        CFBundleShortVersionString: "0.4.1"
+        CFBundleVersion: "5"
         # iOS 11+ requires apps using asset-catalog icons to also
         # declare CFBundleIconName so the OS / App Store knows which
         # icon set to consult at runtime. Without this key, ASC's
@@ -71,6 +71,14 @@ targets:
         NSPhotoLibraryAddUsageDescription: "Reolens saves snapshots of your camera feeds to Photos when you tap Save Snapshot."
         UIBackgroundModes:
           - audio
+          # remote-notification (0.4.1) — required so CloudKit silent
+          # pushes wake the app's `didReceiveRemoteNotification`
+          # handler. The CloudKit motion-event relay (publisher on a
+          # paired Mac, subscriber here) needs this to deliver
+          # notifications while the iOS app is closed. AGENTS.md §5 —
+          # the relay rides Apple's CloudKit under the user's own
+          # iCloud account, not a Reolens server.
+          - remote-notification
         # Continuity / Handoff: the user can start a camera on Mac and
         # hand off to iPhone/iPad (and vice-versa). The activity type
         # matches `CameraContinuity.cameraDetailActivityType` in
@@ -107,12 +115,20 @@ targets:
           - "iCloud.com.reolens.Reolens"
         com.apple.developer.icloud-services:
           - CloudDocuments
+          # CloudKit (0.4.1) — motion-event relay uses the private
+          # CloudKit database. Same container as the iCloud Drive
+          # sync, different services within it.
+          - CloudKit
+        # APNS environment for receiving CloudKit silent pushes.
+        # Production for App Store / TestFlight builds; xcodegen
+        # automatically swaps in development for debug archives.
+        aps-environment: production
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.reolens.Reolens.iOS
         PRODUCT_NAME: Reolens
-        MARKETING_VERSION: "0.4.0"
-        CURRENT_PROJECT_VERSION: "4"
+        MARKETING_VERSION: "0.4.1"
+        CURRENT_PROJECT_VERSION: "5"
         # Same Apple Developer team as the macOS app. Xcode's automatic
         # signing uses this to fetch / create the Apple Distribution
         # certificate and the App Store provisioning profile on first

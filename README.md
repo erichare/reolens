@@ -30,11 +30,16 @@ AVFoundation/VideoToolbox — no Electron, no Java, no QtWebEngine. Cold
 launches in under a second; battery-friendly; feels like every other native
 Apple app on each platform.
 
-**As of v0.4.0**, the macOS, iPadOS, and iPhone apps are at feature parity
+**As of v0.4.1**, the macOS, iPadOS, and iPhone apps are at feature parity
 for the live-viewing experience — same grid presets, tap-and-hold
-rearrange, search, save-snapshot, Shortcuts/Siri, and now a per-channel
+rearrange, search, save-snapshot, Shortcuts/Siri, and a per-channel
 Settings tab on every platform (plus Picture-in-Picture and pinch-to-zoom
-on iOS/iPadOS). 0.4.0 layered on the **see-further** features: a
+on iOS/iPadOS). 0.4.1 brings **iOS background notifications** via a
+CloudKit motion-event relay through the user's own iCloud account (no
+Reolens server), **trust-on-first-use TLS pinning** for self-signed HTTPS
+cameras, **notification-tap deep-linking to the captured clip**, and a
+**logging-redaction sweep** that closes the gap between AGENTS.md §11's
+promise and reality. 0.4.0 layered on the **see-further** features: a
 day-density calendar + per-day segment timeline above the recordings
 list, AI event filters, Continuity / Handoff between iPhone, iPad, and
 Mac, and an **opt-in to iCloud Keychain Sync** for users who want their
@@ -279,6 +284,25 @@ construct a `CGICommand`, and call `client.send(_:as:)`. See
 [Commands.swift](Sources/ReolinkAPI/Commands/Commands.swift) for examples.
 
 ## Roadmap
+
+Shipped in 0.4.1:
+- iOS background notifications via CloudKit motion-event relay
+  (no Reolens server — events ride through the user's own iCloud
+  account; opt-in from macOS Settings → Privacy)
+- Trust-on-first-use TLS pinning for self-signed HTTPS cameras
+  (hard block on mismatch, "trust new certificate" sheet for
+  legitimate reflashes)
+- Notification tap → exact clip auto-play (was: lands broadly on
+  Recordings tab)
+- Logging redaction sweep — RTSP URLs, Download URLs, raw payloads
+  no longer leak to sysdiagnose
+- Per-channel sidebar rows on iPad / iPhone (was: only the device
+  row)
+- "Hide app badges over video" per-channel toggle
+- Local-network camera discovery in the iOS add-camera flow
+- Time-cursor scrub overlay on the recording timeline
+- Bug fixes: macOS camera-switching now updates the live view
+  reliably
 
 Shipped in 0.4.0:
 - Recording timeline — day-density calendar + per-day segment view with

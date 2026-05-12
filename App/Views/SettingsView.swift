@@ -74,6 +74,7 @@ struct SettingsView: View {
     private var privacyTab: some View {
         Form {
             ICloudKeychainSyncSection()
+            MotionRelayPublisherSection()
         }
         .formStyle(.grouped)
     }

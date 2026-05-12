@@ -91,9 +91,9 @@ public final class EventNotifier {
     // than retyping the string. `nonisolated` because they're plain
     // immutable strings — the delegate that reads them runs off the
     // main actor in the system notification callback.
-    nonisolated static let userInfoCameraIDKey = "cameraID"
-    nonisolated static let userInfoChannelKey = "channelID"
-    nonisolated static let userInfoEventTimeKey = "eventTime"
+    nonisolated public static let userInfoCameraIDKey = "cameraID"
+    nonisolated public static let userInfoChannelKey = "channelID"
+    nonisolated public static let userInfoEventTimeKey = "eventTime"
 
     /// Notification freshness threshold for routing taps. Taps on an
     /// event posted within this window go to the camera's live view;
@@ -209,6 +209,19 @@ public final class EventNotifier {
         cameraName: String,
         snapshotURL: URL?
     ) async {
+        // Relay to the user's other Apple devices via CloudKit IF
+        // the user has opted in (macOS only; on iOS the publisher
+        // setting is irrelevant because the iOS app receives, it
+        // doesn't publish). This runs OUTSIDE the local-notification
+        // gates so an opted-in macOS Reolens still publishes events
+        // even when local notifications are muted on that machine —
+        // the user might have muted on the Mac specifically because
+        // they want the alerts on iPhone.
+        #if os(macOS)
+        if MotionEventRelaySettings.publisherEnabled {
+            await relayToCloudKit(event: event, cameraID: cameraID, snapshotURL: snapshotURL)
+        }
+        #endif
         guard enabled, permissionStatus == .authorized else { return }
 
         let (title, body, throttleKey) = format(event: event, cameraName: cameraName)
@@ -279,6 +292,40 @@ public final class EventNotifier {
 
     /// Build the title/body for an event, plus a stable key for the
     /// throttle map. `nil`-keyed events return an empty triple so the
+    /// macOS-only CloudKit relay hook. Downloads the snapshot once,
+    /// stages it as a `CKAsset`, publishes the record via the shared
+    /// publisher. Errors are logged but never user-visible — relay
+    /// is opportunistic; the local notification is the source of
+    /// truth.
+    #if os(macOS)
+    private func relayToCloudKit(event: BaichuanEvent, cameraID: UUID, snapshotURL: URL?) async {
+        // Stage the snapshot as a local temp file so we can hand it
+        // to CKAsset by URL. (`CKAsset` requires a fileURL on disk
+        // at upload time.) Best-effort — events without a snapshot
+        // still relay; the iOS subscriber renders the text.
+        var stagedSnapshot: URL?
+        if let snapshotURL,
+           let attachment = await downloadSnapshotAttachment(from: snapshotURL) {
+            stagedSnapshot = attachment.url
+        }
+        let detection: String
+        switch event.kind {
+        case .ai(let tag): detection = tag
+        case .motionStart: detection = "motion"
+        case .motionStop, .other: return
+        }
+        let payload = MotionEvent(
+            cameraID: cameraID,
+            channel: Int(event.channelID),
+            detection: detection,
+            timestamp: Date(),
+            snapshotFileURL: stagedSnapshot
+        )
+        let publisher = CloudKitMotionEventPublisher()
+        await publisher.publish(payload)
+    }
+    #endif
+
     /// caller can drop them.
     private func format(event: BaichuanEvent, cameraName: String) -> (title: String, body: String, throttleKey: String) {
         switch event.kind {

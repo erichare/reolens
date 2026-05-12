@@ -71,7 +71,8 @@ extension BaichuanClient {
     ) async throws -> [BaichuanAlarmVideoFile] {
         let strippedUID = uid.split(separator: "_").first.map(String.init) ?? uid
         let streamTypeInt = Self.streamTypeCode(for: streamType)
-        log.info("findAlarmVideos channel=\(channel) start=\(start) end=\(end) uid=\(strippedUID, privacy: .public) streamType=\(streamType, privacy: .public)(=\(streamTypeInt))")
+        // UID is a hardware fingerprint — `.private`.
+        log.info("findAlarmVideos channel=\(channel) start=\(start) end=\(end) uid=\(strippedUID, privacy: .private) streamType=\(streamType, privacy: .public)(=\(streamTypeInt))")
 
         let openXML = buildFindAlarmOpenXML(
             channel: Int(channel),
@@ -87,13 +88,15 @@ extension BaichuanClient {
             stage: "findAlarmVideo open"
         )
         let openBody = String(data: openReply.body, encoding: .utf8) ?? ""
-        log.info("findAlarmVideos open reply (code=\(openReply.header.responseCode) bodyLen=\(openReply.body.count)): \(openBody.prefix(800), privacy: .public)")
+        // Reply body contains recording file paths + alarm metadata.
+        // Diagnostic only; demote to `.debug` + `.private`.
+        log.debug("findAlarmVideos open reply (code=\(openReply.header.responseCode) bodyLen=\(openReply.body.count)): \(openBody.prefix(800), privacy: .private)")
 
         guard let fileHandle = BcXmlBody.firstTagContent(in: openBody, tag: "fileHandle"), !fileHandle.isEmpty else {
             log.error("findAlarmVideos: no <fileHandle> in open reply — hub may not support this command or rejected the channel id")
             return []
         }
-        log.info("findAlarmVideos fileHandle=\(fileHandle, privacy: .public)")
+        log.debug("findAlarmVideos fileHandle=\(fileHandle, privacy: .private)")
 
         var results: [BaichuanAlarmVideoFile] = []
         var finished = false
@@ -109,7 +112,7 @@ extension BaichuanClient {
             )
             let pageBody = String(data: pageReply.body, encoding: .utf8) ?? ""
             if safetyIterations == 1 {
-                log.info("findAlarmVideos page1 reply (code=\(pageReply.header.responseCode) bodyLen=\(pageReply.body.count)): \(pageBody.prefix(1200), privacy: .public)")
+                log.debug("findAlarmVideos page1 reply (code=\(pageReply.header.responseCode) bodyLen=\(pageReply.body.count)): \(pageBody.prefix(1200), privacy: .private)")
             }
 
             let infoBlocks = BcXmlBody.allBlocks(in: pageBody, tag: "alarmVideoInfo")
@@ -127,7 +130,7 @@ extension BaichuanClient {
                       let alarmType = BcXmlBody.firstTagContent(in: videoBlock, tag: "alarmType"),
                       let startTime = BcXmlBody.reolinkTime(in: videoBlock, tag: "startTime"),
                       let endTime = BcXmlBody.reolinkTime(in: videoBlock, tag: "endTime") else {
-                    log.debug("Skipping alarmVideo block — missing fields: \(videoBlock.prefix(300), privacy: .public)")
+                    log.debug("Skipping alarmVideo block — missing fields: \(videoBlock.prefix(300), privacy: .private)")
                     continue
                 }
                 results.append(BaichuanAlarmVideoFile(

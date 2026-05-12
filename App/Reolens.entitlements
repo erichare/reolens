@@ -30,6 +30,12 @@
     <key>com.apple.developer.icloud-services</key>
     <array>
         <string>CloudDocuments</string>
+        <!-- CloudKit (0.4.1) — motion-event relay uses the private
+             CloudKit database to push events to the user's other
+             Apple devices. Same container as iCloud Drive sync.
+             AGENTS.md §5 — runs inside the user's iCloud, no
+             Reolens server. -->
+        <string>CloudKit</string>
     </array>
     <!-- Allow loading the embedded Sparkle.framework. Hardened Runtime's
          Library Validation otherwise requires every loaded library to be

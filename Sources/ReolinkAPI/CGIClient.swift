@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 public enum ReolinkClientError: Error, CustomStringConvertible {
     case transport(any Error)
@@ -36,7 +37,8 @@ public actor CGIClient {
 
     public init(
         credentials: CameraCredentials,
-        urlSession: URLSession? = nil
+        urlSession: URLSession? = nil,
+        tlsPolicy: TLSPinningPolicy = .alwaysAccept
     ) {
         self.credentials = credentials
         if let urlSession {
@@ -47,8 +49,16 @@ public actor CGIClient {
             config.timeoutIntervalForResource = 30
             config.waitsForConnectivity = false
             config.httpMaximumConnectionsPerHost = 4
-            // Reolink devices commonly use self-signed certs over HTTPS.
-            self.urlSession = URLSession(configuration: config, delegate: PermissiveTLSDelegate(), delegateQueue: nil)
+            // Self-signed cert pinning. The policy records the
+            // fingerprint on first connection and rejects mismatches
+            // on every subsequent connection (AGENTS.md §3 hard
+            // block). Plain HTTP cameras skip this entirely — the
+            // delegate is only consulted on TLS handshakes.
+            self.urlSession = URLSession(
+                configuration: config,
+                delegate: PinningTLSDelegate(policy: tlsPolicy),
+                delegateQueue: nil
+            )
         }
         let enc = JSONEncoder()
         enc.outputFormatting = []
@@ -203,19 +213,102 @@ struct AnyEncodable: Encodable, Sendable {
     }
 }
 
-/// Reolink devices ship with self-signed TLS certs by default. We allow them when the user has
-/// opted into HTTPS — they're typically on a LAN anyway.
-final class PermissiveTLSDelegate: NSObject, URLSessionDelegate, @unchecked Sendable {
+/// Trust-on-first-use TLS policy. Reolink devices ship with self-signed
+/// certs by default — we record the SHA-256 of the leaf certificate on
+/// the first successful HTTPS handshake and pin against it on every
+/// subsequent connection. A mismatch surfaces via `onMismatch` and the
+/// underlying URLSession challenge is rejected (hard block, AGENTS.md
+/// §3).
+public struct TLSPinningPolicy: Sendable {
+    /// Base64-encoded SHA-256 of the leaf cert's DER, recorded on first
+    /// successful handshake. nil = TOFU; first observation is trusted
+    /// and recorded.
+    public let expectedFingerprint: String?
+    /// Called whenever we observe a server cert. Implementations should
+    /// persist `fingerprint` to the camera entry's `tlsFingerprint`
+    /// field on first observation, but the policy itself doesn't care
+    /// what happens after — pinning works regardless.
+    public let onObserved: @Sendable (String) -> Void
+    /// Called when the observed cert fingerprint doesn't match the
+    /// expected one. Implementations should surface a "trust changed"
+    /// alert and offer to record the new fingerprint (the user's
+    /// explicit re-trust action).
+    public let onMismatch: @Sendable (_ expected: String, _ observed: String) -> Void
+
+    public init(
+        expectedFingerprint: String?,
+        onObserved: @escaping @Sendable (String) -> Void,
+        onMismatch: @escaping @Sendable (_ expected: String, _ observed: String) -> Void
+    ) {
+        self.expectedFingerprint = expectedFingerprint
+        self.onObserved = onObserved
+        self.onMismatch = onMismatch
+    }
+
+    /// Convenience policy that accepts any cert without recording or
+    /// reporting — used for HTTP-only cameras and as a safe default
+    /// for tests / fixtures.
+    public static let alwaysAccept = TLSPinningPolicy(
+        expectedFingerprint: nil,
+        onObserved: { _ in },
+        onMismatch: { _, _ in }
+    )
+
+    /// Compute the base64-encoded SHA-256 of a DER-encoded cert.
+    public static func fingerprint(forCertificateDER der: Data) -> String {
+        let digest = SHA256.hash(data: der)
+        return Data(digest).base64EncodedString()
+    }
+}
+
+/// URLSession delegate that enforces a `TLSPinningPolicy`. Used by
+/// CGIClient. Cert mismatches reject the challenge — the URLSession
+/// request fails with a transport error, which surfaces in
+/// `CameraSession.connect()` as a `.error("trust changed")` status.
+final class PinningTLSDelegate: NSObject, URLSessionDelegate, @unchecked Sendable {
+    private let policy: TLSPinningPolicy
+
+    init(policy: TLSPinningPolicy) {
+        self.policy = policy
+    }
+
     func urlSession(
         _ session: URLSession,
         didReceive challenge: URLAuthenticationChallenge,
         completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
-        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-           let trust = challenge.protectionSpace.serverTrust {
-            completionHandler(.useCredential, URLCredential(trust: trust))
-        } else {
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let trust = challenge.protectionSpace.serverTrust else {
             completionHandler(.performDefaultHandling, nil)
+            return
+        }
+        // SecTrustGetCertificateAtIndex was deprecated in favor of
+        // SecTrustCopyCertificateChain (returns CFArray). Take the
+        // first (leaf) cert and hash its DER.
+        guard let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate],
+              let leaf = chain.first else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+        let der = SecCertificateCopyData(leaf) as Data
+        let fingerprint = TLSPinningPolicy.fingerprint(forCertificateDER: der)
+
+        if let expected = policy.expectedFingerprint {
+            if expected == fingerprint {
+                completionHandler(.useCredential, URLCredential(trust: trust))
+            } else {
+                // Hard block: hand the mismatch up to the policy
+                // (which surfaces a sheet) and cancel the challenge.
+                // The user's explicit "Trust new cert" action will
+                // clear the stored fingerprint and the next connect
+                // re-records.
+                policy.onMismatch(expected, fingerprint)
+                completionHandler(.cancelAuthenticationChallenge, nil)
+            }
+        } else {
+            // TOFU first-use: trust and record.
+            policy.onObserved(fingerprint)
+            completionHandler(.useCredential, URLCredential(trust: trust))
         }
     }
 }

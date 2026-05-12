@@ -59,7 +59,10 @@ public actor CameraDiscovery {
             log.warning("Couldn't determine a usable /24 subnet — discovery skipped")
             return []
         }
-        log.info("Discovery scanning subnet \(subnet, privacy: .public).0/24")
+        // Subnet prefix identifies the user's LAN. Keep at .private
+        // so sysdiagnose / Console.app exports don't expose it
+        // (AGENTS.md §11).
+        log.info("Discovery scanning subnet \(subnet, privacy: .private).0/24")
 
         async let bonjour = Self.bonjourIndex(duration: 3.0)
         async let httpSweep = httpSweepScan(subnet: subnet, progress: progress)

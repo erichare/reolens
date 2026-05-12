@@ -3,6 +3,7 @@ import AVFoundation
 import CoreImage
 import Observation
 import OSLog
+import ReolinkAPI
 @preconcurrency import CoreMedia
 @preconcurrency import CoreVideo
 @preconcurrency import VideoToolbox
@@ -171,7 +172,12 @@ public final class LiveVideoPlayer {
         enqueuedSampleCount = 0
         droppedSampleCount = 0
         didSetTimebase = false
-        log.info("Attempting \(url.absoluteString, privacy: .public)")
+        // Never log the bare absoluteString — RTSP URLs embed
+        // `user:password@host`. `LogRedaction.redact(_:)` drops the
+        // userInfo segment and any token / user / password query
+        // items while preserving the LAN host + path for diagnosis.
+        // AGENTS.md §11.
+        log.info("Attempting \(LogRedaction.redact(url), privacy: .public)")
         let client = RTSPClient(configuration: .init(url: url, username: username, password: password))
         self.client = client
 

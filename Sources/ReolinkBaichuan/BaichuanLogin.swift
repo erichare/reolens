@@ -56,7 +56,7 @@ extension BaichuanClient {
         guard let nonce = BcXmlBody.extractNonce(from: xmlData) else {
             throw BaichuanError.loginFailed(reason: "no <nonce> in reply XML: \(String(data: xmlData.prefix(200), encoding: .utf8) ?? "<binary>")")
         }
-        log.debug("Got nonce: \(nonce, privacy: .public)")
+        log.debug("Got nonce: \(nonce, privacy: .private)")
 
         // Pick the cipher for subsequent messages.
         switch negotiated {

@@ -112,7 +112,9 @@ struct LiveTileView: View {
             } else {
                 manualStartOverlay
             }
-            badgeRow
+            if !store.isAppBadgeHidden(deviceID: session.entry.id, channel: channel.channel) {
+                badgeRow
+            }
         }
         .clipShape(.rect(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.white.opacity(0.08)))

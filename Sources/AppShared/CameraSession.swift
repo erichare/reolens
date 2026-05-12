@@ -77,10 +77,14 @@ public final class CameraSession {
     private var batteryTask: Task<Void, Never>?
     public private(set) var baichuanClient: BaichuanClient?
 
-    public init(entry: CameraEntry, credentials: CameraCredentials) {
+    public init(
+        entry: CameraEntry,
+        credentials: CameraCredentials,
+        tlsPolicy: TLSPinningPolicy = .alwaysAccept
+    ) {
         self.entry = entry
         self.credentials = credentials
-        self.client = CGIClient(credentials: credentials)
+        self.client = CGIClient(credentials: credentials, tlsPolicy: tlsPolicy)
         self.streamURLs = StreamURLs(credentials: credentials)
     }
 
@@ -124,8 +128,13 @@ public final class CameraSession {
                     // we need an alternate signal for dual-lens /
                     // battery classification.
                     let raw = try await client.sendCapturingRaw(Commands.getChannelStatus())
-                    if let pretty = String(data: raw, encoding: .utf8) {
-                        log.info("GetChannelstatus raw payload (first 4 KB):\n\(pretty.prefix(4096), privacy: .public)")
+                    // Raw GetChannelstatus payloads carry per-channel
+                    // UIDs and hardware-fingerprinting fields. Gate
+                    // behind developer mode AND emit at .debug so the
+                    // dump doesn't surface in sysdiagnose exports for
+                    // ordinary users. AGENTS.md §11.
+                    if CameraStore.developerModeIsOn, let pretty = String(data: raw, encoding: .utf8) {
+                        log.debug("GetChannelstatus raw payload (first 4 KB):\n\(pretty.prefix(4096), privacy: .private)")
                     }
                     let env = try JSONDecoder().decode([CGIResponse<ChannelStatusEnvelope>].self, from: raw)
                     channels = env.first?.value?.status ?? []
