@@ -14,12 +14,12 @@ struct ReolensApp: App {
                 .environment(store)
                 .frame(minWidth: 900, minHeight: 600)
                 .task {
-                    // Wire notification-tap routing once on launch.
-                    // NotificationTapDelegate is idempotent — multiple
-                    // calls just re-assign the same delegate.
-                    NotificationTapDelegate.install()
-                    // Drain any pending intent (Shortcuts/Siri or a
-                    // notification tap on cold launch).
+                    // Drain any pending intent the user fired before
+                    // the app was running (Shortcuts/Siri or a
+                    // notification tap on cold launch). The delegate
+                    // itself is installed in AppDelegate so it's in
+                    // place before iOS/macOS dispatches a launch-time
+                    // notification response.
                     store.applyPendingIntentFocus()
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
@@ -98,6 +98,13 @@ final class AboutPanelController {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        // Install the notification-tap delegate as early as possible
+        // so a cold-launch tap on an alarm notification is routed
+        // correctly. willFinishLaunching is the earliest hook NSApp
+        // offers; setting `UNUserNotificationCenter.delegate` here
+        // guarantees it's in place before iOS dispatches any
+        // pending response.
+        NotificationTapDelegate.install()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {

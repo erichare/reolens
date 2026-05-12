@@ -1,8 +1,17 @@
 import SwiftUI
+import UIKit
 import AppShared
 
 @main
 struct ReolensiOSApp: App {
+    /// `UIApplicationDelegateAdaptor` so we can install the
+    /// `NotificationTapDelegate` during `didFinishLaunchingWithOptions`.
+    /// That timing is essential for cold-launch notification taps —
+    /// installing in scene `.task` is too late, because iOS attempts
+    /// to dispatch the tap response before the scene has even
+    /// mounted.
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
     /// The shared camera model. Lives for the lifetime of the app and is
     /// injected into every view via `.environment(_:)`. The store wakes
     /// up the iCloud Drive sync helper in its initializer, so cameras
@@ -16,15 +25,13 @@ struct ReolensiOSApp: App {
             RootView()
                 .environment(store)
                 .task {
-                    // Wire notification-tap routing once on launch.
-                    // NotificationTapDelegate is idempotent — multiple
-                    // calls just re-assign the same delegate.
-                    NotificationTapDelegate.install()
-                    // Drain any "Open Camera" intent the user fired
-                    // before the app was running (Shortcuts/Siri or a
+                    // Drain any pending intent the user fired before
+                    // the app was running (Shortcuts/Siri or a
                     // notification tap on a cold launch — both write
-                    // to the same UserDefaults pointer; CameraStore
-                    // consumes it).
+                    // to the same UserDefaults pointer via
+                    // `AppIntentFocus.request`; `CameraStore` consumes
+                    // it here). The delegate itself is already
+                    // installed by AppDelegate.
                     store.applyPendingIntentFocus()
                 }
                 .onChange(of: scenePhase) { _, phase in
@@ -35,3 +42,20 @@ struct ReolensiOSApp: App {
         }
     }
 }
+
+/// `UIApplicationDelegate` that installs the notification-tap delegate
+/// early in the launch sequence. SwiftUI scenes mount AFTER
+/// `didFinishLaunchingWithOptions` returns, so installing in
+/// `.task` could miss a cold-launch tap — the response may be
+/// dispatched before the scene appears. Doing it here guarantees the
+/// delegate is in place no matter how the app comes up.
+final class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        NotificationTapDelegate.install()
+        return true
+    }
+}
+
