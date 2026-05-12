@@ -38,8 +38,7 @@ struct SingleChannelView: View {
             LiveTab(
                 session: session,
                 channel: channel,
-                pipController: $pipController,
-                attachedPlayerID: $attachedPlayerID,
+                onPlayerChanged: attachPiPIfNeeded(to:),
                 controlsVisible: $controlsVisible,
                 pausedForFullscreen: showingFullscreen
             )
@@ -79,28 +78,47 @@ struct SingleChannelView: View {
         .fullScreenCover(isPresented: $showingFullscreen) {
             FullscreenLiveView(session: session, channel: channel)
         }
-        // Create the PiP observable exactly once per LiveVideoPiP
-        // instance. Previously `PiPToolbarButton(controller:)`'s init
-        // built a fresh PiPObservable on every parent re-render — each
-        // one registered two KVO observers on the same controller, and
-        // they accumulated until the main actor was saturated with
-        // queued notification tasks. Symptom: iPad freezes a few
-        // seconds after opening a camera.
-        .onChange(of: pipControllerIdentity) { _, _ in
-            if let controller = pipController {
-                pipObservable = PiPObservable(controller: controller)
+    }
+
+    /// Called when the LiveTileView's internal player is created or
+    /// torn down. Atomically updates `pipController` and
+    /// `pipObservable` in the same render pass, and defers actual
+    /// `AVPictureInPictureController` construction by one runloop turn
+    /// so the display layer has time to be added to a window —
+    /// constructing PiP against an unwindowed `AVSampleBufferDisplayLayer`
+    /// can stall the main thread on iPad. Symptom: tapping a thumbnail
+    /// freezes the iPad UI.
+    private func attachPiPIfNeeded(to player: LiveVideoPlayer?) {
+        guard let player else {
+            pipController = nil
+            pipObservable = nil
+            attachedPlayerID = nil
+            return
+        }
+        let id = ObjectIdentifier(player)
+        guard id != attachedPlayerID else { return }
+        attachedPlayerID = id
+        // Defer construction by one runloop turn. By the time this
+        // task resumes, SwiftUI has committed the layer into the
+        // UIView hierarchy and AVKit will see a windowed layer.
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            // Bail if the player has since been replaced (e.g. user
+            // toggled fullscreen, paused/resumed) so we don't bind a
+            // stale player to PiP.
+            guard attachedPlayerID == id else { return }
+            let newController = LiveVideoPiP(player: player)
+            // Single render pass: write both pieces of state together
+            // so the toolbar evaluates with consistent values rather
+            // than going through a 3-pass cascade
+            // (pipController → onChange → pipObservable → render).
+            pipController = newController
+            if let newController {
+                pipObservable = PiPObservable(controller: newController)
             } else {
                 pipObservable = nil
             }
         }
-    }
-
-    /// Identity-based change key so SwiftUI's onChange can fire when
-    /// the underlying object is swapped (player paused/resumed cycles
-    /// produce a new LiveVideoPiP), without needing the class itself
-    /// to be Equatable.
-    private var pipControllerIdentity: ObjectIdentifier? {
-        pipController.map { ObjectIdentifier($0) }
     }
 }
 
@@ -181,8 +199,9 @@ final class PiPObservable: ObservableObject {
 private struct LiveTab: View {
     let session: CameraSession
     let channel: ChannelStatus
-    @Binding var pipController: LiveVideoPiP?
-    @Binding var attachedPlayerID: ObjectIdentifier?
+    /// Bubbled up to `SingleChannelView` so the parent can manage the
+    /// `LiveVideoPiP` controller lifecycle in one place.
+    let onPlayerChanged: (LiveVideoPlayer?) -> Void
     @Binding var controlsVisible: Bool
     /// True when `FullscreenLiveView` is presented over this view, so
     /// the inline tile pauses its RTSP session. Reolink hubs cap
@@ -226,9 +245,7 @@ private struct LiveTab: View {
             channel: channel,
             stream: .main,
             paused: pausedForFullscreen,
-            onPlayerChanged: { newPlayer in
-                attachPiPIfNeeded(to: newPlayer)
-            }
+            onPlayerChanged: onPlayerChanged
         )
         .aspectRatio(channel.isDualLens ? 32.0 / 9.0 : 16.0 / 9.0, contentMode: .fit)
         .scaleEffect(zoom)
@@ -279,18 +296,6 @@ private struct LiveTab: View {
 
     private func clamp(_ value: CGFloat, min lo: CGFloat, max hi: CGFloat) -> CGFloat {
         Swift.max(lo, Swift.min(hi, value))
-    }
-
-    private func attachPiPIfNeeded(to player: LiveVideoPlayer?) {
-        guard let player else {
-            pipController = nil
-            attachedPlayerID = nil
-            return
-        }
-        let id = ObjectIdentifier(player)
-        guard id != attachedPlayerID else { return }
-        attachedPlayerID = id
-        pipController = LiveVideoPiP(player: player)
     }
 }
 
