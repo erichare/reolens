@@ -42,6 +42,9 @@ struct LivePlaceholderView: View {
                         CameraRow(entry: entry)
                     }
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button("Delete", systemImage: "trash", role: .destructive) {
+                            store.remove(entry.id)
+                        }
                         Button("Enter Password", systemImage: "key.fill") {
                             passwordEntryEntry = entry
                         }
@@ -50,6 +53,10 @@ struct LivePlaceholderView: View {
                     .contextMenu {
                         Button("Enter Password", systemImage: "key.fill") {
                             passwordEntryEntry = entry
+                        }
+                        Divider()
+                        Button("Delete Camera", systemImage: "trash", role: .destructive) {
+                            store.remove(entry.id)
                         }
                     }
                 }
@@ -105,6 +112,9 @@ struct DevicesPlaceholderView: View {
                                 }
                             }
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button("Delete", systemImage: "trash", role: .destructive) {
+                                    store.remove(entry.id)
+                                }
                                 Button("Enter Password", systemImage: "key.fill") {
                                     passwordEntryEntry = entry
                                 }
@@ -114,7 +124,8 @@ struct DevicesPlaceholderView: View {
                                 Button("Enter Password", systemImage: "key.fill") {
                                     passwordEntryEntry = entry
                                 }
-                                Button("Remove", systemImage: "trash", role: .destructive) {
+                                Divider()
+                                Button("Delete Camera", systemImage: "trash", role: .destructive) {
                                     store.remove(entry.id)
                                 }
                             }
