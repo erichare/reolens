@@ -21,7 +21,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>0.3.0</string>
 	<key>CFBundleVersion</key>
-	<string>2</string>
+	<string>3</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSAppTransportSecurity</key>
@@ -66,26 +66,26 @@
 	<key>UTExportedTypeDeclarations</key>
 	<array>
 		<dict>
-			<key>UTTypeIdentifier</key>
-			<string>com.reolens.channelDrag</string>
-			<key>UTTypeDescription</key>
-			<string>Reolens channel drag payload</string>
 			<key>UTTypeConformsTo</key>
 			<array>
 				<string>public.data</string>
 			</array>
+			<key>UTTypeDescription</key>
+			<string>Reolens channel drag payload</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.reolens.channelDrag</string>
 			<key>UTTypeTagSpecification</key>
 			<dict/>
 		</dict>
 		<dict>
-			<key>UTTypeIdentifier</key>
-			<string>com.reolens.deviceDrag</string>
-			<key>UTTypeDescription</key>
-			<string>Reolens device drag payload</string>
 			<key>UTTypeConformsTo</key>
 			<array>
 				<string>public.data</string>
 			</array>
+			<key>UTTypeDescription</key>
+			<string>Reolens device drag payload</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.reolens.deviceDrag</string>
 			<key>UTTypeTagSpecification</key>
 			<dict/>
 		</dict>
