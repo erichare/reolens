@@ -1,4 +1,5 @@
 .build/
+.build-ios-incremental/
 .swiftpm/
 Package.resolved
 *.xcodeproj/xcuserdata/

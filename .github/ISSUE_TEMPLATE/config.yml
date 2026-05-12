@@ -1,0 +1,12 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/jestatsio/reolens/security/advisories/new
+    about: |
+      Please use private security advisories for vulnerability reports.
+      Do not file a public issue. See SECURITY.md for details.
+  - name: Question or general discussion
+    url: https://github.com/jestatsio/reolens/discussions
+    about: |
+      For questions about using Reolens, configuring cameras, or
+      general feedback, use Discussions rather than Issues.
