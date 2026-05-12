@@ -29,6 +29,56 @@ EXPORT_DIR="${BUILD_DIR}/export"
 EXPORT_OPTIONS="${BUILD_DIR}/ExportOptions.plist"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+validate_ios_app_bundle() {
+    local app="$1"
+    local plist="${app}/Info.plist"
+
+    echo "==> Validating iOS icon metadata in ${app}"
+    if [[ ! -d "${app}" ]]; then
+        echo "error: app bundle missing at ${app}" >&2
+        exit 1
+    fi
+    if [[ ! -f "${plist}" ]]; then
+        echo "error: Info.plist missing at ${plist}" >&2
+        exit 1
+    fi
+
+    local icon_name
+    icon_name=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIconName" "${plist}" 2>/dev/null || true)
+    if [[ "${icon_name}" != "AppIcon" ]]; then
+        echo "error: ${plist} has CFBundleIconName='${icon_name:-<missing>}' (expected AppIcon)" >&2
+        exit 1
+    fi
+
+    if [[ ! -f "${app}/Assets.car" ]]; then
+        echo "error: ${app}/Assets.car is missing; asset catalog was not compiled into the app" >&2
+        exit 1
+    fi
+
+    local iphone_icon="${app}/AppIcon60x60@2x.png"
+    local ipad_icon="${app}/AppIcon76x76@2x~ipad.png"
+    for icon in "${iphone_icon}" "${ipad_icon}"; do
+        if [[ ! -f "${icon}" ]]; then
+            echo "error: required app icon missing from bundle: ${icon}" >&2
+            exit 1
+        fi
+    done
+
+    local iphone_size ipad_size
+    iphone_size=$(sips -g pixelWidth -g pixelHeight "${iphone_icon}" 2>/dev/null | awk '/pixel/ {print $2}' | paste -sd x -)
+    ipad_size=$(sips -g pixelWidth -g pixelHeight "${ipad_icon}" 2>/dev/null | awk '/pixel/ {print $2}' | paste -sd x -)
+    if [[ "${iphone_size}" != "120x120" ]]; then
+        echo "error: ${iphone_icon} is ${iphone_size:-unknown}, expected 120x120" >&2
+        exit 1
+    fi
+    if [[ "${ipad_size}" != "152x152" ]]; then
+        echo "error: ${ipad_icon} is ${ipad_size:-unknown}, expected 152x152" >&2
+        exit 1
+    fi
+
+    echo "    CFBundleIconName=${icon_name}; required icon PNGs are present"
+}
+
 if ! command -v xcodegen >/dev/null 2>&1; then
     echo "error: xcodegen is required (brew install xcodegen)" >&2
     exit 1
@@ -143,6 +193,10 @@ fi
 
 echo "==> Regenerating Xcode project from spec"
 ( cd "${PROJECT_DIR}" && xcodegen generate )
+if ! grep -q "Assets.xcassets in Resources" "${PROJECT}/project.pbxproj"; then
+    echo "error: generated Xcode project does not put Resources/Assets.xcassets in the Resources build phase" >&2
+    exit 1
+fi
 
 mkdir -p "${BUILD_DIR}"
 
@@ -203,6 +257,8 @@ xcodebuild \
     "${SIGN_BUILD_SETTINGS[@]}" \
     archive
 
+validate_ios_app_bundle "${ARCHIVE_PATH}/Products/Applications/Reolens.app"
+
 if [[ "${MODE}" == "archive" ]]; then
     echo "==> Archive ready: ${ARCHIVE_PATH}"
     echo "Open Xcode → Window → Organizer → Distribute App to upload."
@@ -261,6 +317,17 @@ if [[ -z "${IPA}" ]]; then
 fi
 echo "==> Exported: ${IPA}"
 
+IPA_CHECK_DIR=$(mktemp -d)
+unzip -q "${IPA}" -d "${IPA_CHECK_DIR}"
+IPA_APP=$(find "${IPA_CHECK_DIR}/Payload" -maxdepth 1 -type d -name '*.app' | head -n 1)
+if [[ -z "${IPA_APP}" ]]; then
+    echo "error: exported IPA does not contain Payload/*.app" >&2
+    rm -rf "${IPA_CHECK_DIR}"
+    exit 1
+fi
+validate_ios_app_bundle "${IPA_APP}"
+rm -rf "${IPA_CHECK_DIR}"
+
 if [[ -z "${AC_API_KEY_ID:-}" || -z "${AC_API_ISSUER_ID:-}" || -z "${AC_API_KEY_P8_PATH:-}" ]]; then
     echo "error: set AC_API_KEY_ID, AC_API_ISSUER_ID, and AC_API_KEY_P8_BASE64 (or AC_API_KEY_P8_PATH)" >&2
     exit 1
@@ -284,12 +351,20 @@ chmod 600 "${ALTOOL_KEY_PATH}"
 trap 'rm -f "${ALTOOL_KEY_PATH}"; rm -rf "${AC_KEY_TMPDIR}"' EXIT
 
 echo "==> Uploading to App Store Connect (TestFlight)"
-xcrun altool \
+set +e
+ALTOOL_OUTPUT=$(xcrun altool \
     --upload-app \
     --type ios \
     --file "${IPA}" \
     --apiKey "${AC_API_KEY_ID}" \
-    --apiIssuer "${AC_API_ISSUER_ID}"
+    --apiIssuer "${AC_API_ISSUER_ID}" 2>&1)
+ALTOOL_RC=$?
+set -e
+printf '%s\n' "${ALTOOL_OUTPUT}"
+if [[ ${ALTOOL_RC} -ne 0 ]] || printf '%s\n' "${ALTOOL_OUTPUT}" | grep -Eq 'UPLOAD FAILED|Validation failed|Failed to upload package|STATE_ERROR'; then
+    echo "error: App Store Connect upload failed" >&2
+    exit 1
+fi
 
 echo "==> Upload complete. TestFlight processing typically takes 10–30 minutes."
 echo "Track progress at: https://appstoreconnect.apple.com/apps"

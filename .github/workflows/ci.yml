@@ -223,6 +223,21 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
+      - name: Validate iOS app icons
+        run: |
+          set -euo pipefail
+          APP="build-ios/Build/Products/Debug-iphonesimulator/Reolens.app"
+          test -d "${APP}"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconName' "${APP}/Info.plist")" = "AppIcon"
+          test -f "${APP}/Assets.car"
+          test -f "${APP}/AppIcon60x60@2x.png"
+          test -f "${APP}/AppIcon76x76@2x~ipad.png"
+
+          IPHONE_SIZE=$(sips -g pixelWidth -g pixelHeight "${APP}/AppIcon60x60@2x.png" | awk '/pixel/ {print $2}' | paste -sd x -)
+          IPAD_SIZE=$(sips -g pixelWidth -g pixelHeight "${APP}/AppIcon76x76@2x~ipad.png" | awk '/pixel/ {print $2}' | paste -sd x -)
+          test "${IPHONE_SIZE}" = "120x120"
+          test "${IPAD_SIZE}" = "152x152"
+
   # SwiftLint runs separately from the build so a style warning never
   # blocks code that compiles and tests cleanly. Failures still surface
   # in the PR check list — they just don't fail the whole pipeline.
