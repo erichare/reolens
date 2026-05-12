@@ -2,6 +2,7 @@ import SwiftUI
 import ReolinkAPI
 import ReolinkStreaming
 import UniformTypeIdentifiers
+import AppShared
 
 struct CameraDetailView: View {
     let session: CameraSession

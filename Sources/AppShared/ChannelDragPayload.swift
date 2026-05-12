@@ -7,18 +7,22 @@ import UniformTypeIdentifiers
 /// the session by looking the channel up by that ID. Lives in its own
 /// file (rather than a view file) so the sidebar row and the grid tile
 /// can both produce / accept it without duplicating the type.
-struct ChannelDragPayload: Codable, Transferable {
-    let channel: Int
+package struct ChannelDragPayload: Codable, Transferable {
+    package let channel: Int
 
-    static var transferRepresentation: some TransferRepresentation {
+    package init(channel: Int) {
+        self.channel = channel
+    }
+
+    package static var transferRepresentation: some TransferRepresentation {
         CodableRepresentation(contentType: .reolensChannelDrag)
     }
 }
 
-extension UTType {
+package extension UTType {
     /// Custom UTI registered just for our drag payloads — avoids the
     /// possibility of accidental drag-and-drop interop with other apps
     /// that publish plain `Int`s. Declared as an exported type in the
     /// app's `Info.plist`.
-    static let reolensChannelDrag = UTType(exportedAs: "com.reolens.channelDrag")
+    package static let reolensChannelDrag = UTType(exportedAs: "com.reolens.channelDrag")
 }

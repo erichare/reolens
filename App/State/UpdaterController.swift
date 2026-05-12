@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import Observation
 import Sparkle
+import AppShared
 
 /// Thin SwiftUI wrapper around Sparkle's `SPUStandardUpdaterController`.
 ///

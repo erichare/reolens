@@ -4,7 +4,7 @@
 </h1>
 
 <p align="center">
-  A modern, Apple-silicon-native macOS client for Reolink cameras and NVRs.
+  A modern, Apple-silicon-native client for Reolink cameras and NVRs — on Mac, iPad, and iPhone.
 </p>
 
 <p align="center">
@@ -12,6 +12,7 @@
   <a href="https://github.com/jestatsio/reolens/releases/latest"><img src="https://img.shields.io/github/v/release/jestatsio/reolens?label=download&color=4cd2ff" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B-1ba6d8" alt="macOS 14+">
+  <img src="https://img.shields.io/badge/iOS-18%2B-1ba6d8" alt="iOS 18+">
 </p>
 
 <p align="center">
@@ -23,10 +24,17 @@
 
 ---
 
-Reolens is a native macOS client for Reolink cameras, NVRs, and Home Hubs.
-SwiftUI, Swift 6 strict concurrency, AVFoundation/VideoToolbox — no Electron,
-no Java, no QtWebEngine. Cold launches in under a second; battery-friendly;
-feels like every other Mac app.
+Reolens is a native client for Reolink cameras, NVRs, and Home Hubs, available
+on macOS, iPad, and iPhone. SwiftUI, Swift 6 strict concurrency,
+AVFoundation/VideoToolbox — no Electron, no Java, no QtWebEngine. Cold
+launches in under a second; battery-friendly; feels like every other native
+Apple app on each platform.
+
+**As of v0.2.0**, Reolens ships an iPad/iPhone app alongside the Mac one,
+sharing the same Reolink protocol stack and syncing your camera list (and
+grid layout) across all your devices via iCloud Drive. Passwords stay
+per-device in Keychain — they never leave the device they were entered on.
+See [`AppiOS/README.md`](AppiOS/README.md) for the iOS-specific layout.
 
 ![Adaptive multi-camera grid](docs/screenshots/grid-adaptive.png)
 

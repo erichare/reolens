@@ -1,6 +1,7 @@
 import SwiftUI
 import ReolinkAPI
 import ReolinkStreaming
+import AppShared
 
 /// Live RTSP-backed tile.
 ///

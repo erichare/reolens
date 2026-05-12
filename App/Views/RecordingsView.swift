@@ -3,6 +3,7 @@ import AVKit
 import OSLog
 import ReolinkAPI
 import ReolinkBaichuan
+import AppShared
 
 private let log = Logger(subsystem: "com.reolens.app", category: "recordings")
 

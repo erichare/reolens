@@ -25,13 +25,21 @@ private let log = Logger(subsystem: "com.reolens.app", category: "recordings")
 /// which feels smooth in the UI.
 @MainActor
 @Observable
-final class RecordingDownloader {
-    var state: State = .idle
-    var bytesReceived: Int64 = 0
-    var totalBytes: Int64 = 0
-    var localURL: URL?
+public final class RecordingDownloader {
+    // Properties are `public` (not `package`) because Xcode 16's @Observable
+    // macro expansion conflicts with `package` on tracked properties — it
+    // emits `@ObservationIgnored private package var _state` for the
+    // backing storage and the compiler flags `private` + `package` as
+    // incompatible access modifiers. `public` doesn't trigger the same
+    // expansion path. (Xcode 17's macro is more permissive but CI still
+    // builds on Xcode 16.) The class itself is `public` so the property
+    // access modifier isn't more open than the type.
+    public var state: State = .idle
+    public var bytesReceived: Int64 = 0
+    public var totalBytes: Int64 = 0
+    public var localURL: URL?
 
-    enum State: Equatable {
+    public enum State: Equatable {
         case idle
         case downloading
         case ready
@@ -55,7 +63,7 @@ final class RecordingDownloader {
     private var legacyTask: URLSessionDownloadTask?
     private var legacyObservations: [NSKeyValueObservation] = []
 
-    init() {
+    public init() {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 1800
@@ -66,7 +74,7 @@ final class RecordingDownloader {
         self.session = URLSession(configuration: config)
     }
 
-    func start(url: URL) {
+    public func start(url: URL) {
         cancel()
         state = .downloading
         bytesReceived = 0
@@ -79,7 +87,7 @@ final class RecordingDownloader {
         }
     }
 
-    func cancel() {
+    public func cancel() {
         workTask?.cancel()
         workTask = nil
         legacyTask?.cancel()
@@ -88,7 +96,7 @@ final class RecordingDownloader {
         legacyObservations.removeAll()
     }
 
-    func cleanupTempFile() {
+    public func cleanupTempFile() {
         if let url = localURL {
             try? FileManager.default.removeItem(at: url)
             localURL = nil

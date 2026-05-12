@@ -38,8 +38,8 @@ public struct HubEventEnvelope: Decodable, Sendable {
     }
 }
 
-extension HubEvent {
-    init?(json: AnyJSON) {
+package extension HubEvent {
+    package init?(json: AnyJSON) {
         guard let dict = json.dictionary else { return nil }
         // Try to extract start/end timestamps under any of several names.
         let startCandidates = ["StartTime", "startTime", "start", "BeginTime"]
@@ -99,7 +99,7 @@ private func parseDate(_ v: AnyJSON) -> Date? {
 public extension DetectionType {
     /// Map common Reolink string labels (from `GetAiState`/`aiType`/etc.) to
     /// our enum.
-    static func fromReolinkString(_ s: String) -> DetectionType? {
+    package static func fromReolinkString(_ s: String) -> DetectionType? {
         switch s.lowercased() {
         case "motion", "md": .motion
         case "people", "person", "human": .person

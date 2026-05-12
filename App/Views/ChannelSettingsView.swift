@@ -1,6 +1,7 @@
 import SwiftUI
 import ReolinkAPI
 import ReolinkBaichuan
+import AppShared
 
 /// Per-channel settings — currently OSD (on-screen display) toggles for the
 /// camera-name and time overlays the camera bakes into the video stream.

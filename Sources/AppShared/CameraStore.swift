@@ -58,7 +58,7 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
     }
 
     /// Codable conformance: serialize the dict with String keys so JSON is round-trip clean.
-    enum CodingKeys: String, CodingKey {
+    package enum CodingKeys: String, CodingKey {
         case id, displayName, host, port, username, useHTTPS, preferredCodec,
              channelRotations,         // legacy: per-channel rotation, no stream split
              channelStreamRotations,   // new: per-(channel, stream) rotation
@@ -134,18 +134,17 @@ public final class CameraStore {
     }
     private static let developerModeKey = "com.reolens.developerMode"
 
-    private let storageURL: URL
-
     public init() {
-        let appSupport = try? FileManager.default.url(
-            for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
-        )
-        let dir = appSupport?.appendingPathComponent("Reolens", isDirectory: true)
-            ?? URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("Reolens", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        self.storageURL = dir.appendingPathComponent("cameras.json")
+        let storage = ICloudCameraStorage.shared
+        storage.migrateLegacyLocalIfNeeded()
         self.developerMode = UserDefaults.standard.bool(forKey: Self.developerModeKey)
         load()
+        // Watch for remote pushes from a sibling device. When another
+        // Mac/iPad/iPhone signs in to the same iCloud account writes
+        // `cameras.json`, this fires and we rebuild the in-memory model.
+        storage.observeRemoteChanges { [weak self] in
+            self?.reloadFromStorageIfChanged()
+        }
     }
 
     public func add(_ entry: CameraEntry, password: String) {
@@ -320,14 +319,29 @@ public final class CameraStore {
     }
 
     private func load() {
-        guard let data = try? Data(contentsOf: storageURL),
+        guard let data = ICloudCameraStorage.shared.read(),
               let entries = try? JSONDecoder().decode([CameraEntry].self, from: data) else { return }
         cameras = entries
-        selection = entries.first.map { .device($0.id) }
+        if selection == nil {
+            selection = entries.first.map { .device($0.id) }
+        }
     }
 
     private func save() {
         guard let data = try? JSONEncoder().encode(cameras) else { return }
-        try? data.write(to: storageURL, options: .atomic)
+        ICloudCameraStorage.shared.write(data)
+    }
+
+    /// Pull the latest JSON from storage and rebuild the in-memory model
+    /// only if the on-disk contents differ from what we have. Called by
+    /// the iCloud metadata-query handler when another device pushes a
+    /// change. Preserves the user's current `selection` so a remote
+    /// update doesn't yank the focus away mid-interaction.
+    private func reloadFromStorageIfChanged() {
+        guard let data = ICloudCameraStorage.shared.read(),
+              let entries = try? JSONDecoder().decode([CameraEntry].self, from: data) else { return }
+        if entries != cameras {
+            cameras = entries
+        }
     }
 }

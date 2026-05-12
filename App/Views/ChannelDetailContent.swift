@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import ReolinkAPI
 import ReolinkBaichuan
+import AppShared
 
 /// Shared single-camera UI: Live / Recordings / Settings tabs with a
 /// control bar (PTZ, talkback, rotate, fullscreen). Used both when the

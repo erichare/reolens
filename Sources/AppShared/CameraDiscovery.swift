@@ -185,7 +185,7 @@ public actor CameraDiscovery {
 /// duration, resolves each result to an IPv4 host, and returns a
 /// `host → advertised-service-name` map. Lives outside the actor because
 /// `NWBrowser` callbacks fire on an arbitrary dispatch queue.
-final class BonjourCollector: @unchecked Sendable {
+package final class BonjourCollector: @unchecked Sendable {
     private let continuation: CheckedContinuation<[String: String], Never>
     private var browsers: [NWBrowser] = []
     private var didFinish = false
@@ -193,7 +193,7 @@ final class BonjourCollector: @unchecked Sendable {
     private var nameByHost: [String: String] = [:]
     private var resolving: [NWConnection] = []
 
-    init(continuation: CheckedContinuation<[String: String], Never>) {
+    package init(continuation: CheckedContinuation<[String: String], Never>) {
         self.continuation = continuation
     }
 
@@ -201,7 +201,7 @@ final class BonjourCollector: @unchecked Sendable {
     /// closures — `bonjourIndex` returns immediately after calling this,
     /// so without a strong reference the collector would be deallocated
     /// and the timer would never fire `finish()`, hanging the scan.
-    func startBrowses(serviceTypes: [String], duration: TimeInterval) {
+    package func startBrowses(serviceTypes: [String], duration: TimeInterval) {
         for type in serviceTypes {
             let params = NWParameters()
             params.includePeerToPeer = false
@@ -262,7 +262,7 @@ final class BonjourCollector: @unchecked Sendable {
     /// Strip a trailing `-<hex/numeric serial>` so e.g.
     /// `"Home Hub Pro-EFA51F"` → `"Home Hub Pro"`. Conservative: only
     /// strips the suffix when it actually looks like a serial / MAC tail.
-    static func prettyName(from raw: String) -> String {
+    package static func prettyName(from raw: String) -> String {
         var name = raw
         if let dash = name.lastIndex(of: "-") {
             let after = name[name.index(after: dash)...]
@@ -274,7 +274,7 @@ final class BonjourCollector: @unchecked Sendable {
         return name.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    static func kindHint(from name: String) -> String {
+    package static func kindHint(from name: String) -> String {
         let lower = name.lowercased()
         if lower.contains("hub") { return "Hub" }
         if lower.contains("nvr") || lower.contains("rln") { return "NVR" }
@@ -310,12 +310,12 @@ final class BonjourCollector: @unchecked Sendable {
 }
 
 // MARK: - Local IP helpers (CameraDiscovery static)
-extension CameraDiscovery {
+package extension CameraDiscovery {
 
     /// Find the /24 prefix of the Mac's primary IPv4 interface (en0/en1/en2
     /// — any non-loopback, up-and-running interface with a valid v4 addr).
     /// Returns e.g. `"192.168.1"` for a Mac at `192.168.1.42`.
-    static func primarySubnetPrefix() -> String? {
+    package static func primarySubnetPrefix() -> String? {
         var ifaddr: UnsafeMutablePointer<ifaddrs>? = nil
         guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return nil }
         defer { freeifaddrs(first) }
