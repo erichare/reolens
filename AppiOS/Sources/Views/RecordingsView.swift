@@ -121,7 +121,15 @@ struct RecordingsView: View {
                 streamType: "main",
                 uid: uid
             )
-            entries = files.sorted { ($0.startDate ?? .distantPast) > ($1.startDate ?? .distantPast) }
+            // The Reolink hub occasionally returns the same fileName
+            // twice (e.g. when an alarm-marked recording and a
+            // motion-marked recording cover the exact same timestamp).
+            // Dedupe by fileName so SwiftUI ForEach doesn't warn about
+            // duplicate IDs, which makes per-row swipe / context menus
+            // misroute.
+            var seen = Set<String>()
+            let unique = files.filter { seen.insert($0.fileName).inserted }
+            entries = unique.sorted { ($0.startDate ?? .distantPast) > ($1.startDate ?? .distantPast) }
         } catch {
             log.error("findAlarmVideos failed: \(error.localizedDescription, privacy: .public)")
             errorMessage = error.localizedDescription
@@ -244,39 +252,102 @@ struct PlayableRecording: Identifiable, Hashable {
 /// Lightweight AVPlayer sheet. AVPlayer streams the recording's HTTP
 /// download URL directly — Reolink supports HTTP Range, so playback
 /// starts as soon as the first chunk arrives.
+///
+/// Observes the player item's status so we can surface a real error
+/// instead of a blank screen when Reolink's CGI auth doesn't play
+/// nicely with AVPlayer. (Recording playback on iOS is a known
+/// rough edge — see CHANGELOG / SECURITY.md for the planned fix
+/// using AVAssetResourceLoaderDelegate. The status observer lets us
+/// at least *see* the failure mode while we iterate.)
 struct RecordingPlayerSheet: View {
     let recording: PlayableRecording
 
     @Environment(\.dismiss) private var dismiss
     @State private var player: AVPlayer?
+    @State private var status: PlayerStatus = .loading
+
+    enum PlayerStatus: Equatable {
+        case loading
+        case playing
+        case failed(String)
+    }
 
     var body: some View {
         NavigationStack {
-            Group {
-                if let player {
-                    VideoPlayer(player: player)
-                        .ignoresSafeArea(.container, edges: .bottom)
-                } else {
-                    ProgressView()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+            content
+                .navigationTitle(headerTitle)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Done") { dismiss() }
+                    }
+                }
+                .onAppear(perform: startPlayback)
+                .onDisappear {
+                    player?.pause()
+                    player = nil
+                }
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch status {
+        case .loading:
+            ProgressView("Loading recording…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .playing:
+            if let player {
+                VideoPlayer(player: player)
+                    .ignoresSafeArea(.container, edges: .bottom)
+            }
+        case .failed(let message):
+            ContentUnavailableView {
+                Label("Couldn't play this recording", systemImage: "exclamationmark.triangle")
+            } description: {
+                VStack(spacing: 8) {
+                    Text("iOS playback of Reolink alarm clips is being reworked — for now, try the Mac app to play this clip.")
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
                 }
             }
-            .navigationTitle(headerTitle)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
+        }
+    }
+
+    private func startPlayback() {
+        let item = AVPlayerItem(url: recording.url)
+        let p = AVPlayer(playerItem: item)
+        self.player = p
+        // Observe load status so we don't sit on a permanent ProgressView
+        // if AVPlayer can't make sense of the response (most often:
+        // Reolink's CGI auth via query params + a chunked transfer
+        // encoding AVFoundation isn't happy with).
+        Task { @MainActor in
+            // Give AVPlayer a chance to start. 8s is generous;
+            // typical playable items reach .readyToPlay in <1s.
+            let deadline = Date().addingTimeInterval(8.0)
+            while Date() < deadline {
+                switch item.status {
+                case .readyToPlay:
+                    status = .playing
+                    p.play()
+                    return
+                case .failed:
+                    let message = item.error?.localizedDescription ?? "Unknown decode error"
+                    status = .failed(message)
+                    return
+                case .unknown:
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                @unknown default:
+                    try? await Task.sleep(nanoseconds: 200_000_000)
                 }
             }
-            .onAppear {
-                let p = AVPlayer(url: recording.url)
-                p.play()
-                self.player = p
-            }
-            .onDisappear {
-                player?.pause()
-                player = nil
-            }
+            // Hit the deadline without resolving — surface a soft error
+            // so the user isn't staring at a spinner forever.
+            status = .failed("Timed out waiting for the recording to start.")
         }
     }
 

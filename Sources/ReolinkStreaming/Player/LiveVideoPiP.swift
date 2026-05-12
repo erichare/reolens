@@ -44,6 +44,27 @@ public final class LiveVideoPiP: NSObject {
             log.info("PiP unsupported on this device")
             return nil
         }
+        // CRITICAL: configure the audio session BEFORE constructing the
+        // PiP controller. AVKit evaluates the system state at
+        // construction time to decide whether PiP is "possible"; if the
+        // audio session is the iOS default `.soloAmbient` at that
+        // moment, AVKit caches `isPictureInPicturePossible = false` and
+        // never re-evaluates. Symptom on iPad: tap the PiP button, it
+        // briefly enables then disables, and the FigApplicationStateMonitor
+        // logs `err=-19431` (PiP gave up).
+        //
+        // `.mixWithOthers` keeps other audio (music, video calls) from
+        // being interrupted by Reolens — important because we're a
+        // surveillance app, not a media-playback app.
+        let audioSession = AVAudioSession.sharedInstance()
+        if audioSession.category != .playback && audioSession.category != .playAndRecord {
+            do {
+                try audioSession.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
+                try audioSession.setActive(true, options: [])
+            } catch {
+                log.error("Audio session setup failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
         let contentSource = AVPictureInPictureController.ContentSource(
             sampleBufferDisplayLayer: player.displayLayer,
             playbackDelegate: PlaybackDelegate.shared
