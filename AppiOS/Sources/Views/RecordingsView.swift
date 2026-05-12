@@ -26,6 +26,12 @@ struct RecordingsView: View {
     @State private var selectedDate: Date = Date()
     @State private var files: [SearchFile] = []
     @State private var subFiles: [SearchFile] = []
+    /// Baichuan `findAlarmVideo` results for the same day. Cross-
+    /// referenced by time-range overlap to populate AI detection
+    /// badges on rows whose CGI `Search` trigger bitfield is empty
+    /// (the common case on Home Hub Pro firmware). Mirrors the
+    /// macOS app's pipeline.
+    @State private var alarmVideoEntries: [BaichuanAlarmVideoFile] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var nowPlaying: PlayableRecording?
@@ -115,6 +121,7 @@ struct RecordingsView: View {
         errorMessage = nil
         files = []
         subFiles = []
+        alarmVideoEntries = []
 
         if session.channels.isEmpty {
             await session.connect()
@@ -155,6 +162,32 @@ struct RecordingsView: View {
             subFiles = subList.filter { seen.insert($0.name).inserted }
         } else if case .failure(let message) = subResult {
             log.info("Sub-stream Search unavailable on channel \(channel.channel): \(message, privacy: .public)")
+        }
+
+        // Cross-reference Baichuan's alarm-video list to pick up AI
+        // detection tags that CGI Search's trigger bitfield doesn't
+        // populate on Home Hub Pro firmware. Failure is non-fatal —
+        // rows just fall back to whatever the Search bitfield carries
+        // (often empty for hub-paired cameras, but never wrong).
+        if let baichuan = session.baichuanClient {
+            let uid: String
+            if let cgiUID = channel.uid, !cgiUID.isEmpty {
+                uid = cgiUID
+            } else {
+                uid = await baichuan.fetchUID(channelID: UInt8(channel.channel))
+            }
+            do {
+                let entries = try await baichuan.findAlarmVideos(
+                    channel: UInt8(channel.channel),
+                    start: start,
+                    end: end,
+                    streamType: "main",
+                    uid: uid
+                )
+                alarmVideoEntries = entries
+            } catch {
+                log.info("findAlarmVideos for channel \(channel.channel) failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 
@@ -202,13 +235,25 @@ struct RecordingsView: View {
 
     /// Detection-trigger pipeline mirroring the macOS app:
     ///   1. CGI `Search` response's `Trigger` bitfield, when populated.
-    ///   2. Live Baichuan `aiEventLog` events received this session,
+    ///   2. Baichuan `findAlarmVideo` entries whose time range
+    ///      overlaps this CGI file's range. Most reliable source on
+    ///      Home Hub Pro firmware.
+    ///   3. Live Baichuan `aiEventLog` events received this session,
     ///      matched to the file's time range by channel + timestamp.
     private func effectiveDetections(for file: SearchFile) -> [DetectionType] {
         if !file.triggers.isEmpty { return file.triggers }
-        guard let start = file.startDate, let end = file.endDate else { return [] }
+
         var matches: [DetectionType] = []
         var seen = Set<DetectionType>()
+
+        for av in alarmVideosOverlapping(file: file) {
+            for d in av.detections where seen.insert(d).inserted {
+                matches.append(d)
+            }
+        }
+        if !matches.isEmpty { return matches }
+
+        guard let start = file.startDate, let end = file.endDate else { return [] }
         for event in session.aiEventLog
             where event.channelID == channel.channel
                 && event.timestamp >= start
@@ -218,6 +263,24 @@ struct RecordingsView: View {
             }
         }
         return matches
+    }
+
+    /// Find every Baichuan alarm-video entry whose time range overlaps
+    /// the given CGI Search file's. Half-open semantics — an entry
+    /// that ends exactly at the file's start belongs to the previous
+    /// file, not this one. Mirrors the macOS app's helper of the
+    /// same name.
+    private func alarmVideosOverlapping(file: SearchFile) -> [BaichuanAlarmVideoFile] {
+        guard let fileStart = file.startDate, let fileEnd = file.endDate else {
+            // Fall back to exact-filename match when timestamps are
+            // missing (shouldn't happen on healthy firmware).
+            return alarmVideoEntries.filter { $0.fileName == file.name }
+        }
+        return alarmVideoEntries.filter { av in
+            if av.fileName == file.name { return true }
+            guard let avStart = av.startDate, let avEnd = av.endDate else { return false }
+            return avStart < fileEnd && avEnd > fileStart
+        }
     }
 
     private func playEntry(file: SearchFile, sub: SearchFile?, preferSub: Bool) {
