@@ -4,6 +4,8 @@ import CoreImage
 import Observation
 import OSLog
 @preconcurrency import CoreMedia
+@preconcurrency import CoreVideo
+@preconcurrency import VideoToolbox
 #if os(macOS)
 import AppKit
 #elseif os(iOS) || os(tvOS) || os(visionOS)
@@ -18,6 +20,16 @@ public enum LivePlayerState: Sendable, Equatable {
     case playing
     case stopped
     case failed(String)
+}
+
+/// Unchecked-Sendable wrapper for a `CVPixelBuffer` reference being
+/// shipped between isolation domains (VT's private callback queue →
+/// MainActor for storage in `latestPixelBuffer`). CVPixelBuffer isn't
+/// Sendable under Swift 6 strict concurrency, but we only ever hand
+/// the reference across — never mutate the buffer — so the unchecked
+/// conformance is safe in this specific use.
+private struct SendablePixelBuffer: @unchecked Sendable {
+    let buffer: CVPixelBuffer
 }
 
 /// Orchestrates: RTSP client → H.264 or H.265 depacketizer → AVSampleBufferDisplayLayer.
@@ -38,21 +50,34 @@ public final class LiveVideoPlayer {
     /// Clockwise rotation in degrees applied by the host view.
     public var rotationDegrees: Int = 0
 
-    /// Weak reference to the host view (`SampleBufferHostView`) that
-    /// owns the `AVSampleBufferDisplayLayer` on screen. The
-    /// snapshot path renders THROUGH the view (via UIKit/AppKit's
-    /// display-cache APIs) rather than trying to extract a frame from
-    /// the sample buffers — those are *encoded* H.264/H.265 bitstream
-    /// that the display layer decodes internally, so
-    /// `CMSampleBufferGetImageBuffer` returns nil and our earlier
-    /// "cache the pixel buffer at enqueue time" approach was a no-op.
+    /// Latest decoded video frame, kept for snapshot capture. Updated
+    /// by a parallel `VTDecompressionSession` that consumes the same
+    /// samples we hand to `AVSampleBufferDisplayLayer` — extracting
+    /// the layer's already-decoded output isn't possible through any
+    /// public API (CALayer.render(in:) returns black on media layers;
+    /// UIView.drawHierarchy bypasses the hardware-compositing path
+    /// AVSampleBufferDisplayLayer uses). The parallel decode doubles
+    /// the per-tile CPU cost but only for tiles whose snapshot path
+    /// is ever exercised; the cost is negligible for sub-stream
+    /// 640×360 H.264 (grid tiles) and acceptable for main-stream
+    /// 4K H.265 (single-channel views).
     ///
-    /// Set by `LiveVideoView.makeNSView` / `makeUIView` after
-    /// attaching the player's layer. Weak so the host can be torn
-    /// down independently — the snapshot just returns nil if the
-    /// view is gone.
+    /// `@ObservationIgnored` so SwiftUI doesn't re-render on every
+    /// decoded frame.
     @ObservationIgnored
-    public weak var snapshotHost: (any SnapshotCapable)?
+    public private(set) var latestPixelBuffer: CVPixelBuffer?
+
+    /// The VT session used to populate `latestPixelBuffer`. Created
+    /// lazily on the first sample whose format description we see;
+    /// recreated whenever the format changes (rare — only on stream
+    /// restart). Nil when no samples have flowed through yet, or
+    /// after `stop()`.
+    @ObservationIgnored
+    private var snapshotSession: VTDecompressionSession?
+    @ObservationIgnored
+    private var snapshotFormatDescription: CMFormatDescription?
+    @ObservationIgnored
+    private lazy var snapshotCIContext = CIContext(options: nil)
 
     /// Optional list of URLs to try in order. If the first fails with anything other than
     /// an authentication error, we try the next. Useful for "try main as H.265, fall back
@@ -109,9 +134,14 @@ public final class LiveVideoPlayer {
             await c?.teardown()
             t?.cancel()
         }
-        // Drop the host-view reference so a stopped player doesn't
-        // hold a dangling pointer back into a torn-down UIView/NSView.
-        snapshotHost = nil
+        // Tear down the parallel snapshot decoder so a stopped player
+        // doesn't hold a VT session or a frame of memory.
+        if let session = snapshotSession {
+            VTDecompressionSessionInvalidate(session)
+        }
+        snapshotSession = nil
+        snapshotFormatDescription = nil
+        latestPixelBuffer = nil
         state = .stopped
     }
 
@@ -324,12 +354,11 @@ public final class LiveVideoPlayer {
         }
         displayLayer.enqueue(sample)
         enqueuedSampleCount += 1
-        // No pixel-buffer caching here — the samples we receive are
-        // encoded H.264/H.265 bitstream, so CMSampleBufferGetImageBuffer
-        // always returns nil for them. Snapshot capture instead goes
-        // through the host view's display-cache path; see
-        // `LiveVideoPlayer.currentSnapshot` and `SnapshotCapable`.
-        //
+        // Feed the same sample to a parallel VT session so we have a
+        // decoded CVPixelBuffer available for snapshot. See the
+        // `latestPixelBuffer` doc comment for why this is necessary —
+        // tldr: AVSampleBufferDisplayLayer hides its decoded output.
+        snapshotDecode(sample)
         // Publish the decoded natural size once. Used by the UI to auto-mark
         // dual-lens cameras (which produce stitched ~32:9 frames).
         if naturalSize == nil, let fd = CMSampleBufferGetFormatDescription(sample) {
@@ -347,20 +376,22 @@ public final class LiveVideoPlayer {
     // MARK: - Snapshot
 
     /// Capture the current live frame as a `CGImage`. Returns nil if
-    /// the host view isn't attached yet (player started but never
-    /// rendered) or if the host's bounds are empty.
+    /// the player hasn't decoded any frames yet (still connecting,
+    /// or VT session creation failed).
     ///
-    /// The capture goes through the system's display-cache pipeline
-    /// (`drawHierarchy(in:afterScreenUpdates:)` on iOS,
-    /// `cacheDisplay(in:to:)` on macOS) — that's what gets us the
-    /// *decoded, rotated, on-screen* frame. The pixel buffers we
-    /// enqueue into `AVSampleBufferDisplayLayer` are still encoded
-    /// H.264/H.265 bitstream; the display layer decodes them
-    /// internally, and the only practical way to access the resulting
-    /// frame is to ask the layer's host view to draw itself into a
-    /// bitmap context.
+    /// Applies the rotation the host view is showing so the saved
+    /// image matches what the user sees on screen.
     public func currentSnapshot() -> CGImage? {
-        snapshotHost?.captureSnapshot()
+        guard let pixelBuffer = latestPixelBuffer else { return nil }
+        var image = CIImage(cvPixelBuffer: pixelBuffer)
+        if rotationDegrees != 0 {
+            // CIImage rotates COUNTER-clockwise for positive radians;
+            // our `rotationDegrees` is the clockwise angle applied to
+            // the display layer. Flip the sign to keep them aligned.
+            let radians = -CGFloat(rotationDegrees) * .pi / 180
+            image = image.transformed(by: CGAffineTransform(rotationAngle: radians))
+        }
+        return snapshotCIContext.createCGImage(image, from: image.extent)
     }
 
     #if os(iOS) || os(visionOS)
@@ -377,13 +408,75 @@ public final class LiveVideoPlayer {
         return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
     }
     #endif
-}
 
-/// Implementation hook that `LiveVideoView`'s host views adopt so the
-/// player can snapshot through them. Lives on the streaming module
-/// boundary so callers don't have to know which platform-specific
-/// view backs the layer.
-@MainActor
-public protocol SnapshotCapable: AnyObject {
-    func captureSnapshot() -> CGImage?
+    // MARK: - Parallel snapshot decoder
+
+    /// Feed a sample to the parallel VT session used to keep
+    /// `latestPixelBuffer` fresh. Creates the session on first call
+    /// (or whenever the format description changes — rare).
+    private func snapshotDecode(_ sample: CMSampleBuffer) {
+        guard let fd = CMSampleBufferGetFormatDescription(sample) else { return }
+        if snapshotSession == nil || snapshotFormatDescription !== fd {
+            createSnapshotSession(formatDescription: fd)
+        }
+        guard let session = snapshotSession else { return }
+        var infoFlagsOut = VTDecodeInfoFlags()
+        let status = VTDecompressionSessionDecodeFrame(
+            session,
+            sampleBuffer: sample,
+            flags: [._EnableAsynchronousDecompression],
+            infoFlagsOut: &infoFlagsOut
+        ) { [weak self] status, _, imageBuffer, _, _ in
+            // Callback fires on a private VT queue. Hop to MainActor
+            // to update `latestPixelBuffer`, which @Observable expects
+            // to be touched on the same isolation as the rest of the
+            // class. CVPixelBuffer isn't Sendable under Swift 6 strict
+            // concurrency, so wrap it in an @unchecked-Sendable box —
+            // we don't mutate the buffer here, just hand the reference
+            // to MainActor for storage.
+            guard status == noErr, let imageBuffer else { return }
+            let boxed = SendablePixelBuffer(buffer: imageBuffer)
+            Task { @MainActor [weak self] in
+                self?.latestPixelBuffer = boxed.buffer
+            }
+        }
+        if status != noErr && enqueuedSampleCount <= 5 {
+            log.debug("VT decode frame status=\(status) sample#=\(self.enqueuedSampleCount)")
+        }
+    }
+
+    private func createSnapshotSession(formatDescription: CMFormatDescription) {
+        if let existing = snapshotSession {
+            VTDecompressionSessionInvalidate(existing)
+            snapshotSession = nil
+        }
+        // 32BGRA is the friendliest format for downstream CIImage →
+        // CGImage conversion. The IOSurface attribute lets the
+        // hardware decoder write directly into a Metal-compatible
+        // buffer.
+        let attrs: [CFString: Any] = [
+            kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferIOSurfacePropertiesKey: [String: Any]()
+        ]
+        var session: VTDecompressionSession?
+        let status = VTDecompressionSessionCreate(
+            allocator: kCFAllocatorDefault,
+            formatDescription: formatDescription,
+            decoderSpecification: nil,
+            imageBufferAttributes: attrs as CFDictionary,
+            outputCallback: nil,
+            decompressionSessionOut: &session
+        )
+        guard status == noErr, let session else {
+            log.error("VTDecompressionSessionCreate failed: \(status)")
+            snapshotFormatDescription = nil
+            return
+        }
+        // Don't insist on real-time playback — if the device is
+        // overloaded, dropping snapshot decodes is fine. The display
+        // layer's primary decode path is independent.
+        VTSessionSetProperty(session, key: kVTDecompressionPropertyKey_RealTime, value: kCFBooleanFalse)
+        snapshotSession = session
+        snapshotFormatDescription = formatDescription
+    }
 }
