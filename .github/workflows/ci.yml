@@ -260,12 +260,22 @@ jobs:
         working-directory: AppiOS
         run: xcodegen generate
 
-      - name: Build for iOS Simulator (unsigned)
+      # Build against the iOS device generic platform rather than the
+      # iOS Simulator. The macos-26 runner image ships the iOS 26 SDK
+      # (under the selected Xcode) but doesn't preinstall the iOS
+      # Simulator runtime — `xcodebuild` fails with "Unable to find a
+      # destination matching the provided destination specifier:
+      # { generic:1, platform:iOS Simulator }". Targeting the device
+      # platform produces the same compile-time signal we want
+      # (entire codebase must compile against the iOS 26 SDK), needs
+      # only the SDK (not the simulator runtime), and stays unsigned
+      # via CODE_SIGNING_ALLOWED=NO.
+      - name: Build for iOS (device, unsigned)
         run: |
           xcodebuild \
             -project AppiOS/ReolensiOS.xcodeproj \
             -scheme ReolensiOS \
-            -destination 'generic/platform=iOS Simulator' \
+            -destination 'generic/platform=iOS' \
             -derivedDataPath build-ios \
             CODE_SIGNING_ALLOWED=NO \
             build
@@ -273,7 +283,9 @@ jobs:
       - name: Validate iOS app icons
         run: |
           set -euo pipefail
-          APP="build-ios/Build/Products/Debug-iphonesimulator/Reolens.app"
+          # Device build lands under Debug-iphoneos (vs. Debug-
+          # iphonesimulator for the simulator target).
+          APP="build-ios/Build/Products/Debug-iphoneos/Reolens.app"
           test -d "${APP}"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconName' "${APP}/Info.plist")" = "AppIcon"
           test -f "${APP}/Assets.car"
