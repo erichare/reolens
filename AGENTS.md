@@ -151,7 +151,7 @@ Bump the suffix on any breaking field change in a future minor release; never ov
 ## 12. Testing
 
 - Use Swift Testing (`import Testing`, `@Test`, `#expect`). New tests should not be XCTest.
-- 80% coverage **floor** on `AppShared`, `ReolinkAPI`, `ReolinkStreaming`, and `ReolinkBaichuan` — enforced by `Scripts/coverage-gate.sh` in CI as of 0.5.0 (was aspirational through 0.4.x).
+- 80% coverage **target** on `AppShared`, `ReolinkAPI`, `ReolinkStreaming`, and `ReolinkBaichuan`. The 0.5.0 release introduced `Scripts/coverage-gate.sh` and wired it into CI to surface the numbers on every PR; it runs as `continue-on-error: true` today because the same release expanded `AppShared` with substantial SwiftUI view code (ScrubberView, DigestDetailView, PrivacyZoneEditorView, ReolensGlass, ChannelSettingsView, …) that isn't unit-testable in isolation, dragging the measured floor below 80%. Flipping the gate to **enforced** is a one-line workflow change (`continue-on-error: false`) once the AppShared view surface has matching test coverage and the protocol libraries climb above the floor. Treat the report as a hard pre-merge signal in spirit even though CI doesn't block on it yet — every new test added is expected to move the needle.
 - No real network in tests. Use fixture servers (`URLProtocol` stubs, in-process HTTP servers) or protocol-injected fakes.
 - Each test gets a fresh instance — `init`/`deinit`, no shared mutable state.
 - Tests must be deterministic. If a test depends on timing, it's wrong.
