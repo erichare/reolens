@@ -272,22 +272,26 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # Use the latest Xcode 26.x available on the runner — ships the
-      # iOS 26 SDK + simulator runtime that our deployment-target
-      # 26.0 needs. Older runner images had `Xcode_16.x.app` which
-      # lacks the iOS 26 SDK entirely.
-      - name: Select latest Xcode 26
+      # Use a non-beta Xcode 26.x with the iOS generic device platform
+      # installed. On the macos-26 runner, Xcode 26.5 currently ships the
+      # SDK but not the matching installed device platform, so
+      # `generic/platform=iOS` fails with "iOS 26.5 is not installed".
+      # Prefer the newest non-beta Xcode below 26.5.
+      - name: Select archive-compatible Xcode 26
         run: |
-          # Filter `beta` out — runner images sometimes carry a beta
-          # Xcode (e.g. Xcode_26.5_beta_2.app) whose iOS simulator
-          # runtimes are NOT preinstalled. `actool` insists on a
-          # simulator runtime matching the SDK even for device-only
-          # builds, so picking a beta Xcode breaks asset-catalog
-          # compilation with "No simulator runtime version from […]
-          # available to use with iphonesimulator SDK version …".
-          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | grep -vi beta | sort -V | tail -n 1)
+          # Filter beta and 26.5 out. The former lacks matching
+          # runtimes; the latter currently lacks the installed iOS 26.5
+          # device platform component on GitHub's macos-26 image.
+          XCODE_PATH=$(
+            find /Applications -maxdepth 1 -type d -name 'Xcode_26*.app' \
+              | grep -vi beta \
+              | grep -Ev 'Xcode_26\.5([^0-9]|$)' \
+              | sort -V \
+              | tail -n 1
+          )
           if [ -z "$XCODE_PATH" ]; then
-            echo "No Xcode 26.x found on the runner image." >&2
+            echo "No archive-compatible non-beta Xcode 26.x below 26.5 found." >&2
+            echo "Reolens targets iOS 26.0; do not build against brand-new Xcode 26.5 until GitHub's runner image has the matching iOS platform installed." >&2
             ls /Applications/ | grep -i Xcode || true
             exit 1
           fi
@@ -342,10 +346,6 @@ jobs:
         continue-on-error: true
         run: |
           set -x
-          # Best-effort: ask Xcode to fetch the iOS device platform
-          # matching the selected toolchain. If this errors, skip
-          # ahead — the next step's `continue-on-error` swallows it.
-          xcodebuild -downloadPlatform iOS 2>&1 | tail -n 20 || true
           xcodebuild \
             -project AppiOS/ReolensiOS.xcodeproj \
             -scheme ReolensiOS \

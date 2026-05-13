@@ -332,8 +332,12 @@ jobs:
         with:
           ref: ${{ steps.tag.outputs.tag }}
 
-      # The iOS job uses Xcode 26.3 (latest on the macos-15 image) — it
-      # ships iOS 26 SDK *and* the iOS device platform pre-installed.
+      # The iOS job intentionally avoids Xcode 26.5 on GitHub's
+      # macos-26 image. That image ships the 26.5 SDK, but not the
+      # matching installed iOS device platform, so `generic/platform=iOS`
+      # fails with "iOS 26.5 is not installed" during archive. Prefer the
+      # newest non-beta Xcode 26.x below 26.5, which still satisfies the
+      # iOS 26 deployment target and has a usable generic device platform.
       # The macOS `release` job above uses Xcode 16, which has been
       # working for the Mac DMG flow, so we don't touch it.
       #
@@ -343,14 +347,21 @@ jobs:
       # runner with "Unable to connect to simulator" — a known issue
       # where the downloader's progress reporter can't start
       # CoreSimulator. Picking a pre-stocked Xcode dodges all of that.
-      - name: Select latest Xcode 26
+      - name: Select archive-compatible Xcode 26
         run: |
-          # Skip beta Xcodes — their simulator runtimes aren't
-          # preinstalled, which breaks actool even on device builds.
-          # See the matching comment in ci.yml.
-          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | grep -vi beta | sort -V | tail -n 1)
+          # Skip beta Xcodes and Xcode 26.5 on this runner image.
+          # Xcode_26.5.0.app currently lacks the downloadable iOS 26.5
+          # device platform component required by archive destinations.
+          XCODE_PATH=$(
+            find /Applications -maxdepth 1 -type d -name 'Xcode_26*.app' \
+              | grep -vi beta \
+              | grep -Ev 'Xcode_26\.5([^0-9]|$)' \
+              | sort -V \
+              | tail -n 1
+          )
           if [ -z "$XCODE_PATH" ]; then
-            echo "No Xcode 26.x found on the runner image." >&2
+            echo "No archive-compatible non-beta Xcode 26.x below 26.5 found." >&2
+            echo "Reolens targets iOS 26.0; do not archive against brand-new Xcode 26.5 until GitHub's runner image has the matching iOS platform installed." >&2
             ls /Applications/ | grep -i Xcode || true
             exit 1
           fi
