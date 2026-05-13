@@ -1,5 +1,6 @@
 import Foundation
 import CloudKit
+import Security
 import ReolinkBaichuan
 import ReolinkAPI
 import os
@@ -173,13 +174,19 @@ public actor CloudKitMotionEventPublisher: MotionEventPublisher {
 /// `CKContainer.init` traps hard rather than returning an error when
 /// the running binary lacks the iCloud-container entitlement (most
 /// commonly: ad-hoc-signed dev builds whose entitlements file
-/// drops the iCloud container to keep AMFI happy). The ubiquity
-/// container API returns nil without side effects in the same case,
-/// so it's a safe pre-flight check.
+/// drops the iCloud container to keep AMFI happy).
+///
+/// We read the running task's entitlements directly via
+/// `SecTaskCopyValueForEntitlement`. That returns the bytes the
+/// signature embedded, so a Developer-ID-signed release DMG with
+/// the entitlement reports `true` whether or not the user is signed
+/// into iCloud yet — which is the right contract. The earlier
+/// `FileManager.url(forUbiquityContainerIdentifier:)` probe also
+/// returned nil for "user hasn't enabled iCloud Drive" and "lazy
+/// container hasn't initialized," which incorrectly disabled the
+/// relay toggle on legitimately-capable builds.
 public enum CloudKitAvailability {
-    /// Memoized so the file-system probe only runs once per process.
-    /// Stored separately per container ID since the entitlement
-    /// could grant some containers but not others.
+    /// Memoized so the entitlement probe only runs once per process.
     private static let lock = NSLock()
     nonisolated(unsafe) private static var cache: [String: Bool] = [:]
 
@@ -189,15 +196,22 @@ public enum CloudKitAvailability {
         if let cached = cache[containerID] {
             return cached
         }
-        // The ubiquity container API doesn't trap on entitlement-less
-        // binaries — it just returns nil. CloudKit and the
-        // iCloud-Drive container share the same `iCloud.<...>`
-        // entitlement, so presence-of-ubiquity implies presence-of-
-        // CloudKit on the same identifier.
-        let url = FileManager.default.url(forUbiquityContainerIdentifier: containerID)
-        let available = url != nil
+        let available = signedEntitlementContainers().contains(containerID)
         cache[containerID] = available
         return available
+    }
+
+    /// Read `com.apple.developer.icloud-container-identifiers` from
+    /// the running task's signed entitlements. Returns an empty
+    /// array on any failure (ad-hoc signing without the entitlement,
+    /// or SecTask APIs failing for an unsigned binary) — caller
+    /// treats absent as "CloudKit unavailable" so we never reach
+    /// the `CKContainer.init` trap.
+    private static func signedEntitlementContainers() -> [String] {
+        guard let task = SecTaskCreateFromSelf(nil) else { return [] }
+        let key = "com.apple.developer.icloud-container-identifiers" as CFString
+        guard let value = SecTaskCopyValueForEntitlement(task, key, nil) else { return [] }
+        return (value as? [String]) ?? []
     }
 }
 

@@ -30,7 +30,7 @@ AVFoundation/VideoToolbox — no Electron, no Java, no QtWebEngine. Cold
 launches in under a second; battery-friendly; feels like every other native
 Apple app on each platform.
 
-**As of v0.4.1**, the macOS, iPadOS, and iPhone apps are at feature parity
+**As of v0.4.2**, the macOS, iPadOS, and iPhone apps are at feature parity
 for the live-viewing experience — same grid presets, tap-and-hold
 rearrange, search, save-snapshot, Shortcuts/Siri, and a per-channel
 Settings tab on every platform (plus Picture-in-Picture and pinch-to-zoom

@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-05-12
+
+Single-fix patch on top of 0.4.1.
+
+### Fixed
+
+- **macOS Settings → Privacy → "Push notifications to iPhone / iPad"
+  was incorrectly showing "iCloud isn't available on this Reolens
+  build"** on properly-signed release DMGs. Root cause: 0.4.1's
+  `CloudKitAvailability.canUseCloudKit(containerID:)` probe used
+  `FileManager.url(forUbiquityContainerIdentifier:)` as a proxy for
+  "does this binary carry the iCloud entitlement." That URL is nil
+  not only when the entitlement is missing — also when the user
+  hasn't signed into iCloud, hasn't enabled iCloud Drive, hasn't
+  enabled Reolens for iCloud Drive in System Settings, or simply
+  hasn't triggered lazy container materialization yet on this
+  install. A correctly-signed Reolens with the full iCloud
+  entitlement chain therefore read as "unavailable" on first
+  launches and the relay toggle stayed disabled.
+
+  Replaced with a direct read of the running task's signed
+  entitlements via `SecTaskCopyValueForEntitlement`. That returns
+  the bytes embedded by the signing process and has no system-state
+  side dependencies — the Developer-ID-signed release DMG reports
+  `true` immediately, ad-hoc dev builds without the entitlement
+  report `false` immediately, regardless of iCloud account state.
+
 ## [0.4.1] — 2026-05-12
 
 A trust-and-polish release on top of 0.4.0. Headlines: **CloudKit
@@ -712,7 +739,8 @@ First public release.
 - All camera passwords stored in the macOS Keychain — never in plain text
 - No analytics, no telemetry, no accounts
 
-[Unreleased]: https://github.com/jestatsio/reolens/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/jestatsio/reolens/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/jestatsio/reolens/releases/tag/v0.4.2
 [0.4.1]: https://github.com/jestatsio/reolens/releases/tag/v0.4.1
 [0.4.0]: https://github.com/jestatsio/reolens/releases/tag/v0.4.0
 [0.3.0]: https://github.com/jestatsio/reolens/releases/tag/v0.3.0
