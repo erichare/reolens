@@ -126,7 +126,18 @@ if [[ -n "${AC_API_KEY_P8_BASE64:-}" ]]; then
     # `export` so the preflight python subprocess inherits it. Same
     # rationale for AC_API_KEY_ID / AC_API_ISSUER_ID below.
     export AC_API_KEY_P8_PATH="${AC_KEY_TMPDIR}/AuthKey_${AC_API_KEY_ID}.p8"
-    echo "${AC_API_KEY_P8_BASE64}" | base64 -D > "${AC_API_KEY_P8_PATH}"
+    # Accept either format in the secret: raw PEM (the .p8 file's
+    # contents as Apple distributes them, beginning with
+    # `-----BEGIN PRIVATE KEY-----`) OR the base64-encoded version
+    # of that PEM. Auto-detect by sniffing the first line.
+    # Previously the script always ran `base64 -D` which produced
+    # garbage bytes when the secret was already PEM, surfacing
+    # cryptography's `MalformedFraming` from the inline preflight.
+    if printf '%s' "${AC_API_KEY_P8_BASE64}" | head -n 1 | grep -q '^-----BEGIN'; then
+        printf '%s\n' "${AC_API_KEY_P8_BASE64}" > "${AC_API_KEY_P8_PATH}"
+    else
+        printf '%s' "${AC_API_KEY_P8_BASE64}" | base64 -D > "${AC_API_KEY_P8_PATH}"
+    fi
     trap 'rm -rf "${AC_KEY_TMPDIR}"' EXIT
 fi
 # Propagate to child processes regardless of how AC_API_KEY_P8_PATH was

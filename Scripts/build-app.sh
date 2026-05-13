@@ -73,7 +73,16 @@ AC_KEY_TMPDIR=""
 if [[ -z "${AC_API_KEY_P8_PATH:-}" && -n "${AC_API_KEY_P8_BASE64:-}" && -n "${AC_API_KEY_ID:-}" ]]; then
     AC_KEY_TMPDIR=$(mktemp -d)
     export AC_API_KEY_P8_PATH="${AC_KEY_TMPDIR}/AuthKey_${AC_API_KEY_ID}.p8"
-    echo "${AC_API_KEY_P8_BASE64}" | base64 -D > "${AC_API_KEY_P8_PATH}"
+    # Accept either format in the secret: raw PEM (the .p8 file's
+    # contents, beginning with `-----BEGIN PRIVATE KEY-----`) OR the
+    # base64-encoded version. Auto-detect on the first line so the
+    # maintainer doesn't have to remember to `base64 -i` the file.
+    # Mirrors the same block in Scripts/build-ios.sh.
+    if printf '%s' "${AC_API_KEY_P8_BASE64}" | head -n 1 | grep -q '^-----BEGIN'; then
+        printf '%s\n' "${AC_API_KEY_P8_BASE64}" > "${AC_API_KEY_P8_PATH}"
+    else
+        printf '%s' "${AC_API_KEY_P8_BASE64}" | base64 -D > "${AC_API_KEY_P8_PATH}"
+    fi
     trap 'rm -rf "${AC_KEY_TMPDIR}"' EXIT
 fi
 
