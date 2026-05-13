@@ -63,8 +63,19 @@ elif [[ -n "${AC_API_KEY_ID:-}" && -n "${AC_API_ISSUER_ID:-}" ]]; then
     KEY_PATH="${AC_API_KEY_P8:-}"
     if [[ -z "${KEY_PATH}" && -n "${AC_API_KEY_P8_BASE64:-}" ]]; then
         KEY_PATH="$(mktemp)"
-        # macOS base64 doesn't accept --decode; -D is the portable flag.
-        printf '%s' "${AC_API_KEY_P8_BASE64}" | base64 -D > "${KEY_PATH}"
+        # Accept either format in the secret: raw PEM (the .p8
+        # file's contents, beginning with `-----BEGIN PRIVATE
+        # KEY-----`) OR the base64-encoded version. Auto-detect
+        # by sniffing the first line. Mirrors the same block in
+        # Scripts/build-{app,ios}.sh — without this branch the
+        # downstream `xcrun notarytool` would receive garbage
+        # bytes and fail with "invalidPrivateKeyContents".
+        if printf '%s' "${AC_API_KEY_P8_BASE64}" | head -n 1 | grep -q '^-----BEGIN'; then
+            printf '%s\n' "${AC_API_KEY_P8_BASE64}" > "${KEY_PATH}"
+        else
+            # macOS base64 doesn't accept --decode; -D is the portable flag.
+            printf '%s' "${AC_API_KEY_P8_BASE64}" | base64 -D > "${KEY_PATH}"
+        fi
     fi
     if [[ -z "${KEY_PATH}" || ! -f "${KEY_PATH}" ]]; then
         echo "Missing AC_API_KEY_P8 (path) or AC_API_KEY_P8_BASE64 (contents)" >&2
