@@ -173,18 +173,31 @@ public actor CloudKitMotionEventPublisher: MotionEventPublisher {
 /// Cheap "do we have iCloud entitlements at all" probe. CloudKit's
 /// `CKContainer.init` traps hard rather than returning an error when
 /// the running binary lacks the iCloud-container entitlement (most
-/// commonly: ad-hoc-signed dev builds whose entitlements file
-/// drops the iCloud container to keep AMFI happy).
+/// commonly: ad-hoc-signed dev builds whose entitlements file drops
+/// the iCloud container to keep AMFI happy on `swift build` /
+/// `swift run`).
 ///
-/// We read the running task's entitlements directly via
-/// `SecTaskCopyValueForEntitlement`. That returns the bytes the
-/// signature embedded, so a Developer-ID-signed release DMG with
-/// the entitlement reports `true` whether or not the user is signed
-/// into iCloud yet — which is the right contract. The earlier
-/// `FileManager.url(forUbiquityContainerIdentifier:)` probe also
-/// returned nil for "user hasn't enabled iCloud Drive" and "lazy
-/// container hasn't initialized," which incorrectly disabled the
-/// relay toggle on legitimately-capable builds.
+/// macOS reads the running process's signed entitlements via
+/// `SecCodeCopySigningInformation`, which returns whatever the
+/// codesign blob baked in. That gives a `true` for any
+/// Developer-ID-signed (or App Store / TestFlight) release whether
+/// or not the user is signed into iCloud yet, and a clean `false`
+/// for ad-hoc-signed dev binaries that intentionally drop the
+/// container.
+///
+/// iOS has no public API for reading the running task's entitlements
+/// (`SecTask*` is private SPI on both platforms but the
+/// `SecCode*` codesigning APIs are macOS-only), and iOS distribution
+/// paths — App Store, TestFlight, and dev-device builds — always
+/// embed the entitlements declared in `AppiOS/project.yml`. There is
+/// no path where an iOS binary runs without its declared
+/// entitlements, so the iOS branch trusts the build.
+///
+/// The earlier 0.4.1 probe used
+/// `FileManager.url(forUbiquityContainerIdentifier:)` which returned
+/// nil whenever the user hadn't enabled iCloud Drive in System
+/// Settings — that incorrectly disabled the relay toggle on
+/// legitimately-capable release builds.
 public enum CloudKitAvailability {
     /// Memoized so the entitlement probe only runs once per process.
     private static let lock = NSLock()
@@ -196,23 +209,57 @@ public enum CloudKitAvailability {
         if let cached = cache[containerID] {
             return cached
         }
-        let available = signedEntitlementContainers().contains(containerID)
+        let available: Bool
+        #if os(macOS)
+        available = macOSSignedEntitlementContainers().contains(containerID)
+        #else
+        // iOS App Store / TestFlight / dev-device builds always
+        // embed the entitlements declared in project.yml. The
+        // `CKContainer.init` trap fires only on entitlement-less
+        // binaries, which iOS doesn't allow to run in the first
+        // place.
+        available = true
+        #endif
         cache[containerID] = available
         return available
     }
 
+    #if os(macOS)
     /// Read `com.apple.developer.icloud-container-identifiers` from
-    /// the running task's signed entitlements. Returns an empty
-    /// array on any failure (ad-hoc signing without the entitlement,
-    /// or SecTask APIs failing for an unsigned binary) — caller
-    /// treats absent as "CloudKit unavailable" so we never reach
-    /// the `CKContainer.init` trap.
-    private static func signedEntitlementContainers() -> [String] {
-        guard let task = SecTaskCreateFromSelf(nil) else { return [] }
-        let key = "com.apple.developer.icloud-container-identifiers" as CFString
-        guard let value = SecTaskCopyValueForEntitlement(task, key, nil) else { return [] }
-        return (value as? [String]) ?? []
+    /// the running app bundle's signed entitlements via the public
+    /// `SecStaticCode` API. Returns an empty array on any failure
+    /// (ad-hoc binary without the entitlement, codesigning call
+    /// failing because the bundle is unsigned, etc.) — caller treats
+    /// absent as "CloudKit unavailable" so we never reach the
+    /// `CKContainer.init` trap.
+    ///
+    /// `SecStaticCodeCreateWithPath` + `SecCodeCopySigningInformation`
+    /// is preferred over `SecCodeCopySelf` here to sidestep the
+    /// `SecCode` → `SecStaticCode` type-bridging gap in the Swift
+    /// overlay (the two are toll-free bridged in C but treated as
+    /// unrelated classes in Swift). The path-based variant returns
+    /// a `SecStaticCode` directly, which is what
+    /// `SecCodeCopySigningInformation` expects.
+    private static func macOSSignedEntitlementContainers() -> [String] {
+        let bundleURL = Bundle.main.bundleURL as CFURL
+        var staticCodeRef: SecStaticCode?
+        let createStatus = SecStaticCodeCreateWithPath(
+            bundleURL,
+            SecCSFlags(rawValue: 0),
+            &staticCodeRef
+        )
+        guard createStatus == errSecSuccess, let code = staticCodeRef else { return [] }
+        var infoRef: CFDictionary?
+        let flags = SecCSFlags(rawValue: UInt32(kSecCSSigningInformation))
+        let infoStatus = SecCodeCopySigningInformation(code, flags, &infoRef)
+        guard infoStatus == errSecSuccess,
+              let info = infoRef as? [String: Any],
+              let entitlements = info[kSecCodeInfoEntitlementsDict as String] as? [String: Any],
+              let containers = entitlements["com.apple.developer.icloud-container-identifiers"] as? [String]
+        else { return [] }
+        return containers
     }
+    #endif
 }
 
 /// iOS subscriber wiring. Owns the `CKQuerySubscription` lifecycle

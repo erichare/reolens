@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.3] — 2026-05-12
+
+Single-fix patch on top of 0.4.2 — fixes a build break on iOS introduced
+by the 0.4.2 patch.
+
+### Fixed
+
+- **iOS archive build was failing** with `cannot find
+  'SecTaskCreateFromSelf' / 'SecTaskCopyValueForEntitlement' in scope`.
+  The 0.4.2 `CloudKitAvailability` probe leaned on `SecTask*` to read
+  the running task's signed entitlements, but those symbols are
+  private SPI and aren't surfaced in the Swift overlay on either
+  platform — they only "worked" in 0.4.2's local `swift build`
+  because nothing exercised that file path. The CI iOS archive
+  predictably failed, which would have shipped no TestFlight build
+  for 0.4.2.
+
+  Replaced with platform-specific paths: macOS uses
+  `SecStaticCodeCreateWithPath` + `SecCodeCopySigningInformation`
+  (public Security framework APIs that read the codesign blob's
+  embedded entitlements dict, returning the iCloud-container
+  identifiers); iOS unconditionally returns `true` because every
+  iOS distribution path — App Store, TestFlight, dev-device — embeds
+  the entitlements declared in `AppiOS/project.yml`, so the
+  `CKContainer.init` trap simply cannot fire on iOS. Same
+  user-facing behavior as 0.4.2's intent (release DMG reads `true`
+  whether or not iCloud Drive is enabled), now in a form that
+  actually compiles for both platforms.
+
 ## [0.4.2] — 2026-05-12
 
 Single-fix patch on top of 0.4.1.
@@ -739,7 +768,8 @@ First public release.
 - All camera passwords stored in the macOS Keychain — never in plain text
 - No analytics, no telemetry, no accounts
 
-[Unreleased]: https://github.com/jestatsio/reolens/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/jestatsio/reolens/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/jestatsio/reolens/releases/tag/v0.4.3
 [0.4.2]: https://github.com/jestatsio/reolens/releases/tag/v0.4.2
 [0.4.1]: https://github.com/jestatsio/reolens/releases/tag/v0.4.1
 [0.4.0]: https://github.com/jestatsio/reolens/releases/tag/v0.4.0

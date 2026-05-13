@@ -29,8 +29,8 @@ targets:
       path: Resources/Info.plist
       properties:
         CFBundleDisplayName: Reolens
-        CFBundleShortVersionString: "0.4.2"
-        CFBundleVersion: "6"
+        CFBundleShortVersionString: "0.4.3"
+        CFBundleVersion: "7"
         # iOS 11+ requires apps using asset-catalog icons to also
         # declare CFBundleIconName so the OS / App Store knows which
         # icon set to consult at runtime. Without this key, ASC's
@@ -127,8 +127,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.reolens.Reolens.iOS
         PRODUCT_NAME: Reolens
-        MARKETING_VERSION: "0.4.2"
-        CURRENT_PROJECT_VERSION: "6"
+        MARKETING_VERSION: "0.4.3"
+        CURRENT_PROJECT_VERSION: "7"
         # Same Apple Developer team as the macOS app. Xcode's automatic
         # signing uses this to fetch / create the Apple Distribution
         # certificate and the App Store provisioning profile on first
