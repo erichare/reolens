@@ -1,4 +1,0 @@
-module ReolinkBaichuan {
-header "ReolinkBaichuan-Swift.h"
-export *
-}
