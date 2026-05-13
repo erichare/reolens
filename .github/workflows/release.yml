@@ -138,7 +138,18 @@ jobs:
       # to JWT-sign requests to the App Store Connect API. The iOS job
       # installs the same pair downstream.
       - name: Install Python deps for ASC profile fetch
-        run: pip3 install --break-system-packages pyjwt cryptography
+        # macos-26 runner ships an older pip3 that doesn't recognize
+        # `--break-system-packages` (pip < 23). Use a dedicated
+        # venv instead so we sidestep PEP 668 entirely. The venv's
+        # bin dir is prepended to PATH so the Scripts/asc_*.py
+        # `#!/usr/bin/env python3` shebangs pick up the venv's
+        # python3 (with pyjwt + cryptography importable) without
+        # touching the system interpreter.
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/ascvenv
+          /tmp/ascvenv/bin/pip install --quiet pyjwt cryptography
+          echo "/tmp/ascvenv/bin" >> "$GITHUB_PATH"
 
       - name: Build app bundle (release, signed)
         run: ./Scripts/build-app.sh -c release
@@ -387,7 +398,14 @@ jobs:
       # and we lose the diagnostic, falling back on xcodebuild's
       # generic "Authentication failed" if the key is misconfigured.
       - name: Install Python deps for pre-flight diagnostic
-        run: pip3 install --break-system-packages pyjwt cryptography
+        # macos-26 runner ships pip < 23 (no --break-system-packages).
+        # Install via a venv and prepend its bin dir to PATH so the
+        # Python shebangs pick up the venv's python3 + modules.
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/ascvenv
+          /tmp/ascvenv/bin/pip install --quiet pyjwt cryptography
+          echo "/tmp/ascvenv/bin" >> "$GITHUB_PATH"
 
       - name: Bump CURRENT_PROJECT_VERSION to GitHub run number
         # MARKETING_VERSION stays at whatever the spec says (0.2.0, etc.);
