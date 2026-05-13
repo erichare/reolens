@@ -267,19 +267,19 @@ if [[ -n "${AC_API_KEY_ID:-}" && -n "${AC_API_KEY_P8_PATH:-}" ]]; then
     # SEPARATE provisioning profile per bundle id. Run the helper
     # again with PLATFORM=IOS_WIDGETS so the widget extension gets
     # its own profile registered/created/installed alongside the
-    # main app's.
+    # main app's. Save and restore the main-app PROFILE_NAME
+    # around the call — without the restore, `set -u` downstream
+    # trips on "PROFILE_NAME: unbound variable" when we read it
+    # for SIGN_BUILD_SETTINGS / ExportOptions.plist.
     echo "==> Ensuring App Store provisioning profile via ASC API (widget extension)"
+    SAVED_PROFILE_NAME="${PROFILE_NAME}"
     export PLATFORM=IOS_WIDGETS
     export IOS_WIDGETS_BUNDLE_ID="${IOS_WIDGETS_BUNDLE_ID:-com.reolens.Reolens.iOS.Widgets}"
-    # `PROFILE_NAME` was set to the main-app's name above. Clear it
-    # so the per-flavor default ("Reolens iOS Widgets App Store")
-    # applies inside asc_ensure_profile.py.
     unset PROFILE_NAME
     WIDGETS_HELPER_OUT="$(python3 "${REPO_ROOT}/Scripts/asc_ensure_profile.py")"
     WIDGETS_PROFILE_NAME="$(printf '%s\n' "${WIDGETS_HELPER_OUT}" | sed -n '1p')"
     echo "    using widgets profile: ${WIDGETS_PROFILE_NAME}"
-    # Reset PLATFORM so anything downstream that introspects it
-    # (none today, but defensively) sees the canonical iOS value.
+    export PROFILE_NAME="${SAVED_PROFILE_NAME}"
     export PLATFORM=IOS
 fi
 
