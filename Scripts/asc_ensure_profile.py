@@ -279,7 +279,8 @@ def find_certificate_id(cert_type: str) -> str:
 
 def normalized_serial(serial: str | None) -> str:
     """Normalize certificate serials from Keychain / ASC for comparison."""
-    return "".join(ch for ch in (serial or "").upper() if ch in "0123456789ABCDEF")
+    hex_serial = "".join(ch for ch in (serial or "").upper() if ch in "0123456789ABCDEF")
+    return hex_serial.lstrip("0") or ("0" if hex_serial else "")
 
 
 def find_or_create_profile(
