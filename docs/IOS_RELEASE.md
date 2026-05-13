@@ -18,6 +18,15 @@ human at the keyboard for these):
 - Capabilities: enable **iCloud** (then click Edit and add the container
   `iCloud.com.reolens.Reolens`). That container should already exist from
   the Mac app's entitlement; if not, register it under the iCloud tab.
+  Also enable **App Groups** and add `group.com.reolens.Reolens` (0.5.0
+  widget / Live Activity extensions require this to share the
+  on-device snapshot + recent-events store with the main app).
+- **Widget extension bundle ID:** also register
+  `com.reolens.Reolens.iOS.ReolensiOSWidgets` as a separate App ID
+  with the **App Groups** capability set to the same
+  `group.com.reolens.Reolens`. CI's `xcodegen generate` step writes
+  the widget target into the Xcode project; the registration here
+  lets Apple provision it.
 
 You do **not** need to manually create an Apple Distribution certificate
 or provisioning profile — Xcode (and CI's `-allowProvisioningUpdates`)
@@ -93,7 +102,7 @@ duplicates).
 
 ## Bumping the iOS version
 
-`MARKETING_VERSION` (the user-facing version, e.g. `0.2.0`) lives in
+`MARKETING_VERSION` (the user-facing version, e.g. `0.5.0`) lives in
 `AppiOS/project.yml`. Bump it there for major changes; CI handles the
 build number automatically.
 
@@ -101,8 +110,12 @@ build number automatically.
 # AppiOS/project.yml
 settings:
   base:
-    MARKETING_VERSION: "0.2.1"   # ← edit here
+    MARKETING_VERSION: "0.5.1"   # ← edit here
 ```
+
+`MARKETING_VERSION` here MUST match `App/Info.plist`
+`CFBundleShortVersionString`. CI's `Scripts/check-versions.sh` blocks
+the release if they diverge (AGENTS.md §13).
 
 ## Troubleshooting
 

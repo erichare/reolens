@@ -1,6 +1,21 @@
 .build/
 .build-ios-incremental/
+# xcodebuild scratch tree (EagerLinkingTBDs/, ExplicitPrecompiledModules/,
+# Reolens.build/, Release-iphoneos/, SwiftExplicitPrecompiledModules/, …).
+# Created when running xcodebuild from the repo root without an explicit
+# -derivedDataPath; gigabytes of .pcm / .o / .swiftmodule artifacts.
+build/
 .swiftpm/
+
+# Editor / tooling directories.
+.vscode/
+
+# Module precompiled artifacts and object files — never checked in. These
+# leak out of derived-data trees on occasion (Xcode bugs, interrupted
+# builds, copy-paste of scratch dirs) and the global ignore catches them
+# wherever they land.
+*.pcm
+*.o
 # Ignore Package.resolved files in arbitrary locations (Xcode-managed
 # ones inside .xcodeproj/.xcworkspace), but commit the SwiftPM root one
 # so CI (Xcode Cloud, GitHub Actions) has a deterministic pin set to

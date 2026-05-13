@@ -87,19 +87,78 @@ Each new version, walk this list. It takes about 10 minutes.
 
 ### Pre-flight
 
-- [ ] **Tests green on `main`** — check the [CI badge](https://github.com/jestatsio/reolens/actions/workflows/ci.yml)
+- [ ] **Tests green on `main`** — check the [CI badge](https://github.com/jestatsio/reolens/actions/workflows/ci.yml). Local sanity:
+  ```sh
+  swift test                       # 158 tests, 43 suites at 0.5.0 baseline
+  bash Scripts/check-versions.sh   # macOS + iOS marketing versions match (AGENTS.md §13)
+  bash Scripts/coverage-gate.sh    # ≥ 80% coverage on AppShared + Reolink* (AGENTS.md §12)
+  ```
 - [ ] **Smoke launch passes** locally:
   ```sh
   ./Scripts/build-app.sh && ./Reolens.app/Contents/MacOS/Reolens --smoke-test
   ```
-- [ ] **Bump version** in `App/Info.plist` (`CFBundleShortVersionString`)
-  and `CFBundleVersion`
+- [ ] **Bump version in BOTH platforms** — `App/Info.plist`
+  (`CFBundleShortVersionString` and `CFBundleVersion`) AND
+  `AppiOS/project.yml` (`MARKETING_VERSION`). `check-versions.sh`
+  blocks the build if they diverge.
 - [ ] **Update CHANGELOG.md** — move items from `[Unreleased]` into the
   new version section; update the diff link at the bottom
 - [ ] **Refresh screenshots** in `docs/screenshots/` if the UI changed.
   Run `./Scripts/blur-screenshot.sh` over any frames showing real
   camera footage
+- [ ] **Regenerate the iOS Xcode project** if `AppiOS/project.yml` or
+  any source under `AppiOS/Widgets/` / `AppiOS/Sources/LiveActivities/`
+  changed:
+  ```sh
+  cd AppiOS && xcodegen generate
+  ```
 - [ ] **Commit the bumps** as a single `chore(release): vX.Y.Z` commit
+
+### 0.5.0-specific verification
+
+The 0.5.0 release surface added widgets, Live Activities, and
+multi-window scenes. Walk this verification list before tagging:
+
+- [ ] **App Group container** — confirm `group.com.reolens.Reolens`
+  is in both `App/Reolens.entitlements` and `AppiOS/Resources/ReolensiOS.entitlements`.
+  Widgets / extensions inherit it from their own entitlements files.
+- [ ] **macOS desktop widgets** — appear in the widget gallery under
+  "Reolens"; CameraSnapshot renders with placeholder + real data once
+  a session has run.
+- [ ] **iOS Home Screen widgets** — add small / medium / large
+  `CameraSnapshotWidget` variants; each renders the latest snapshot.
+- [ ] **iOS Lock Screen widgets** — `LastMotionWidget` in each of
+  inline / circular / rectangular families.
+- [ ] **iOS Control Center widget** — `OpenCameraControlWidget` tap
+  opens the chosen camera within ~1 s cold-start.
+- [ ] **iOS Live Activity** — trigger a motion event; activity appears
+  in Dynamic Island compact + expanded states. A second event on the
+  same camera replaces (does not stack). Auto-dismiss at 4 h verified
+  via `Activity.activityState` mock or wall-clock wait.
+- [ ] **Stage Manager (iPad)** — drag two camera scenes side-by-side;
+  each has independent state.
+- [ ] **macOS multi-window** — right-click camera in sidebar → "Open in
+  New Window" produces a separate scene with its own state.
+- [ ] **Recording scrubber** — thumbnail rail populates within ~5 s of
+  opening a clip; drag cursor updates `currentTime`; cache directory
+  size respects the 500 MB LRU cap.
+- [ ] **Clip bookmark + export** — right-click a recording → Bookmark
+  this clip; in the Bookmarks sheet, Export → save MP4; verify the
+  file opens in QuickTime / Files with the expected duration.
+- [ ] **Privacy zones** — draw a zone, save; refresh the editor and
+  confirm the zones round-trip. If the firmware supports `SetMask`
+  the rectangles mask the live video; otherwise the "saved on this
+  device" notice appears.
+- [ ] **Overnight digest** — trigger via Settings → "Build a digest
+  now"; preview the resulting digest sheet; confirm a one-shot
+  notification fires with the correct count.
+- [ ] **Hardening regression** — feed a zero-length SPS / PPS NAL,
+  malformed `AVAudioFormat` config, and a 100-events-in-5-minutes
+  motion burst. App does not crash; CloudKit relay publishes ≤ 30
+  events + 1 burst-summary record.
+- [ ] **Logging redaction sweep** — run a full session, grep
+  `Console.app` archives for `password=`, `token=`, RTSP URLs with
+  `user:pass@`; nothing leaks.
 
 ### Cut the release
 
