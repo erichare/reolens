@@ -22,15 +22,19 @@ human at the keyboard for these):
   widget / Live Activity extensions require this to share the
   on-device snapshot + recent-events store with the main app).
 - **Widget extension bundle ID:** also register
-  `com.reolens.Reolens.iOS.ReolensiOSWidgets` as a separate App ID
+  `com.reolens.Reolens.iOS.Widgets` as a separate App ID
   with the **App Groups** capability set to the same
   `group.com.reolens.Reolens`. CI's `xcodegen generate` step writes
   the widget target into the Xcode project; the registration here
   lets Apple provision it.
 
 You do **not** need to manually create an Apple Distribution certificate
-or provisioning profile — Xcode (and CI's `-allowProvisioningUpdates`)
-create them on demand against the ASC API key already in your secrets.
+or provisioning profiles — CI creates / downloads separate App Store
+profiles for the app and widget extension against the ASC API key
+already in your secrets. Their base names are `Reolens iOS App Store`
+and `Reolens iOS Widgets App Store`; after a certificate rotation, CI may
+append the signing certificate serial suffix to avoid stale same-name
+profiles.
 
 ### 2. Create the App Store Connect app record
 
@@ -47,13 +51,13 @@ create them on demand against the ASC API key already in your secrets.
 Save. You don't need to fill in App Store metadata yet — TestFlight uploads
 only need the record to exist.
 
-### 3. Confirm the ASC API key has App Manager role
+### 3. Confirm the ASC API key has Admin role
 
 [App Store Connect → Users and Access → Keys (Team Keys)](https://appstoreconnect.apple.com/access/api)
 
-The key whose ID is in `AC_API_KEY_ID` should have at least **App Manager**
-access. That's what lets `xcrun altool` create the iOS Distribution cert and
-provisioning profile during CI's archive step.
+The key whose ID is in `AC_API_KEY_ID` needs **Admin** access. That's
+what lets the release script create or refresh App Store provisioning
+profiles for both iOS bundle IDs before CI archives.
 
 ## First TestFlight upload (local, from your Mac)
 

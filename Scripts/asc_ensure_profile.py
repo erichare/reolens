@@ -31,14 +31,18 @@ Common env (both flavors):
   AC_API_KEY_ID         — ASC API key id (10-char)
   AC_API_ISSUER_ID      — issuer UUID
   AC_API_KEY_P8_PATH    — path to the .p8 private key on disk
+  ASC_CERT_SERIAL_NUMBER — optional local signing certificate serial;
+                          when set, the ASC certificate must match it
 
 Output:
-  stdout — two lines:
+  stdout — three lines:
              line 1: the profile name (caller pipes to
                      PROVISIONING_PROFILE_SPECIFIER or to ExportOptions
                      .plist's provisioningProfiles map)
              line 2: the absolute path to the .mobileprovision on disk
                      (caller can `cp` it into Contents/embedded.provisionprofile)
+             line 3: the profile UUID (caller can pin
+                     PROVISIONING_PROFILE to avoid stale same-name profiles)
   stderr — diagnostics
 
 Side effect:
@@ -241,7 +245,7 @@ def find_certificate_id(cert_type: str) -> str:
     """
     res = request(
         "GET",
-        "/certificates?" + _query({"filter[certificateType]": cert_type, "limit": 20}),
+        "/certificates?" + _query({"filter[certificateType]": cert_type, "limit": 200}),
     )
     data = res.get("data") or []
     if not data:
@@ -250,7 +254,32 @@ def find_certificate_id(cert_type: str) -> str:
             "  Create one once via Xcode → Settings → Accounts → Manage\n"
             "  Certificates → '+' (the matching kind), then re-run."
         )
+
+    expected_serial = normalized_serial(os.environ.get("ASC_CERT_SERIAL_NUMBER"))
+    if expected_serial:
+        for cert in data:
+            attrs = cert.get("attributes") or {}
+            if normalized_serial(attrs.get("serialNumber")) == expected_serial:
+                return cert["id"]
+
+        found = ", ".join(
+            normalized_serial((cert.get("attributes") or {}).get("serialNumber"))
+            or "<missing>"
+            for cert in data
+        )
+        sys.exit(
+            f"error: no {cert_type} certificate in ASC matches local serial "
+            f"{expected_serial}.\n"
+            f"  ASC returned serials: {found}\n"
+            "  Re-export the Apple Distribution .p12 from the certificate "
+            "shown in developer.apple.com, or revoke the stale cert/profile."
+        )
     return data[0]["id"]
+
+
+def normalized_serial(serial: str | None) -> str:
+    """Normalize certificate serials from Keychain / ASC for comparison."""
+    return "".join(ch for ch in (serial or "").upper() if ch in "0123456789ABCDEF")
 
 
 def find_or_create_profile(
@@ -261,13 +290,16 @@ def find_or_create_profile(
 ) -> tuple[str, str]:
     """Return (profile_name, profile_id) for the matching active profile.
 
-    Looks for an active profile with the right name + type; creates one
-    if missing.
+    Looks for an active profile with the right name + type + bundle id +
+    certificate; creates one if missing. The bundle/certificate check
+    matters because profile names are not enough to identify a usable
+    profile after a certificate rotation.
     """
     res = request(
         "GET",
         "/profiles?" + _query({"filter[name]": name, "limit": 10}),
     )
+    stale_same_name_profile = False
     for p in res.get("data") or []:
         attrs = p.get("attributes", {})
         if (
@@ -275,7 +307,33 @@ def find_or_create_profile(
             and attrs.get("profileType") == profile_type
             and attrs.get("profileState") == "ACTIVE"
         ):
-            return name, p["id"]
+            profile_id = p["id"]
+            if profile_matches(profile_id, bundle_id_resource, cert_id):
+                return name, profile_id
+            sys.stderr.write(
+                f"    profile {name!r} ({profile_id}) is active but tied to "
+                "a different bundle id or certificate — creating a fresh one\n"
+            )
+            stale_same_name_profile = True
+
+    if stale_same_name_profile:
+        scoped_name = profile_name_for_certificate(name, cert_id)
+        res = request(
+            "GET",
+            "/profiles?" + _query({"filter[name]": scoped_name, "limit": 10}),
+        )
+        for p in res.get("data") or []:
+            attrs = p.get("attributes", {})
+            if (
+                attrs.get("name") == scoped_name
+                and attrs.get("profileType") == profile_type
+                and attrs.get("profileState") == "ACTIVE"
+            ):
+                profile_id = p["id"]
+                if profile_matches(profile_id, bundle_id_resource, cert_id):
+                    return scoped_name, profile_id
+        sys.stderr.write(f"    using cert-specific profile name {scoped_name!r}\n")
+        name = scoped_name
 
     sys.stderr.write(f"    profile {name!r} ({profile_type}) missing — creating\n")
     try:
@@ -333,10 +391,27 @@ def find_or_create_profile(
     return name, res["data"]["id"]
 
 
-def download_profile(profile_id: str) -> str:
+def profile_matches(profile_id: str, bundle_id_resource: str, cert_id: str) -> bool:
+    """Return true when an existing profile belongs to this bundle + cert."""
+    bundle = request("GET", f"/profiles/{profile_id}/relationships/bundleId")
+    if ((bundle.get("data") or {}).get("id")) != bundle_id_resource:
+        return False
+
+    certs = request("GET", f"/profiles/{profile_id}/relationships/certificates")
+    return any(cert.get("id") == cert_id for cert in certs.get("data") or [])
+
+
+def profile_name_for_certificate(base_name: str, cert_id: str) -> str:
+    """Return a stable non-ambiguous profile name for cert rotations."""
+    serial = normalized_serial(os.environ.get("ASC_CERT_SERIAL_NUMBER"))
+    suffix = (serial[-8:] if serial else cert_id[:8]).upper()
+    return f"{base_name} {suffix}"
+
+
+def download_profile(profile_id: str) -> tuple[str, str]:
     """Fetch the .mobileprovision bytes, install into the profiles dir.
 
-    Returns the path the profile was written to.
+    Returns the path the profile was written to and its UUID.
     """
     res = request("GET", f"/profiles/{profile_id}")
     content_b64 = res["data"]["attributes"]["profileContent"]
@@ -347,7 +422,7 @@ def download_profile(profile_id: str) -> str:
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"{uuid}.mobileprovision"
     dest.write_bytes(raw)
-    return str(dest)
+    return str(dest), uuid
 
 
 def parse_uuid(raw: bytes) -> str:
@@ -391,11 +466,12 @@ def main() -> int:
     )
     sys.stderr.write(f"    profile: {name} ({profile_id})\n")
 
-    dest = download_profile(profile_id)
+    dest, uuid = download_profile(profile_id)
     sys.stderr.write(f"    installed: {dest}\n")
 
     print(name)
     print(dest)
+    print(uuid)
     return 0
 
 

@@ -240,6 +240,23 @@ validate_ios_source_icons
 
 mkdir -p "${BUILD_DIR}"
 
+if command -v security >/dev/null 2>&1 && command -v openssl >/dev/null 2>&1; then
+    CERT_PEM="$(mktemp -t reolens-ios-dist-cert.XXXXXX)"
+    if security find-certificate -c "Apple Distribution" -p > "${CERT_PEM}" 2>/dev/null; then
+        CERT_SERIAL="$(
+            openssl x509 -in "${CERT_PEM}" -noout -serial 2>/dev/null \
+                | sed 's/^serial=//' \
+                | tr '[:lower:]' '[:upper:]' \
+                | tr -d ':'
+        )"
+        if [[ -n "${CERT_SERIAL}" ]]; then
+            export ASC_CERT_SERIAL_NUMBER="${CERT_SERIAL}"
+            echo "==> Pinning App Store profiles to Apple Distribution cert serial ${ASC_CERT_SERIAL_NUMBER}"
+        fi
+    fi
+    rm -f "${CERT_PEM}"
+fi
+
 # xcodebuild's "automatic" signing in Xcode 26 silently ignores
 # command-line CODE_SIGN_IDENTITY overrides AND defaults to creating an
 # iOS App Development profile when archiving on a CI runner — which then
@@ -250,9 +267,12 @@ mkdir -p "${BUILD_DIR}"
 # `Scripts/asc_ensure_profile.py` does the API dance (creates the bundle
 # id and profile if needed, downloads the .mobileprovision into
 # ~/Library/MobileDevice/Provisioning Profiles/) and prints the profile
-# name on stdout. We capture that name for PROVISIONING_PROFILE_SPECIFIER.
+# name + UUID on stdout. We pass both through target-specific project
+# variables so Xcode cannot accidentally reuse a stale same-name profile.
 PROFILE_NAME=""
+PROFILE_UUID=""
 WIDGETS_PROFILE_NAME=""
+WIDGETS_PROFILE_UUID=""
 if [[ -n "${AC_API_KEY_ID:-}" && -n "${AC_API_KEY_P8_PATH:-}" ]]; then
     echo "==> Ensuring App Store provisioning profile via ASC API (main app)"
     export PLATFORM=IOS
@@ -260,7 +280,8 @@ if [[ -n "${AC_API_KEY_ID:-}" && -n "${AC_API_KEY_P8_PATH:-}" ]]; then
     export PROFILE_NAME="${PROFILE_NAME:-Reolens iOS App Store}"
     HELPER_OUT="$(python3 "${REPO_ROOT}/Scripts/asc_ensure_profile.py")"
     PROFILE_NAME="$(printf '%s\n' "${HELPER_OUT}" | sed -n '1p')"
-    echo "    using main-app profile: ${PROFILE_NAME}"
+    PROFILE_UUID="$(printf '%s\n' "${HELPER_OUT}" | sed -n '3p')"
+    echo "    using main-app profile: ${PROFILE_NAME} (${PROFILE_UUID})"
 
     # 0.5.0 — the widget extension target has its own bundle id
     # (com.reolens.Reolens.iOS.Widgets) and Apple requires a
@@ -278,12 +299,13 @@ if [[ -n "${AC_API_KEY_ID:-}" && -n "${AC_API_KEY_P8_PATH:-}" ]]; then
     unset PROFILE_NAME
     WIDGETS_HELPER_OUT="$(python3 "${REPO_ROOT}/Scripts/asc_ensure_profile.py")"
     WIDGETS_PROFILE_NAME="$(printf '%s\n' "${WIDGETS_HELPER_OUT}" | sed -n '1p')"
-    echo "    using widgets profile: ${WIDGETS_PROFILE_NAME}"
+    WIDGETS_PROFILE_UUID="$(printf '%s\n' "${WIDGETS_HELPER_OUT}" | sed -n '3p')"
+    echo "    using widgets profile: ${WIDGETS_PROFILE_NAME} (${WIDGETS_PROFILE_UUID})"
     export PROFILE_NAME="${SAVED_PROFILE_NAME}"
     export PLATFORM=IOS
 fi
 
-echo "==> Archiving for generic/iOS"
+echo "==> Archiving for iphoneos"
 # With manual signing + an explicit profile specifier, xcodebuild has to
 # use what we tell it. `-allowProvisioningUpdates` lets it download the
 # matching profile if it isn't already in the keychain (it is, because
@@ -293,19 +315,19 @@ if [[ -n "${PROFILE_NAME}" ]]; then
     SIGN_BUILD_SETTINGS=(
         "CODE_SIGN_STYLE=Manual"
         "CODE_SIGN_IDENTITY=Apple Distribution"
-        "PROVISIONING_PROFILE_SPECIFIER=${PROFILE_NAME}"
         "DEVELOPMENT_TEAM=5M9UT7VQ8Q"
+        "REOLENS_IOS_APP_PROFILE_NAME=${PROFILE_NAME}"
+        "REOLENS_IOS_APP_PROFILE_UUID=${PROFILE_UUID}"
     )
-    # 0.5.0 — override the widget extension target separately
-    # because it has its own bundle id + profile. xcodebuild's
-    # `[target=...]` selector overrides the unscoped settings
-    # above for that specific target only.
+    # 0.5.0 — pass widget profile data through distinct variables.
+    # xcodebuild does NOT support command-line build settings scoped
+    # with `[target=...]`; those strings are parsed as part of the
+    # value. The generated project assigns these variables to the
+    # correct targets in AppiOS/project.yml instead.
     if [[ -n "${WIDGETS_PROFILE_NAME}" ]]; then
         SIGN_BUILD_SETTINGS+=(
-            "CODE_SIGN_STYLE[target=ReolensiOSWidgets]=Manual"
-            "CODE_SIGN_IDENTITY[target=ReolensiOSWidgets]=Apple Distribution"
-            "PROVISIONING_PROFILE_SPECIFIER[target=ReolensiOSWidgets]=${WIDGETS_PROFILE_NAME}"
-            "DEVELOPMENT_TEAM[target=ReolensiOSWidgets]=5M9UT7VQ8Q"
+            "REOLENS_IOS_WIDGETS_PROFILE_NAME=${WIDGETS_PROFILE_NAME}"
+            "REOLENS_IOS_WIDGETS_PROFILE_UUID=${WIDGETS_PROFILE_UUID}"
         )
     fi
 else
@@ -315,7 +337,8 @@ else
     SIGN_BUILD_SETTINGS=("CODE_SIGN_IDENTITY=Apple Distribution")
 fi
 
-# Invoke xcodebuild via an ABSOLUTE PATH derived from DEVELOPER_DIR.
+# Invoke xcodebuild via an absolute path derived from DEVELOPER_DIR, and
+# export that same DEVELOPER_DIR for the xcodebuild process itself.
 #
 # We have to go to this length because the macos-26 CI runner image
 # presets PATH so Xcode_26.5_beta_2.app's bin dir comes FIRST. That
@@ -323,23 +346,27 @@ fi
 # Both bare `xcodebuild` and `xcrun xcodebuild` end up resolving to
 # the beta's binaries — and the beta's `xcrun` then forwards back
 # to the beta's `xcodebuild` even with DEVELOPER_DIR=stable. The
-# beta toolchain doesn't ship the iOS device platform, so
-# `generic/platform=iOS` fails with "iOS 26.5 is not installed".
+# beta toolchain doesn't ship the iOS device platform.
 #
 # An absolute path skips the entire discovery dance:
 #   - bash executes the exact binary we hand it
 #   - that binary uses DEVELOPER_DIR / xcode-select for SDK lookup,
 #     which we've already pinned to the stable Xcode
 #
-# Falls back to bare `xcodebuild` when DEVELOPER_DIR isn't set
-# (local dev — `xcode-select -p` is honored by the bare command).
-XCODEBUILD="${DEVELOPER_DIR:-$(xcode-select -p)}/usr/bin/xcodebuild"
+# Falls back to `xcode-select -p` when DEVELOPER_DIR isn't set.
+# Archive with `-sdk iphoneos` below rather than `-destination
+# generic/platform=iOS`; the destination resolver requires a separately
+# installed iOS platform on Xcode 26.5 even though the iphoneos SDK is
+# present and sufficient for an App Store archive.
+XCODE_DEVELOPER_DIR="${DEVELOPER_DIR:-$(xcode-select -p)}"
+export DEVELOPER_DIR="${XCODE_DEVELOPER_DIR}"
+XCODEBUILD="${XCODE_DEVELOPER_DIR}/usr/bin/xcodebuild"
 echo "==> Using xcodebuild at: ${XCODEBUILD}"
 "${XCODEBUILD}" \
     -project "${PROJECT}" \
     -scheme "${SCHEME}" \
     -configuration Release \
-    -destination 'generic/platform=iOS' \
+    -sdk iphoneos \
     -archivePath "${ARCHIVE_PATH}" \
     -allowProvisioningUpdates \
     ${AC_AUTH_FLAGS[@]+"${AC_AUTH_FLAGS[@]}"} \
@@ -360,7 +387,7 @@ echo "==> Writing ExportOptions.plist"
 # picked automatically (often: nothing, since automatic signing fails
 # for the same reason archive does).
 EXPORT_BUNDLE_ID="${IOS_BUNDLE_ID:-com.reolens.Reolens.iOS}"
-EXPORT_PROFILE_NAME="${PROFILE_NAME:-Reolens iOS App Store}"
+EXPORT_PROFILE="${PROFILE_UUID:-${PROFILE_NAME:-Reolens iOS App Store}}"
 # 0.5.0 — emit a second `<key>...</key><string>...</string>` pair
 # for the widget extension target so xcodebuild's `-exportArchive`
 # step signs both the main app and the widget bundle correctly.
@@ -368,7 +395,7 @@ EXPORT_PROFILE_NAME="${PROFILE_NAME:-Reolens iOS App Store}"
 # signing for the widget extension (which fails on CI for the same
 # "no devices" reason the main app does).
 WIDGETS_BUNDLE_ID="${IOS_WIDGETS_BUNDLE_ID:-com.reolens.Reolens.iOS.Widgets}"
-WIDGETS_PROFILE_NAME_FOR_EXPORT="${WIDGETS_PROFILE_NAME:-Reolens iOS Widgets App Store}"
+WIDGETS_PROFILE_FOR_EXPORT="${WIDGETS_PROFILE_UUID:-${WIDGETS_PROFILE_NAME:-Reolens iOS Widgets App Store}}"
 cat > "${EXPORT_OPTIONS}" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -387,9 +414,9 @@ cat > "${EXPORT_OPTIONS}" <<PLIST
     <key>provisioningProfiles</key>
     <dict>
         <key>${EXPORT_BUNDLE_ID}</key>
-        <string>${EXPORT_PROFILE_NAME}</string>
+        <string>${EXPORT_PROFILE}</string>
         <key>${WIDGETS_BUNDLE_ID}</key>
-        <string>${WIDGETS_PROFILE_NAME_FOR_EXPORT}</string>
+        <string>${WIDGETS_PROFILE_FOR_EXPORT}</string>
     </dict>
     <key>uploadSymbols</key>
     <true/>
