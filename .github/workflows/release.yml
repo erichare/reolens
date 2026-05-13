@@ -76,7 +76,10 @@ jobs:
 
       - name: Select latest Xcode 26
         run: |
-          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1)
+          # Skip beta Xcodes — their simulator runtimes aren't
+          # preinstalled, which breaks actool even on device builds.
+          # See the matching comment in ci.yml.
+          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | grep -vi beta | sort -V | tail -n 1)
           if [ -z "$XCODE_PATH" ]; then
             echo "No Xcode 26.x found on the runner image." >&2
             ls /Applications/ | grep -i Xcode || true
@@ -299,7 +302,10 @@ jobs:
       # CoreSimulator. Picking a pre-stocked Xcode dodges all of that.
       - name: Select latest Xcode 26
         run: |
-          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1)
+          # Skip beta Xcodes — their simulator runtimes aren't
+          # preinstalled, which breaks actool even on device builds.
+          # See the matching comment in ci.yml.
+          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | grep -vi beta | sort -V | tail -n 1)
           if [ -z "$XCODE_PATH" ]; then
             echo "No Xcode 26.x found on the runner image." >&2
             ls /Applications/ | grep -i Xcode || true

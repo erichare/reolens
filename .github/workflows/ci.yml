@@ -38,7 +38,14 @@ jobs:
       # so the workflow stays green across image refreshes.
       - name: Select latest Xcode 26
         run: |
-          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1)
+          # Filter `beta` out — runner images sometimes carry a beta
+          # Xcode (e.g. Xcode_26.5_beta_2.app) whose iOS simulator
+          # runtimes are NOT preinstalled. `actool` insists on a
+          # simulator runtime matching the SDK even for device-only
+          # builds, so picking a beta Xcode breaks asset-catalog
+          # compilation with "No simulator runtime version from […]
+          # available to use with iphonesimulator SDK version …".
+          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | grep -vi beta | sort -V | tail -n 1)
           if [ -z "$XCODE_PATH" ]; then
             echo "No Xcode 26.x found on the runner image." >&2
             ls /Applications/ | grep -i Xcode || true
@@ -149,7 +156,14 @@ jobs:
 
       - name: Select latest Xcode 26
         run: |
-          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1)
+          # Filter `beta` out — runner images sometimes carry a beta
+          # Xcode (e.g. Xcode_26.5_beta_2.app) whose iOS simulator
+          # runtimes are NOT preinstalled. `actool` insists on a
+          # simulator runtime matching the SDK even for device-only
+          # builds, so picking a beta Xcode breaks asset-catalog
+          # compilation with "No simulator runtime version from […]
+          # available to use with iphonesimulator SDK version …".
+          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | grep -vi beta | sort -V | tail -n 1)
           if [ -z "$XCODE_PATH" ]; then
             echo "No Xcode 26.x found on the runner image." >&2
             ls /Applications/ | grep -i Xcode || true
@@ -244,7 +258,14 @@ jobs:
       # lacks the iOS 26 SDK entirely.
       - name: Select latest Xcode 26
         run: |
-          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1)
+          # Filter `beta` out — runner images sometimes carry a beta
+          # Xcode (e.g. Xcode_26.5_beta_2.app) whose iOS simulator
+          # runtimes are NOT preinstalled. `actool` insists on a
+          # simulator runtime matching the SDK even for device-only
+          # builds, so picking a beta Xcode breaks asset-catalog
+          # compilation with "No simulator runtime version from […]
+          # available to use with iphonesimulator SDK version …".
+          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | grep -vi beta | sort -V | tail -n 1)
           if [ -z "$XCODE_PATH" ]; then
             echo "No Xcode 26.x found on the runner image." >&2
             ls /Applications/ | grep -i Xcode || true
