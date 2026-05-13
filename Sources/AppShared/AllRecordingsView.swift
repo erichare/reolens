@@ -43,10 +43,14 @@ public struct AllRecordingsView: View {
     /// Recomputed after every reload; falls back to a count-based
     /// summary on devices without Apple Intelligence.
     @State private var digest: EventSummarizer.DailyDigest?
-    /// 0.5.1 — Hide bookmarks from the merged feed if the user
-    /// explicitly toggles them off. Default ON: bookmarks appear
-    /// inline alongside recordings with a distinguishing pill.
-    @State private var showBookmarks = true
+    /// 0.5.1 — Feed mode toggle. When `false` (the default), the
+    /// list shows recordings for the selected day. When `true`, the
+    /// list switches to "bookmarks only" — every saved bookmark
+    /// across all days. Default flipped from `true` → `false` in a
+    /// fix after the additive→mode-switch refactor: a fresh open
+    /// was landing in bookmarks-only mode and hiding all recordings
+    /// until the user tapped the toggle off.
+    @State private var showBookmarks = false
     /// 0.5.1 — Bumped on every fresh reload so a slow in-flight
     /// stream from a previous date/filter selection doesn't write
     /// stale results into `rows` after the user moved on.
