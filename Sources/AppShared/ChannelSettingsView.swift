@@ -20,6 +20,11 @@ public struct ChannelSettingsView: View {
     @State private var isLoading = false
     @State private var isSaving = false
     @State private var errorMessage: String?
+    /// 0.5.0 Theme C2 — local working set of motion privacy zones.
+    /// Populated lazily on view appear; `apply` pushes them back to
+    /// the camera through the existing `SetOsd` privacy-mask param.
+    @State private var privacyZones = PrivacyZoneEditorModel()
+    @State private var privacyZonesDirty = false
 
     public init(session: CameraSession, channel: ChannelStatus) {
         self.session = session
@@ -46,10 +51,11 @@ public struct ChannelSettingsView: View {
                         ForEach(supportedAITypes, id: \.self) { d in
                             Label(d.label, systemImage: d.systemImage)
                                 .labelStyle(.titleAndIcon)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(.tint.tertiary, in: .capsule)
                                 .font(.caption)
+                                // 0.5.0 Liquid Glass — AI capability
+                                // badges read as glass chips matching
+                                // the AI-event filter row.
+                                .reolensGlassChip()
                         }
                     }
                 }
@@ -83,6 +89,41 @@ public struct ChannelSettingsView: View {
                     }
                 }
             }
+            Section("Motion privacy zones") {
+                Text("Drag on the preview to mask regions from motion detection. Drag a zone to move it; tap the × to remove. Up to \(PrivacyZoneEditorModel.maxZones) zones per camera.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                PrivacyZoneEditorView(
+                    model: Binding(get: { privacyZones }, set: { newValue in
+                        privacyZones = newValue
+                        privacyZonesDirty = true
+                    }),
+                    backgroundImage: nil
+                )
+                .frame(maxWidth: .infinity)
+                HStack {
+                    Button("Reset zones") {
+                        privacyZones = PrivacyZoneEditorModel()
+                        privacyZonesDirty = true
+                    }
+                    .disabled(privacyZones.zones.isEmpty)
+                    Spacer()
+                    if privacyZonesDirty {
+                        Text("\(privacyZones.zones.count)/\(PrivacyZoneEditorModel.maxZones) zones — unsaved")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text("\(privacyZones.zones.count)/\(PrivacyZoneEditorModel.maxZones) zones")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Button("Save zones") {
+                        Task { await persistPrivacyZones() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!privacyZonesDirty)
+                }
+            }
             Section("Overlay") {
                 Toggle("Show app badges over video", isOn: Binding(
                     get: { !store.isAppBadgeHidden(deviceID: session.entry.id, channel: channel.channel) },
@@ -103,10 +144,34 @@ public struct ChannelSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .task {
+        // 0.5.0 fix — key the load on the (camera, channel) pair so
+        // switching cameras in the sidebar re-fetches OSD + AI
+        // capability instead of leaving the previous camera's values
+        // on screen. SwiftUI cancels the prior `.task` when the id
+        // changes, then runs this body again with a fresh
+        // implicit context.
+        .task(id: SettingsLoadID(deviceID: session.entry.id, channel: channel.channel)) {
+            // Reset per-channel state so the user sees a fresh
+            // "Loading…" rather than the previous camera's values
+            // while the new fetch is in flight.
+            supportedAITypes = []
+            privacyZones = PrivacyZoneEditorModel()
+            privacyZonesDirty = false
+            loadPrivacyZones()                       // local cache
             await loadOsd()
             await loadSupportedAITypes()
+            await loadPrivacyZonesFromCamera()       // camera truth (if supported)
         }
+    }
+
+    /// Composite identity used by `.task(id:)` so switching cameras
+    /// OR channels both retrigger the OSD / AI fetch. The previous
+    /// `.task` (no id) only ran once per `ChannelSettingsView`
+    /// instance, which SwiftUI reuses across the sidebar's tab
+    /// switches.
+    private struct SettingsLoadID: Hashable {
+        let deviceID: UUID
+        let channel: Int
     }
 
     /// Reolink's `GetEvents` command on Home Hub Pro returns the channel's
@@ -117,7 +182,9 @@ public struct ChannelSettingsView: View {
         let now = Date()
         let cmd = Commands.getEvents(channel: channel.channel, start: now.addingTimeInterval(-60), end: now)
         do {
-            let raw = try await session.client.sendCapturingRaw(cmd)
+            let raw = try await session.withBackgroundPollingPaused {
+                try await session.client.sendCapturingRaw(cmd)
+            }
             guard let obj = try JSONSerialization.jsonObject(with: raw) as? [[String: Any]],
                   let value = obj.first?["value"] as? [String: Any] else { return }
             var supported: [DetectionType] = []
@@ -191,14 +258,27 @@ public struct ChannelSettingsView: View {
     }
 
     private func loadOsd() async {
-        guard osd == nil else { return }
+        // 0.5.0 fix — was `guard osd == nil else { return }` which
+        // short-circuited every reload after the first camera. The
+        // sidebar reuses the ChannelSettingsView for every camera by
+        // identity (SwiftUI sees the same view type), so switching
+        // cameras left the previous camera's OSD on screen
+        // indefinitely. The `.task(id:)` below now keyes on
+        // `(session.entry.id, channel.channel)` so the load re-fires
+        // on every camera switch; here we explicitly clear before
+        // re-fetching so the user sees a "Loading…" spinner rather
+        // than the stale toggles.
+        osd = nil
+        errorMessage = nil
         isLoading = true
         defer { isLoading = false }
         do {
-            let env = try await session.client.send(
-                Commands.getOsd(channel: channel.channel),
-                as: OsdEnvelope.self
-            )
+            let env = try await session.withBackgroundPollingPaused {
+                try await session.client.send(
+                    Commands.getOsd(channel: channel.channel),
+                    as: OsdEnvelope.self
+                )
+            }
             osd = env.Osd
         } catch {
             errorMessage = "\(error)"
@@ -209,7 +289,9 @@ public struct ChannelSettingsView: View {
         isSaving = true
         defer { isSaving = false }
         do {
-            try await session.client.sendIgnoringValue(Commands.setOsd(settings))
+            try await session.withBackgroundPollingPaused {
+                try await session.client.sendIgnoringValue(Commands.setOsd(settings))
+            }
         } catch {
             errorMessage = "\(error)"
         }
@@ -219,5 +301,89 @@ public struct ChannelSettingsView: View {
         if info.isCharging { return "Charging" }
         if info.isPluggedIn { return "Plugged in (\(info.chargeStatus))" }
         return info.chargeStatus.capitalized
+    }
+
+    /// 0.5.0 Theme C2 — write the working privacy-zone set back to
+    /// the camera via `SetMask`, and also persist locally so the
+    /// editor's state survives the next launch (the camera doesn't
+    /// store the exact rectangle metadata in an addressable way that
+    /// roundtrips perfectly across firmware versions). The local
+    /// copy is the source of truth for the editor's display; the
+    /// camera roundtrip is what actually masks the video.
+    ///
+    /// Firmware variability: not every Reolink build implements
+    /// `SetMask`. `rspCode = -9` (notSupport) is treated as a soft
+    /// failure: the zones still persist locally and `errorMessage`
+    /// surfaces a clear notice. Anything else — bad-credentials,
+    /// session-expired, transport — surfaces as a hard error and
+    /// the dirty flag stays so the user can retry.
+    fileprivate func persistPrivacyZones() async {
+        isSaving = true
+        defer { isSaving = false }
+        let key = "com.reolens.privacyZones.\(session.entry.id.uuidString).\(channel.channel)"
+
+        // Local copy first — never silently lose work.
+        do {
+            let data = try JSONEncoder().encode(privacyZones.zones)
+            UserDefaults.standard.set(data, forKey: key)
+        } catch {
+            errorMessage = "Couldn't save privacy zones locally: \(error.localizedDescription)"
+            return
+        }
+
+        // Build the camera-side mask payload. Zones already live in
+        // normalized 0…1 space; Reolink `MaskArea` uses the same
+        // origin (top-left) and units.
+        let areas = privacyZones.zones.map { zone in
+            MaskArea(x: zone.x, y: zone.y, w: zone.width, h: zone.height)
+        }
+        let mask = MaskSettings(channel: channel.channel, enable: areas.isEmpty ? 0 : 1, area: areas)
+        do {
+            try await session.withBackgroundPollingPaused {
+                try await session.client.sendIgnoringValue(Commands.setMask(mask))
+            }
+            privacyZonesDirty = false
+            errorMessage = nil
+        } catch let cgi as CGIError where cgi.rspCode == CGIErrorCode.notSupport.rawValue {
+            // Firmware doesn't implement SetMask. Local persistence
+            // already happened — surface the limitation but treat
+            // the zones as "saved (local only)".
+            privacyZonesDirty = false
+            errorMessage = "This camera's firmware doesn't accept privacy masks via API. Zones saved on this device but won't mask the video stream."
+        } catch {
+            errorMessage = "Couldn't apply privacy zones to camera: \(error.localizedDescription)"
+        }
+    }
+
+    fileprivate func loadPrivacyZones() {
+        let key = "com.reolens.privacyZones.\(session.entry.id.uuidString).\(channel.channel)"
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let zones = try? JSONDecoder().decode([PrivacyZone].self, from: data) else { return }
+        privacyZones = PrivacyZoneEditorModel(zones: zones)
+        privacyZonesDirty = false
+    }
+
+    /// 0.5.0 Theme C2 — pull privacy zones from the camera via
+    /// `GetMask`. Falls back to the local UserDefaults copy when
+    /// firmware doesn't implement the command, or when transport
+    /// fails. Called from the same `.task(id:)` that loads OSD +
+    /// AI capabilities so the panel reflects the camera's truth
+    /// (when available) rather than the device-local cache.
+    fileprivate func loadPrivacyZonesFromCamera() async {
+        do {
+            let env = try await session.client.send(
+                Commands.getMask(channel: channel.channel),
+                as: MaskEnvelope.self
+            )
+            let zones = env.Mask.area.map { area in
+                PrivacyZone(x: area.x, y: area.y, width: area.w, height: area.h)
+            }
+            privacyZones = PrivacyZoneEditorModel(zones: zones)
+            privacyZonesDirty = false
+        } catch {
+            // Firmware doesn't support, or transport failed. The
+            // local UserDefaults copy (loaded by `loadPrivacyZones`)
+            // is already in place — no UI churn.
+        }
     }
 }

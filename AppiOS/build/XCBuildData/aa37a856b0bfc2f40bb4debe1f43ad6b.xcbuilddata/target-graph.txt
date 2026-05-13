@@ -1,0 +1,16 @@
+Target dependency graph (6 targets)
+Target 'ReolensiOSWidgets' in project 'ReolensiOS'
+➜ Explicit dependency on target 'AppShared' in project 'Reolens'
+➜ Explicit dependency on target 'ReolinkAPI' in project 'Reolens'
+Target 'ReolinkAPI' in project 'Reolens'
+➜ Explicit dependency on target 'ReolinkAPI' in project 'Reolens'
+Target 'AppShared' in project 'Reolens'
+➜ Explicit dependency on target 'AppShared' in project 'Reolens'
+➜ Explicit dependency on target 'ReolinkAPI' in project 'Reolens'
+➜ Explicit dependency on target 'ReolinkBaichuan' in project 'Reolens'
+Target 'AppShared' in project 'Reolens'
+➜ Explicit dependency on target 'ReolinkAPI' in project 'Reolens'
+➜ Explicit dependency on target 'ReolinkBaichuan' in project 'Reolens'
+Target 'ReolinkBaichuan' in project 'Reolens'
+➜ Explicit dependency on target 'ReolinkAPI' in project 'Reolens'
+Target 'ReolinkAPI' in project 'Reolens' (no dependencies)

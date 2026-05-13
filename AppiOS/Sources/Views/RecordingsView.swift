@@ -55,9 +55,12 @@ struct RecordingsView: View {
             .datePickerStyle(.compact)
             .padding(.horizontal)
             .padding(.vertical, 8)
+            // 0.5.0 Liquid Glass — date picker reads as a header
+            // toolbar over the day / timeline / filter stack.
+            .reolensGlassToolbar()
 
             MonthRecordingDensity(selectedDate: $selectedDate, monthStatuses: monthStatuses)
-                .background(Color(.secondarySystemBackground))
+                .reolensGlassToolbar()
 
             if !filteredFiles.isEmpty {
                 DayTimelineStrip(
@@ -69,11 +72,11 @@ struct RecordingsView: View {
                         playEntry(file: file, sub: sub, preferSub: true)
                     }
                 )
-                .background(Color(.secondarySystemBackground))
+                .reolensGlassToolbar()
             }
 
             AIEventFilterBar(selected: $aiFilter)
-                .background(Color(.secondarySystemBackground))
+                .reolensGlassToolbar()
 
             Divider()
             content
@@ -211,7 +214,6 @@ struct RecordingsView: View {
 
     private func load() async {
         isLoading = true
-        defer { isLoading = false }
         errorMessage = nil
         files = []
         subFiles = []
@@ -220,14 +222,17 @@ struct RecordingsView: View {
         if session.channels.isEmpty {
             await session.connect()
         }
+        guard session.status == .connected else {
+            isLoading = false
+            errorMessage = connectionUnavailableMessage()
+            return
+        }
 
-        let calendar = Calendar.current
-        let start = calendar.startOfDay(for: selectedDate)
-        // Match the macOS app's end: 23:59:59 of the SAME day (one
-        // second before midnight of day+1) rather than 00:00:00 of
-        // the next day. Reolink's Search treats both as inclusive,
-        // and using the end-of-same-day form avoids any ambiguity.
-        guard let end = calendar.date(byAdding: .day, value: 1, to: start)?.addingTimeInterval(-1) else { return }
+        guard let (start, end) = searchWindow(for: selectedDate) else {
+            isLoading = false
+            files = []
+            return
+        }
 
         // Run main → sub SERIALLY. Reolink Home Hub Pro returns
         // `rcv failed` (rspCode=-17) when two Search commands hit it
@@ -236,7 +241,9 @@ struct RecordingsView: View {
         // when there are plenty. The macOS app learned this the hard
         // way too; same serialization comment lives in
         // App/Views/RecordingsView.swift.
-        let mainResult = await fetchSearch(streamType: "main", start: start, end: end)
+        let mainResult = await session.withBackgroundPollingPaused {
+            await fetchSearch(streamType: "main", start: start, end: end)
+        }
         switch mainResult {
         case .success(let mainList, let statuses):
             var seen = Set<String>()
@@ -247,18 +254,30 @@ struct RecordingsView: View {
             }
         case .failure(let message):
             errorMessage = message
+            isLoading = false
             return
         }
 
-        // Sub-stream failure is non-fatal — battery cameras and some
-        // firmware don't produce a sub-stream recording. We just skip
-        // the SD size pill and quality picker for those rows.
-        let subResult = await fetchSearch(streamType: "sub", start: start, end: end)
-        if case .success(let subList, _) = subResult {
-            var seen = Set<String>()
-            subFiles = subList.filter { seen.insert($0.name).inserted }
-        } else if case .failure(let message) = subResult {
-            log.info("Sub-stream Search unavailable on channel \(channel.channel): \(message, privacy: .public)")
+        // The user-visible list only needs the main-stream Search.
+        // Show it immediately, then enrich rows with the sub-stream
+        // match and Baichuan AI tags in the background. This mirrors
+        // the macOS flow and keeps a slow tag lookup from feeling like
+        // "recordings are still loading."
+        isLoading = false
+
+        Task { @MainActor in
+            // Sub-stream failure is non-fatal — battery cameras and some
+            // firmware don't produce a sub-stream recording. We just skip
+            // the SD size pill and quality picker for those rows.
+            let subResult = await session.withBackgroundPollingPaused {
+                await fetchSearch(streamType: "sub", start: start, end: end)
+            }
+            if case .success(let subList, _) = subResult {
+                var seen = Set<String>()
+                subFiles = subList.filter { seen.insert($0.name).inserted }
+            } else if case .failure(let message) = subResult {
+                log.info("Sub-stream Search unavailable on channel \(channel.channel): \(message, privacy: .public)")
+            }
         }
 
         // Cross-reference Baichuan's alarm-video list to pick up AI
@@ -266,26 +285,53 @@ struct RecordingsView: View {
         // populate on Home Hub Pro firmware. Failure is non-fatal —
         // rows just fall back to whatever the Search bitfield carries
         // (often empty for hub-paired cameras, but never wrong).
-        if let baichuan = session.baichuanClient {
-            let uid: String
-            if let cgiUID = channel.uid, !cgiUID.isEmpty {
-                uid = cgiUID
-            } else {
-                uid = await baichuan.fetchUID(channelID: UInt8(channel.channel))
-            }
-            do {
-                let entries = try await baichuan.findAlarmVideos(
-                    channel: UInt8(channel.channel),
-                    start: start,
-                    end: end,
-                    streamType: "main",
-                    uid: uid
-                )
-                alarmVideoEntries = entries
-            } catch {
-                log.info("findAlarmVideos for channel \(channel.channel) failed: \(error.localizedDescription, privacy: .public)")
+        Task { @MainActor in
+            if let baichuan = session.baichuanClient {
+                let uid: String
+                if let cgiUID = channel.uid, !cgiUID.isEmpty {
+                    uid = cgiUID
+                } else {
+                    uid = await baichuan.fetchUID(channelID: UInt8(channel.channel))
+                }
+                do {
+                    let entries = try await baichuan.findAlarmVideos(
+                        channel: UInt8(channel.channel),
+                        start: start,
+                        end: end,
+                        streamType: "main",
+                        uid: uid
+                    )
+                    alarmVideoEntries = entries
+                } catch {
+                    log.info("findAlarmVideos for channel \(channel.channel) failed: \(error.localizedDescription, privacy: .public)")
+                }
             }
         }
+    }
+
+    private func searchWindow(for day: Date) -> (start: Date, end: Date)? {
+        let calendar = Calendar.current
+        let start = calendar.startOfDay(for: day)
+        // Match the macOS app's end: 23:59:59 of the SAME day (one
+        // second before midnight of day+1) rather than 00:00:00 of
+        // the next day. Reolink's Search treats both as inclusive,
+        // and using the end-of-same-day form avoids ambiguity.
+        guard let endOfDay = calendar.date(byAdding: .day, value: 1, to: start)?.addingTimeInterval(-1) else {
+            return nil
+        }
+        let now = Date()
+        guard start <= now else { return nil }
+        return (start, min(endOfDay, now))
+    }
+
+    private func connectionUnavailableMessage() -> String {
+        if case .failed(let reason) = session.connectionStage {
+            return reason
+        }
+        if case .error(let message) = session.status {
+            return message
+        }
+        return "Camera isn't connected yet."
     }
 
     private enum SearchOutcome {
@@ -294,6 +340,7 @@ struct RecordingsView: View {
     }
 
     private func fetchSearch(streamType: String, start: Date, end: Date) async -> SearchOutcome {
+        let startedAt = Date()
         let command = Commands.search(
             channel: channel.channel,
             onlyStatus: false,
@@ -305,7 +352,10 @@ struct RecordingsView: View {
             let raw = try await session.client.sendCapturingRaw(command)
             let envelopes = try JSONDecoder().decode([CGIResponse<SearchEnvelope>].self, from: raw)
             let result = envelopes.first?.value?.SearchResult
-            return .success(result?.File ?? [], statuses: result?.Status ?? [])
+            let files = result?.File ?? []
+            let statuses = result?.Status ?? []
+            log.info("Search completed channel=\(channel.channel) stream=\(streamType, privacy: .public) files=\(files.count) statuses=\(statuses.count) elapsed=\(Date().timeIntervalSince(startedAt), privacy: .public)s")
+            return .success(files, statuses: statuses)
         } catch {
             return .failure(error.localizedDescription)
         }

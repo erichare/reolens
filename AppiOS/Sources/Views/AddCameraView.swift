@@ -131,18 +131,32 @@ private struct DiscoveryPickerSheet: View {
     @State private var devices: [DiscoveredDevice] = []
     @State private var isScanning: Bool = false
     @State private var scanProgress: Double = 0
+    /// 0.5.0 Theme E: iOS Local Network permission state, surfaced
+    /// when the user has explicitly denied so we can show the
+    /// "Settings → Privacy" hint instead of an empty list.
+    @State private var permissionDenied: Bool = false
 
     var body: some View {
         NavigationStack {
             Group {
-                if isScanning && devices.isEmpty {
+                if permissionDenied {
+                    ContentUnavailableView {
+                        Label("Local Network access denied", systemImage: "lock.shield")
+                    } description: {
+                        Text("Reolens needs Local Network permission to discover cameras. Open Settings → Privacy & Security → Local Network → Reolens to allow it.")
+                    } actions: {
+                        Button("Scan again") {
+                            Task { await runScan() }
+                        }
+                    }
+                } else if isScanning && devices.isEmpty {
                     VStack(spacing: 12) {
                         ProgressView(value: scanProgress) {
                             Text("Scanning local network…")
                                 .font(.callout)
                         }
                         .padding()
-                        Text("This usually takes 5–10 seconds.")
+                        Text("Cameras typically appear within 3 seconds.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -198,10 +212,17 @@ private struct DiscoveryPickerSheet: View {
     private func runScan() async {
         isScanning = true
         scanProgress = 0
+        permissionDenied = false
         defer { isScanning = false }
-        let results = await CameraDiscovery.shared.scan(progress: { p in
+        let outcome = await CameraDiscovery.shared.scanWithPermissionGate(progress: { p in
             Task { @MainActor in self.scanProgress = p }
         })
-        devices = results
+        switch outcome {
+        case .permissionDenied:
+            permissionDenied = true
+            devices = []
+        case .success(let results):
+            devices = results
+        }
     }
 }

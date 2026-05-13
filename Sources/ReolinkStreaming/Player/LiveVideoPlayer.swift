@@ -155,7 +155,9 @@ public final class LiveVideoPlayer {
                 try await playOne(url: url, username: username, password: password)
                 return // ended normally
             } catch {
-                attempts.append("\(pathLabel): \(error)")
+                let detail = String(describing: error)
+                attempts.append("\(pathLabel): \(detail)")
+                log.warning("Live candidate failed path=\(pathLabel, privacy: .public): \(detail, privacy: .public)")
                 let isLast = index == urls.count - 1
                 if isLast {
                     state = .failed("All streams failed:\n" + attempts.joined(separator: "\n"))

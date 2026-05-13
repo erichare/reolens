@@ -109,6 +109,10 @@ public enum AppIntentFocus {
         /// to the captured clip than re-watch the (already-stopped)
         /// live feed.
         case recording(deviceID: UUID, channelID: Int, at: Date)
+        /// 0.5.0 Theme A5 — open the overnight-digest detail sheet
+        /// for the given local-midnight `day`. Fired by tapping the
+        /// daily digest notification.
+        case digest(day: Date)
     }
 
     private static let key = "com.reolens.intent.focusTarget"

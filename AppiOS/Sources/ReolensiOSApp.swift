@@ -55,6 +55,14 @@ struct ReolensiOSApp: App {
                         await EventNotifier.shared.requestPermission()
                     }
 
+                    // 0.5.0 Theme A5 — reconcile the daily overnight
+                    // digest with the user's current settings. The
+                    // scheduled local notification fires at the
+                    // configured hour without any background mode;
+                    // `UNCalendarNotificationTrigger(repeats: true)`
+                    // handles the daily fire.
+                    await DigestScheduler.shared.reconcileSchedule()
+
                     // CloudKit motion-event subscription (0.4.1).
                     // Installs idempotently on every launch — CloudKit
                     // no-ops on a re-register, so this is safe and
@@ -100,6 +108,15 @@ struct ReolensiOSApp: App {
                     TrustChangedSheet(request: request)
                         .environment(store)
                 }
+                // 0.5.0 Theme A5 — digest sheet, presented when a
+                // digest notification tap routes through
+                // `applyPendingIntentFocus()`.
+                .sheet(item: Binding<DigestDaySheet?>(
+                    get: { store.pendingDigestDay.map { DigestDaySheet(day: $0) } },
+                    set: { _ in store.pendingDigestDay = nil }
+                )) { sheet in
+                    DigestDetailView(requestedDay: sheet.day)
+                }
                 // Same Keychain-write-failure alert as macOS — turns
                 // silent password-save failures into observable ones.
                 .alert(
@@ -116,6 +133,46 @@ struct ReolensiOSApp: App {
                 } message: { err in
                     Text(err.message)
                 }
+        }
+
+        // 0.5.0 Theme A4 — secondary scene for iPadOS "Open in New
+        // Window". The iPadOS sidebar's per-camera context menu uses
+        // `openWindow(value: ReolensScene.camera(...))` which matches
+        // here. SwiftUI handles multi-scene state on iPadOS Stage
+        // Manager automatically; on iPhone (no multi-window), this
+        // scene declaration is harmless.
+        WindowGroup(for: ReolensScene.self) { $scene in
+            CameraSceneHostiOS(scene: scene ?? .main)
+                .environment(store)
+        }
+    }
+}
+
+/// 0.5.0 Theme A4 — iOS twin of `App/Views/CameraSceneHost.swift`.
+/// Resolves a `ReolensScene` value into the matching view; the
+/// camera case dives straight into the channel's live view.
+private struct CameraSceneHostiOS: View {
+    let scene: ReolensScene
+    @Environment(CameraStore.self) private var store
+
+    var body: some View {
+        switch scene {
+        case .main:
+            RootView()
+        case .camera(let id, let channel):
+            if let session = store.sessions[id],
+               let ch = session.liveChannels.first(where: { $0.channel == channel })
+                ?? session.channels.first(where: { $0.channel == channel }) {
+                SingleChannelView(session: session, channel: ch)
+            } else {
+                ContentUnavailableView(
+                    "Camera not available",
+                    systemImage: "video.slash",
+                    description: Text("Reolens lost the session for this camera. Reopen it from the main window.")
+                )
+            }
+        case .digest:
+            RootView()
         }
     }
 }
@@ -258,5 +315,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         _ = try? await UNUserNotificationCenter.current().add(request)
         log.info("Posted relayed motion notification (channel \(event.channel), detection \(event.detection, privacy: .public))")
     }
+}
+
+/// 0.5.0 Theme A5 — `Identifiable` wrapper for `Date` so the digest
+/// sheet's `.sheet(item:)` binding has a stable identity that matches
+/// the requested-day epoch. Mirrors `App/ReolensApp.swift`.
+private struct DigestDaySheet: Identifiable {
+    let day: Date
+    var id: TimeInterval { day.timeIntervalSince1970 }
 }
 

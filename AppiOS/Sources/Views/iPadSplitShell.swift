@@ -103,6 +103,12 @@ struct iPadSplitShell: View {
                 // off the store on appear, flips to its Recordings
                 // tab, and auto-plays the closest clip.
                 selectedSection = .channel(deviceID: deviceID, channel: channelID)
+            case .digest:
+                // 0.5.0 Theme A5 — the digest detail sheet is
+                // presented at the app entry point via a binding
+                // on `store.pendingDigestDay`. Sidebar selection
+                // stays as-is.
+                break
             }
             store.pendingIntentNavigation = nil
         }
@@ -156,14 +162,43 @@ struct iPadSplitShell: View {
                 ForEach(channels, id: \.channel) { ch in
                     Label(ch.name ?? "Channel \(ch.channel + 1)", systemImage: ch.isAsleep ? "moon.zzz" : "video.fill")
                         .tag(SidebarSection.channel(deviceID: entry.id, channel: ch.channel))
+                        // 0.5.0 Theme A4 — long-press context menu
+                        // on iPadOS surfaces "Open in New Window"
+                        // which opens this specific channel as its
+                        // own scene. Drives Stage Manager / multi-
+                        // window layouts.
+                        .contextMenu {
+                            OpenInNewSceneButton(scene: .camera(id: entry.id, channel: ch.channel))
+                        }
                 }
             } label: {
                 deviceLabel
                     .tag(SidebarSection.device(entry.id))
+                    .contextMenu {
+                        OpenInNewSceneButton(scene: .camera(id: entry.id, channel: channels.first?.channel ?? 0))
+                    }
             }
         } else {
             deviceLabel
                 .tag(SidebarSection.device(entry.id))
+                .contextMenu {
+                    OpenInNewSceneButton(scene: .camera(id: entry.id, channel: channels.first?.channel ?? 0))
+                }
+        }
+    }
+
+    /// 0.5.0 Theme A4 — iPadOS "Open in New Window". Opens a fresh
+    /// scene via the shared `WindowGroup(for: ReolensScene.self)`
+    /// declared on `ReolensiOSApp`. iPadOS surfaces this as a new
+    /// scene the user can drag into Stage Manager's tile grid.
+    private struct OpenInNewSceneButton: View {
+        let scene: ReolensScene
+        @Environment(\.openWindow) private var openWindow
+
+        var body: some View {
+            Button("Open in New Window", systemImage: "rectangle.badge.plus") {
+                openWindow(value: scene)
+            }
         }
     }
 

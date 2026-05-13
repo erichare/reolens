@@ -35,7 +35,9 @@ struct PTZControlView: View {
         }
         .padding(.vertical, 14)
         .frame(maxWidth: .infinity)
-        .background(.thinMaterial, in: .rect(cornerRadius: 14))
+        // 0.5.0 Liquid Glass — PTZ pad reads as a hovering control
+        // surface over the live video.
+        .reolensGlassCard()
     }
 
     private func ptzGroup(label: String,

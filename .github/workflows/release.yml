@@ -74,8 +74,15 @@ jobs:
           # commit-back step at the end of the job.
           fetch-depth: 0
 
-      - name: Select Xcode 16
-        run: sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
+      - name: Select Xcode 26
+        run: sudo xcode-select -s /Applications/Xcode_26.app/Contents/Developer
+
+      # AGENTS.md §13 (0.5.0): macOS + iOS MARKETING_VERSION must
+      # align before a tag is allowed to release. Run this *before*
+      # any signing happens — divergence here is a release-blocking
+      # bug, full stop.
+      - name: Verify macOS / iOS versions align
+        run: ./Scripts/check-versions.sh
 
       - name: Import Developer ID signing cert
         env:

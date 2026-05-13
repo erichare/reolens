@@ -28,43 +28,57 @@ public struct AIEventFilterBar: View {
 
     public var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(categories, id: \.self) { tag in
-                    chip(for: tag)
-                }
-                if !selected.isEmpty {
-                    Button {
-                        selected.removeAll()
-                    } label: {
-                        Label("Clear", systemImage: "xmark.circle.fill")
-                            .labelStyle(.titleAndIcon)
-                            .font(.caption)
-                    }
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel("Clear filter")
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            // 0.5.0 — wrap the chips in a GlassEffectContainer so
+            // adjacent chip glass surfaces morph together during
+            // scroll + selection transitions.
+            chipsRow
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
         }
     }
 
     @ViewBuilder
+    private var chipsRow: some View {
+        if #available(iOS 26.0, macOS 26.0, *) {
+            GlassEffectContainer { rawChipsRow }
+        } else {
+            rawChipsRow
+        }
+    }
+
+    @ViewBuilder
+    private var rawChipsRow: some View {
+        HStack(spacing: 8) {
+            ForEach(categories, id: \.self) { tag in
+                chip(for: tag)
+            }
+            if !selected.isEmpty {
+                Button {
+                    selected.removeAll()
+                } label: {
+                    Label("Clear", systemImage: "xmark.circle.fill")
+                        .labelStyle(.titleAndIcon)
+                        .font(.caption)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Clear filter")
+            }
+        }
+    }
+
     private func chip(for tag: DetectionType) -> some View {
         let isOn = selected.contains(tag)
-        Button {
+        return Button {
             if isOn { selected.remove(tag) } else { selected.insert(tag) }
         } label: {
             Label(tag.label, systemImage: tag.systemImage)
                 .labelStyle(.titleAndIcon)
                 .font(.caption.weight(isOn ? .semibold : .regular))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(
-                    isOn ? AnyShapeStyle(.tint) : AnyShapeStyle(.tint.tertiary),
-                    in: .capsule
-                )
                 .foregroundStyle(isOn ? .white : .primary)
+                // 0.5.0 Liquid Glass — selected chips tint the glass
+                // with accent; unselected stay neutral glass so the
+                // morph between states is smooth.
+                .reolensGlassChip(selected: isOn)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(tag.label) filter")

@@ -224,42 +224,80 @@ private struct MenuBarPopoverView: View {
                 }
             }
             Divider()
-            HStack {
+            HStack(spacing: 8) {
                 Button("Open Reolens") { onOpenApp() }
+                    .buttonStyle(.borderedProminent)
                 Spacer()
                 Button("Quit") { onQuit() }
                     .keyboardShortcut("q", modifiers: .command)
             }
             .padding(12)
         }
+        // 0.5.0 — Liquid Glass background for the popover container.
+        // The Recent-events list renders directly over the user's
+        // desktop without an opaque wrapper, matching the rest of
+        // macOS 26's quick-glance HUDs.
+        .reolensGlassPanel()
     }
 
     /// Latest events from every running camera session, newest first,
     /// capped at 20 — fits inside the popover without scrolling for the
     /// usual case while still bounded if a battery cam went chatty.
     ///
-    /// Resolves each event's channel name from the session so a hub
-    /// with multiple paired cameras surfaces "Back Yard" / "Front
-    /// Door" rather than "Home Hub" for every event. AGENTS.md §11 —
-    /// the channel name is already user-supplied via the camera's
-    /// OSD config; it's no more sensitive than the device name and
-    /// stays in the menu-bar process boundary.
+    /// 0.5.0 fixes:
+    ///   * iterate the log NEWEST-FIRST (`aiEventLog` is inserted at
+    ///     index 0, so `.suffix(20)` previously returned the OLDEST).
+    ///   * coalesce repeats of the same (camera, channel, detection)
+    ///     within a 3 s window — a single motion burst on the hub
+    ///     fires several events on the push channel and produced
+    ///     duplicate rows.
+    ///   * fall back to "Camera <N>" (1-indexed) when the channel's
+    ///     `name` is nil OR empty — Reolink firmware doesn't always
+    ///     populate the OSD-side name even when the user has set one
+    ///     on the camera itself, and rendering the hub's displayName
+    ///     for every row obscured which channel fired.
     private func recentEvents() -> [PopoverEvent] {
         var combined: [PopoverEvent] = []
         for camera in store.cameras {
             guard let session = store.sessions[camera.id] else { continue }
-            for event in session.aiEventLog.suffix(20) {
-                let channelName = session.channels.first(where: { $0.channel == event.channelID })?.name
+            // aiEventLog is newest-first (inserted at index 0). Take
+            // the prefix, not the suffix.
+            for event in session.aiEventLog.prefix(60) {
+                let resolved = session.channels.first { $0.channel == event.channelID }
+                let trimmedName = resolved?.name?.trimmingCharacters(in: .whitespaces) ?? ""
+                let channelName: String? = trimmedName.isEmpty ? nil : trimmedName
                 combined.append(PopoverEvent(
                     id: event.id,
                     timestamp: event.timestamp,
                     deviceName: camera.displayName,
                     channelName: channelName,
-                    detection: event.detectionType
+                    channelIndex: event.channelID,
+                    detection: event.detectionType,
+                    rawAITag: event.aiTag
                 ))
             }
         }
-        return combined.sorted { $0.timestamp > $1.timestamp }.prefix(20).map { $0 }
+        let sorted = combined.sorted { $0.timestamp > $1.timestamp }
+        return Self.coalesce(events: sorted, withinSeconds: 3).prefix(20).map { $0 }
+    }
+
+    /// Collapse adjacent same-camera same-detection events that fire
+    /// within `withinSeconds`. Motion bursts on a Reolink hub push
+    /// several events through the alarm stream for one physical
+    /// trigger; the popover should show them as a single row.
+    private static func coalesce(events: [PopoverEvent], withinSeconds: TimeInterval) -> [PopoverEvent] {
+        var out: [PopoverEvent] = []
+        for event in events {
+            if let last = out.last,
+               last.deviceName == event.deviceName,
+               last.channelIndex == event.channelIndex,
+               last.detection == event.detection,
+               abs(last.timestamp.timeIntervalSince(event.timestamp)) <= withinSeconds {
+                continue
+            }
+            out.append(event)
+        }
+        return out
     }
 
     private func eventRow(_ entry: PopoverEvent) -> some View {
@@ -270,20 +308,22 @@ private struct MenuBarPopoverView: View {
                 // Lead with the channel name (the camera the user
                 // actually thinks about — "Back Yard", "Front Door")
                 // so multi-channel hubs surface which camera fired,
-                // not just which hub. Falls back to the device's
-                // displayName when the channel didn't report a name.
-                Text(entry.channelName ?? entry.deviceName)
+                // not just which hub. Falls back to "Camera <N>" when
+                // the firmware didn't populate the per-channel name —
+                // never to the hub's displayName, which is the same
+                // for every channel and so doesn't help the user
+                // identify which camera fired.
+                Text(Self.primaryLabel(for: entry))
                     .font(.callout.weight(.medium))
                 HStack(spacing: 4) {
-                    Text(entry.detection?.label ?? "Motion")
-                    // Only show the device name on the secondary line
-                    // when it differs from the channel name — keeps
-                    // single-camera devices (where channel name ==
-                    // device name) from rendering "Foo · Foo".
-                    if let channelName = entry.channelName, channelName != entry.deviceName {
-                        Text("·").foregroundStyle(.tertiary)
-                        Text(entry.deviceName)
-                    }
+                    // Prefer the raw AI tag (Reolink's wire format —
+                    // "people", "vehicle", "dog_cat") rendered via
+                    // DetectionType. When the live push stream has
+                    // delivered AItype="none" the event is still a
+                    // genuine motion fire; surface that explicitly.
+                    Text(Self.detectionLabel(for: entry))
+                    Text("·").foregroundStyle(.tertiary)
+                    Text(entry.deviceName)
                     Text("·").foregroundStyle(.tertiary)
                     Text(entry.timestamp, format: .dateTime.hour().minute())
                 }
@@ -300,8 +340,44 @@ private struct MenuBarPopoverView: View {
         let id: UUID
         let timestamp: Date
         let deviceName: String
+        /// Trimmed, non-empty channel name when the firmware reported
+        /// one. Otherwise nil — `primaryLabel` falls back to
+        /// "Camera <N>".
         let channelName: String?
+        /// 0-indexed Reolink channel number. The user-facing
+        /// "Camera N" label is 1-indexed.
+        let channelIndex: Int
         let detection: ReolinkAPI.DetectionType?
+        /// Raw Reolink AI tag string from `<AItype>` — e.g. "people",
+        /// "vehicle", "dog_cat", "face". Carried separately so the
+        /// label fallback can distinguish "motion" from "AI-classified
+        /// but unknown tag".
+        let rawAITag: String?
+    }
+
+    /// Primary label shown on the popover row's first line. Channel
+    /// name wins; "Camera <N>" fallback keeps multi-channel hubs
+    /// readable even when the per-channel name field is empty.
+    private static func primaryLabel(for entry: PopoverEvent) -> String {
+        if let name = entry.channelName {
+            return name
+        }
+        return "Camera \(entry.channelIndex + 1)"
+    }
+
+    /// Secondary-line detection label. Prefers the AI tag rendered
+    /// through `DetectionType.label` ("Person", "Vehicle", "Pet")
+    /// when present; falls back to "Motion" for motion-only events
+    /// and to the raw tag string when the AI category isn't one we
+    /// know how to map (older firmware that ships a custom string).
+    private static func detectionLabel(for entry: PopoverEvent) -> String {
+        if let detection = entry.detection {
+            return detection.label
+        }
+        if let raw = entry.rawAITag, !raw.isEmpty, raw.lowercased() != "none" {
+            return raw.capitalized
+        }
+        return "Motion"
     }
 }
 

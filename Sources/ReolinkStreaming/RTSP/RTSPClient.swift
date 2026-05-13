@@ -66,6 +66,8 @@ public actor RTSPClient {
     private var session: String?
     private var sdp: SessionDescription?
     private var pendingResponse: CheckedContinuation<RTSPResponse, any Error>?
+    private var requestBusy = false
+    private var requestWaiters: [CheckedContinuation<Void, Never>] = []
     private var readBuffer = Data()
     private var dataStream: AsyncStream<RTPChannelMessage>.Continuation?
     private var receiveLoopStarted = false
@@ -320,7 +322,19 @@ public actor RTSPClient {
 
     public func teardown() async {
         if connection != nil {
-            _ = try? await sendRequest(method: "TEARDOWN", uri: aggregateURI)
+            // Best-effort: a failed TEARDOWN doesn't block client-side
+            // cleanup (close() always runs), but log so a regression
+            // that breaks shutdown for every session doesn't disappear
+            // silently. The connection-cancelled case is expected when
+            // a stream tears down due to a network drop. (0.5.0 hardening
+            // pass: replace try? swallows with logged catches.)
+            do {
+                _ = try await sendRequest(method: "TEARDOWN", uri: aggregateURI)
+            } catch RTSPError.cancelled {
+                // expected on ungraceful close — silent.
+            } catch {
+                log.debug("TEARDOWN failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
         close()
     }
@@ -383,13 +397,26 @@ public actor RTSPClient {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, any Error>) in
             // Box the continuation so the @Sendable handler only sees a class reference.
             let box = ContinuationBox(cont)
+            let timeoutTask = Task {
+                do {
+                    try await Task.sleep(for: .seconds(self.config.connectTimeout))
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                connectionRef.cancel()
+                box.resumeFailure(RTSPError.protocolError("TCP connect timed out"))
+            }
             connectionRef.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
+                    timeoutTask.cancel()
                     box.resumeSuccess(())
                 case .failed(let err):
+                    timeoutTask.cancel()
                     box.resumeFailure(RTSPError.connectionFailed(err))
                 case .cancelled:
+                    timeoutTask.cancel()
                     box.resumeFailure(RTSPError.cancelled)
                 default:
                     break
@@ -407,6 +434,9 @@ public actor RTSPClient {
         uri: String,
         extraHeaders: [String: String] = [:]
     ) async throws -> RTSPResponse {
+        await enterRequest()
+        defer { leaveRequest() }
+
         cseq += 1
         // If we already have a challenge, attach a fresh Authorization computed from
         // it for THIS request's method+uri+nc. Otherwise send unauthenticated; the
@@ -416,14 +446,38 @@ public actor RTSPClient {
         if firstAttempt.statusCode == 401, let www = firstAttempt.header("WWW-Authenticate"),
            let challenge = DigestChallenge(headerValue: www) {
             // Cache (or refresh) the challenge for future requests.
+            log.info("RTSP \(method, privacy: .public) received Digest challenge realm=\(challenge.realm, privacy: .public) qop=\(challenge.qop ?? "<none>", privacy: .public); retrying")
             self.authChallenge = challenge
             cseq += 1
             let auth = currentAuthorization(for: method, uri: uri)
             let retry = try await rawSend(method: method, uri: uri, cseq: cseq, authorization: auth, extraHeaders: extraHeaders)
+            log.info("RTSP \(method, privacy: .public) Digest retry status=\(retry.statusCode, privacy: .public) \(retry.reason, privacy: .public)")
             if retry.statusCode == 401 { throw RTSPError.authenticationFailed }
             return retry
         }
+        if firstAttempt.statusCode == 401 {
+            log.warning("RTSP \(method, privacy: .public) returned 401 without a parseable Digest challenge")
+        }
         return firstAttempt
+    }
+
+    private func enterRequest() async {
+        if !requestBusy {
+            requestBusy = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            requestWaiters.append(continuation)
+        }
+    }
+
+    private func leaveRequest() {
+        if requestWaiters.isEmpty {
+            requestBusy = false
+        } else {
+            let next = requestWaiters.removeFirst()
+            next.resume()
+        }
     }
 
     /// Compute a fresh `Authorization: Digest …` value for this request, if we

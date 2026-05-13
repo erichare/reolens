@@ -19,9 +19,11 @@ app — a few rules upfront save us all time.
 
 Tooling:
 
-- Xcode 16 (macOS app) / Xcode 26 (iOS app). The macOS app builds
-  through SwiftPM; iOS uses a generated Xcode project.
-- Swift 6 (strict concurrency on by default).
+- Xcode 26 (both platforms). 0.5.0 raised the deployment floor to
+  macOS 26 / iOS 26 to adopt Liquid Glass + ActivityKit + WidgetKit
+  desktop widgets. The macOS app builds through SwiftPM; iOS uses an
+  xcodegen-managed Xcode project.
+- Swift 6.2 (strict concurrency on by default).
 - An Apple Developer account for code signing iOS builds locally;
   unsigned macOS dev builds run fine via `./Scripts/build-app.sh run`.
 
@@ -29,8 +31,15 @@ Build & test:
 
 ```sh
 swift build                 # libs + macOS app
-swift test                  # unit + integration tests (AppShared, RTSP, Baichuan)
+swift test                  # 158 tests across 43 suites (AppShared, RTSP, Baichuan, …)
 ./Scripts/build-app.sh run  # bundled .app with Local Network entitlement
+```
+
+CI gates also runnable locally (both block PRs in `.github/workflows/ci.yml`):
+
+```sh
+bash Scripts/check-versions.sh   # macOS + iOS marketing versions must match (AGENTS.md §13)
+bash Scripts/coverage-gate.sh    # ≥ 80 % line coverage on AppShared + Reolink* (AGENTS.md §12)
 ```
 
 iOS:
@@ -49,12 +58,16 @@ the diagram. The short version:
 
 | If you're changing... | It probably lives in... |
 |---|---|
-| RTSP / VideoToolbox / sample buffer | `Sources/ReolinkStreaming/` |
-| CGI commands, Codable models, URL building | `Sources/ReolinkAPI/` |
-| Baichuan (port 9000, talkback, push) | `Sources/ReolinkBaichuan/` |
-| State, persistence, iCloud, Keychain, App Intents | `Sources/AppShared/` |
+| RTSP / VideoToolbox / sample buffer / H.264 + H.265 decode | `Sources/ReolinkStreaming/` |
+| CGI commands, Codable models, URL building, `MaskSettings` | `Sources/ReolinkAPI/` |
+| Baichuan (port 9000, talkback, push, `findAlarmVideo`, XML helpers) | `Sources/ReolinkBaichuan/` |
+| State, persistence, iCloud, Keychain, App Intents, EventNotifier, SharedContainer, DigestScheduler, ThumbnailCache, ClipExporter, RecordingBookmarkStore, PrivacyZoneEditor*, ReolensGlass, ScrubberView, MotionEventActivityAttributes, ReolensScene | `Sources/AppShared/` |
 | macOS SwiftUI views | `App/Views/` |
-| iOS/iPadOS SwiftUI views | `AppiOS/Sources/Views/` |
+| macOS menu-bar item + Recent-events popover | `App/MenuBar/` |
+| macOS desktop widgets (extension target) | `App/Widgets/` |
+| iOS / iPadOS SwiftUI views | `AppiOS/Sources/Views/` |
+| iOS WidgetKit + Control Center + ActivityKit extension | `AppiOS/Widgets/` |
+| iOS Live Activity controller + bridge adapter | `AppiOS/Sources/LiveActivities/` |
 | Build/sign/notarize/DMG | `Scripts/` |
 | Landing page | `docs/` |
 
@@ -79,11 +92,18 @@ instead — that's the rule from [`AGENTS.md`](AGENTS.md) §6.
 
 - Use Swift Testing (`import Testing`, `@Test`, `#expect`). New tests
   are not XCTest.
-- 80% coverage target on `AppShared` and `Reolink*` libraries.
+- **80 % line-coverage floor on `AppShared` and `Reolink*` — CI-enforced**
+  by `Scripts/coverage-gate.sh` (AGENTS.md §12). PRs that drop coverage
+  on those targets below 80 % are blocked.
 - No real network in tests. Use `URLProtocol` stubs, fixture servers,
   or protocol-injected fakes.
 - Tests must be deterministic. If a test depends on timing or random
   ordering, it's wrong.
+- Widget / Live Activity extension code is tested via the shared
+  `AppShared` model layer (see `Tests/AppSharedTests/SharedContainerTests.swift`).
+  The extension targets themselves are integration-tested by
+  `xcodebuild` against the regenerated Xcode project; SPM-side tests
+  don't exercise them.
 
 ## Commits & PRs
 

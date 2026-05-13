@@ -14,6 +14,15 @@ Any user-visible feature shipped on one Apple platform must work on the others. 
 
 When you add a feature, ship it everywhere or open a tracking issue for the missing platform in the same PR.
 
+**Documented carve-outs (0.5.0):**
+
+- Sparkle auto-update — macOS only (iOS uses TestFlight / App Store).
+- Picture-in-Picture — iOS / iPadOS only (no macOS analog).
+- Menu-bar mode + Launch at Login — macOS only.
+- Local-network Bonjour discovery sheet — historical iOS-only, gained macOS parity in 0.5.0.
+- **iOS Live Activities + Dynamic Island** — iOS / iPadOS only (ActivityKit has no macOS equivalent; macOS users see the menu-bar mode + desktop widget instead). Added in 0.5.0.
+- **Widgets** — ship on both platforms (Home Screen / Lock Screen / Control Center on iOS, desktop widgets on macOS). No carve-out needed for widgets themselves.
+
 ## 2. Native libraries on each platform
 
 Don't bridge `NSView` into iOS or `UIView` into macOS. Don't import AppKit on iOS or UIKit on macOS. The established pattern is:
@@ -23,6 +32,12 @@ Don't bridge `NSView` into iOS or `UIView` into macOS. Don't import AppKit on iO
 - A shared model below the adapters.
 
 See `Sources/ReolinkStreaming/Player/LiveVideoView.swift` for the canonical example. The whole UI layer currently has only ~5 `#if os(...)` blocks. Keep that count low. If you find yourself reaching for a conditional compile, first try: protocol-driven split, environment-driven branching, or moving the platform-specific code behind a thin representable.
+
+**Cross-platform image bridging (0.5.0):** the `ScrubberView` thumbnail rail uses a `PlatformImage` typealias (`NSImage` on macOS, `UIImage` on iOS) with a small `jpegData(quality:)` extension in `Sources/AppShared/ScrubberView.swift`. Reach for the same typealias pattern before adding a fresh `#if`.
+
+**Liquid Glass tokens (0.5.0):** every glass-surface adoption goes through `Sources/AppShared/ReolensGlass.swift` — `reolensGlassBadge`, `reolensGlassCard`, `reolensGlassToolbar`, `reolensGlassToast`, `reolensGlassChip`, `reolensGlassPanel`. New surfaces use one of those rather than calling `.glassEffect(...)` directly, so a future design tweak is a one-file change.
+
+**Multi-window scenes (0.5.0):** the `ReolensScene` enum + `WindowGroup(for: ReolensScene.self)` declared on both `ReolensApp` and `ReolensiOSApp` is the only path for opening a camera in its own window. Reuse `CameraSceneHost` (macOS) / `CameraSceneHostiOS` (iOS) for additional scene types rather than spinning up an ad-hoc `WindowGroup`.
 
 ## 3. Cameras are sensitive
 
@@ -65,6 +80,16 @@ Don't add a third state ("partial" / "per-camera"). The opt-in is one flag for t
 
 If you find yourself wanting to add a network call, ask whether it can be avoided. If it cannot, document why in the PR.
 
+**Shared App-Group container (0.5.0).** The WidgetKit extension and the Live Activity extension read snapshots + recent motion-event metadata from a *device-local* App Group container at `group.com.reolens.Reolens`. The container holds:
+
+- `LatestSnapshots.plist` — per-camera last snapshot + last-motion timestamp.
+- `RecentMotionEvents.plist` — capped to 50 entries, rotated by `EventNotifier`.
+- `digests/<yyyy-MM-dd>.json` — daily-digest records (≤ 30 days).
+- `snapshots/<cameraID>_ch<channel>.jpg` — small jpegs for widget reads.
+- `activity-assets/<eventID>.jpg` — Live Activity trigger frames, purged at 4 h.
+
+This container is **never CloudKit-synced** and the widget / activity extensions have **no network entitlement** (App Groups grant filesystem-only access). Widgets MUST NOT read Keychain entries. AGENTS.md §16 codifies the lifecycle.
+
 ## 6. Shared logic lives in `AppShared`
 
 The `AppShared` library target holds all state management, persistence, networking, domain models, and cross-platform business logic. UI may diverge per platform. Logic must not.
@@ -80,6 +105,15 @@ If you find yourself about to write the same function twice (once in `App/`, onc
 - **Migrated, not mutated**: when an existing field's semantics change, version the field name (e.g. `order_v2`) rather than overloading the old one.
 
 When you bump the schema, write the migration in the PR description.
+
+**0.5.0 introductions and their `_v1` markers:**
+
+- `bookmarks_v1.json` — recording bookmarks (per-camera) added in 0.5.0. Stored in the per-camera iCloud Drive directory; references only, no media.
+- `DailyDigestRecord` schema-version `1` — overnight-digest JSON files (`digests/<yyyy-MM-dd>.json` under the App Group, capped at 30 days).
+- `MaskSettings` / `MaskArea` — privacy-zone wire model for `GetMask` / `SetMask`. Lives under `Sources/ReolinkAPI/Models/Mask.swift`; tied to Reolink firmware, not a versioned format on our side, but `Sources/AppShared/PrivacyZoneEditorModel.swift` stores the editor's working set in `UserDefaults` keyed by `com.reolens.privacyZones.<deviceID>.<channel>` — bump that key prefix on any breaking shape change.
+- `LatestSnapshots.plist` and `RecentMotionEvents.plist` (in the App Group) carry implicit schema versioning via the Codable types in `Sources/AppShared/SharedContainer.swift`. Add new optional fields freely; never rename or remove an existing field without bumping the file name.
+
+Bump the suffix on any breaking field change in a future minor release; never overload an existing `_v1` field's semantics.
 
 ## 8. Swift 6 concurrency
 
@@ -117,7 +151,7 @@ When you bump the schema, write the migration in the PR description.
 ## 12. Testing
 
 - Use Swift Testing (`import Testing`, `@Test`, `#expect`). New tests should not be XCTest.
-- 80% coverage target on `AppShared` and the `Reolink*` libraries.
+- 80% coverage **floor** on `AppShared`, `ReolinkAPI`, `ReolinkStreaming`, and `ReolinkBaichuan` — enforced by `Scripts/coverage-gate.sh` in CI as of 0.5.0 (was aspirational through 0.4.x).
 - No real network in tests. Use fixture servers (`URLProtocol` stubs, in-process HTTP servers) or protocol-injected fakes.
 - Each test gets a fresh instance — `init`/`deinit`, no shared mutable state.
 - Tests must be deterministic. If a test depends on timing, it's wrong.
@@ -125,7 +159,7 @@ When you bump the schema, write the migration in the PR description.
 ## 13. Versioning
 
 - SemVer. `MAJOR.MINOR.PATCH`.
-- macOS (`App/Info.plist`) and iOS (`AppiOS/ReolensiOS.xcodeproj/project.pbxproj`) `MARKETING_VERSION` must stay aligned. A 0.3.0 release means both platforms ship 0.3.0 — never 0.3.0 on macOS and 0.2.9 on iOS.
+- macOS (`App/Info.plist`) and iOS (`AppiOS/project.yml`) `MARKETING_VERSION` must stay aligned. A 0.3.0 release means both platforms ship 0.3.0 — never 0.3.0 on macOS and 0.2.9 on iOS. **CI-enforced** as of 0.5.0 via `Scripts/check-versions.sh`, which runs in both `ci.yml` (on every PR) and `release.yml` (as the first step before signing).
 - Every release lands as a `## [X.Y.Z]` section in `CHANGELOG.md` following Keep-a-Changelog, with `Added` / `Changed` / `Fixed` / `Removed` subsections.
 
 ## 14. Commit & PR conventions
@@ -146,6 +180,31 @@ Default to delegating to subagents for parallel exploration. Specifically:
 - `Explore` — broad codebase research that would take more than 3 lookups.
 
 Subagents protect the main context window and parallelize work. Use them.
+
+## 16. Widgets & Live Activities (added in 0.5.0)
+
+The WidgetKit and ActivityKit extensions are special-purpose bundles with significantly tighter constraints than the main app. Codifying the rules here so they don't get bent by accident.
+
+**Data flow:**
+
+- Extensions read from the App-Group container `group.com.reolens.Reolens` only — see [Sources/AppShared/SharedContainer.swift](Sources/AppShared/SharedContainer.swift) for the canonical I/O paths.
+- The main app writes; extensions read. Atomically. Never the other way around.
+- The container is **device-local**, never CloudKit-synced. Cross-device widget consistency relies on each device's main app publishing locally; nothing fans out via iCloud.
+
+**Forbidden inside widget / activity extensions:**
+
+- No network. The extensions don't have a `com.apple.security.network.client` entitlement (App Group access is filesystem-only).
+- No Keychain reads — both because we don't want widgets touching credentials and because synchronizable Keychain items aren't reachable from extension processes anyway.
+- No CloudKit. No camera traffic. No Reolink RTSP / CGI. If the extension needs data, the main app pre-publishes it.
+- No `print()` or `os_log` of host names, IPs, or credentials — same logging rules as the main app (§11), enforced by review.
+
+**Live Activity lifecycle:**
+
+- One activity per camera. A fresh fire on the same camera ends the previous activity and starts a new one — activities never stack.
+- 4-hour auto-dismiss is the ActivityKit cap, also the trigger-frame purge window. `SharedContainer.purgeStaleActivityAssets()` runs on every activity start to keep the container bounded.
+- Replace-on-event semantics, not append. A burst of events on one camera collapses into one activity with a `coalescedCount`, not five activities.
+
+**Why this matters:** widgets and Live Activities run in user-visible OS-managed surfaces (Home Screen, Lock Screen, Dynamic Island). A leaked URL or credential here is visible system-wide. The constraints above are deliberate and non-negotiable. AGENTS.md §3, §5, §11 all apply double in this directory.
 
 ---
 

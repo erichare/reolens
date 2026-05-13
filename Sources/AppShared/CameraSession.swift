@@ -47,6 +47,13 @@ public final class CameraSession {
     public let streamURLs: StreamURLs
 
     public var status: ConnectionStatus = .disconnected
+    /// 0.5.0 Theme E — richer step-by-step progress signal for the UI.
+    /// Kept alongside `status` (which older view code reads) so the
+    /// migration is incremental.
+    public var connectionStage: ConnectionStage = .idle
+    /// Retry attempt counter exposed for UIs that want to show
+    /// "(retry 2)" badges on a long connect.
+    public var connectionAttempt: Int = 0
     public var deviceInfo: DeviceInfo?
     public var channels: [ChannelStatus] = []
     /// `channels` filtered to drop the empty paired-camera slots that
@@ -66,6 +73,8 @@ public final class CameraSession {
     /// `eventLogCapacity` entries per channel.
     public var aiEventLog: [TimestampedAIEvent] = []
     public static let eventLogCapacity = 500
+    private static let initialMotionPollDelaySeconds: TimeInterval = 3
+    private static let motionPollIntervalSeconds: TimeInterval = 10
 
     /// Battery info per channel (only present for battery-powered cameras).
     /// Updated from Baichuan msg 252 (`batteryInfoList`) pushes, which the
@@ -75,6 +84,10 @@ public final class CameraSession {
     private var pollTask: Task<Void, Never>?
     private var baichuanTask: Task<Void, Never>?
     private var batteryTask: Task<Void, Never>?
+    private var connectTask: Task<Void, Never>?
+    private var connectGeneration: Int = 0
+    private var foregroundCGIOperationDepth = 0
+    private var shouldResumePollingAfterForegroundCGI = false
     public private(set) var baichuanClient: BaichuanClient?
 
     public init(
@@ -96,37 +109,77 @@ public final class CameraSession {
     /// may still resolve in the background after this — `status` will
     /// reflect the most recent attempt to finish either way.
     public func reconnect() async {
+        connectTask?.cancel()
+        connectTask = nil
+        connectGeneration += 1
         await client.logout()
         await connect()
     }
 
-    public func connect() async {
+    public func connect(policy: ConnectRetryPolicy = .default) async {
+        if status == .connected { return }
+        if let connectTask {
+            await connectTask.value
+            return
+        }
+
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.runConnect(policy: policy)
+        }
+        connectGeneration += 1
+        let generation = connectGeneration
+        connectTask = task
+        await task.value
+        if connectGeneration == generation {
+            connectTask = nil
+        }
+    }
+
+    private func runConnect(policy: ConnectRetryPolicy) async {
         status = .connecting
-        // Bounded auto-retry. The "first launch fails, Reconnect
-        // works" case is almost always a transient: macOS hasn't
-        // finished joining Wi-Fi, the hub is still booting, mDNS
-        // hasn't resolved, etc. A single attempt buries those in
-        // `.error` and forces the user to manually click Reconnect.
-        // 4 attempts × 2/4/8 s backoff covers ~14 s of transient
-        // unavailability without spamming the hub or hanging forever
-        // on truly-broken setups. Auth failures stop early because a
-        // bad password isn't going to start working.
-        let maxAttempts = 4
-        var attempt = 0
+        connectionAttempt = 0
+        let deadline = Date().addingTimeInterval(policy.overallDeadlineSeconds)
+
+        // iOS only: a missing Local Network permission silently
+        // strands every camera request for ~30 s before the
+        // URLSession deadline trips. Probe up front so the UI can
+        // surface "Allow Local Network" instead of an unexplained
+        // spinner. macOS short-circuits to .granted.
+        connectionStage = .awaitingLocalNetworkPermission
+        let permission = await LocalNetworkPermission.check(timeoutSeconds: 0.4)
+        switch permission {
+        case .denied:
+            status = .error("Local Network permission denied")
+            connectionStage = .failed(reason: "Allow Local Network in Settings → Privacy → Local Network")
+            return
+        case .pending:
+            // Permission prompt is showing; the user will tap shortly.
+            // Don't fail — proceed and let the first request show the
+            // prompt. The progress label tells them what we're waiting on.
+            log.info("Local Network permission pending; proceeding optimistically")
+        case .granted, .unknown:
+            break
+        }
+
         var lastError: (any Error)?
-        while attempt < maxAttempts, !Task.isCancelled {
+        var attempt = 0
+        while attempt < policy.maxAttempts, !Task.isCancelled, Date() < deadline {
             attempt += 1
+            connectionAttempt = attempt
+            connectionStage = .loggingIn(attempt: attempt)
             do {
                 _ = try await client.login()
+
+                // Keep the first metadata pass serialized. Reolink hubs
+                // are sensitive to overlapping CGI requests during the
+                // first login window; shaving a few hundred milliseconds
+                // here is not worth turning startup into a coin toss.
+                connectionStage = .fetchingDeviceMetadata
                 let info = try await client.send(Commands.getDevInfo(), as: DeviceInfoEnvelope.self)
                 deviceInfo = info.DevInfo
 
                 if info.DevInfo.isNVR {
-                    // Capture the raw JSON before decoding so we can see
-                    // EVERY field the hub returns per channel — useful
-                    // when a paired camera doesn't carry `typeInfo` and
-                    // we need an alternate signal for dual-lens /
-                    // battery classification.
                     let raw = try await client.sendCapturingRaw(Commands.getChannelStatus())
                     // Raw GetChannelstatus payloads carry per-channel
                     // UIDs and hardware-fingerprinting fields. Gate
@@ -144,29 +197,43 @@ public final class CameraSession {
                 for ch in channels {
                     log.info("Channel \(ch.channel) name=\(ch.name ?? "<none>", privacy: .public) typeInfo=\(ch.typeInfo ?? "<nil>", privacy: .public) sleep=\(ch.sleep ?? 0) online=\(ch.online)")
                 }
+                connectionStage = .establishingPushChannel
                 status = .connected
                 startEventPolling()
                 startBaichuanEvents()
+                // Baichuan handshake races in the background; flip
+                // the stage to .connected immediately so the UI shows
+                // a working live tile.
+                connectionStage = .connected
                 return
             } catch {
                 lastError = error
-                // Auth-style failures are permanent — don't waste
-                // retries (and don't lock the user out of their hub by
-                // hammering it with bad credentials). Network /
-                // timeout / "host unreachable" failures fall through
-                // to the backoff sleep.
                 if Self.isAuthFailure(error) {
                     log.warning("connect attempt \(attempt) auth-failed; stopping retries")
-                    break
+                    let reason = "Authentication failed — check the password."
+                    status = .error(reason)
+                    connectionStage = .failed(reason: reason)
+                    return
                 }
                 log.warning("connect attempt \(attempt) failed: \(error.localizedDescription, privacy: .public)")
-                if attempt >= maxAttempts { break }
-                let backoffSeconds = pow(2.0, Double(attempt))   // 2, 4, 8
-                try? await Task.sleep(for: .seconds(backoffSeconds))
+                if attempt >= policy.maxAttempts { break }
+                let backoff = policy.backoffSeconds(attempt: attempt)
+                // Don't sleep past the overall deadline.
+                let remaining = deadline.timeIntervalSinceNow
+                let effective = max(0, min(backoff, remaining))
+                if effective <= 0 { break }
+                connectionStage = .retrying(after: effective, reason: error.localizedDescription)
+                try? await Task.sleep(for: .seconds(effective))
             }
         }
         if let lastError {
-            status = .error("\(lastError)")
+            let detail = String(describing: lastError)
+            status = .error(detail)
+            if case .failed = connectionStage {
+                // already set to a specific auth failure above
+            } else {
+                connectionStage = .failed(reason: "Couldn't reach the camera (\(detail)). Try again.")
+            }
         }
     }
 
@@ -180,8 +247,13 @@ public final class CameraSession {
     }
 
     public func disconnect() async {
+        connectTask?.cancel()
+        connectTask = nil
+        connectGeneration += 1
         pollTask?.cancel()
         pollTask = nil
+        foregroundCGIOperationDepth = 0
+        shouldResumePollingAfterForegroundCGI = false
         baichuanTask?.cancel()
         baichuanTask = nil
         batteryTask?.cancel()
@@ -192,6 +264,8 @@ public final class CameraSession {
         baichuanClient = nil
         await client.logout()
         status = .disconnected
+        connectionStage = .idle
+        connectionAttempt = 0
     }
 
     /// Opens the proprietary Baichuan TCP connection on port 9000, logs in
@@ -335,6 +409,30 @@ public final class CameraSession {
         return streamURLs.snapshot(channel: channel, token: token)
     }
 
+    /// Temporarily stop low-priority background CGI polling while a
+    /// user-initiated request runs. Recording searches, OSD writes, and
+    /// similar foreground actions should not sit behind per-channel
+    /// motion-state polling on busy hubs.
+    public func withBackgroundPollingPaused<T>(_ operation: () async throws -> T) async rethrows -> T {
+        if foregroundCGIOperationDepth == 0 {
+            shouldResumePollingAfterForegroundCGI = pollTask != nil && status == .connected
+            pollTask?.cancel()
+            pollTask = nil
+        }
+        foregroundCGIOperationDepth += 1
+        defer {
+            foregroundCGIOperationDepth -= 1
+            if foregroundCGIOperationDepth == 0 {
+                let shouldResume = shouldResumePollingAfterForegroundCGI
+                shouldResumePollingAfterForegroundCGI = false
+                if shouldResume, status == .connected {
+                    startEventPolling()
+                }
+            }
+        }
+        return try await operation()
+    }
+
     /// Authoritative "is this a battery-powered camera" check. The hub
     /// pushes msg 252 (`batteryInfoList`) for every paired battery cam, so
     /// presence of an entry in `batteryByChannel` is ground truth. We fall
@@ -373,18 +471,20 @@ public final class CameraSession {
     private func startEventPolling() {
         pollTask?.cancel()
         pollTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Self.initialMotionPollDelaySeconds))
             while let self, !Task.isCancelled, self.status == .connected {
                 await self.pollOnce()
-                try? await Task.sleep(for: .seconds(2))
+                try? await Task.sleep(for: .seconds(Self.motionPollIntervalSeconds))
             }
         }
     }
 
     private func pollOnce() async {
-        for ch in channels where ch.isOnline {
+        for ch in liveChannels where ch.isOnline && !Task.isCancelled {
             if let md = try? await client.send(Commands.getMdState(channel: ch.channel), as: MotionStateValue.self) {
                 motionState[ch.channel] = md.isTriggered
             }
+            guard !Task.isCancelled else { return }
             if let ai = try? await client.send(Commands.getAiState(channel: ch.channel), as: AIStateValue.self) {
                 aiTriggered[ch.channel] = ai.anyTriggered
             }

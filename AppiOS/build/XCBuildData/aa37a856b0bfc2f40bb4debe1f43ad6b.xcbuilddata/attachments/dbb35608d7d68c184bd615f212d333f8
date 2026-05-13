@@ -1,0 +1,4 @@
+module ReolinkAPI {
+header "ReolinkAPI-Swift.h"
+export *
+}

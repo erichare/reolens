@@ -4,6 +4,9 @@ import UserNotifications
 import OSLog
 import ReolinkAPI
 import ReolinkBaichuan
+#if canImport(WidgetKit)
+import WidgetKit
+#endif
 
 #if os(macOS)
 import AppKit
@@ -12,6 +15,27 @@ import UIKit
 #endif
 
 private let log = Logger(subsystem: "com.reolens.app", category: "notifier")
+
+/// 0.5.0 — protocol-typed bridge from `EventNotifier` (AppShared) to
+/// the iOS-only `MotionEventActivityController` (AppiOS). Keeps the
+/// AppShared library free of `ActivityKit` imports while still letting
+/// motion events drive Live Activity start/update/end on iOS.
+///
+/// The iOS app registers a concrete implementation at launch:
+///
+/// ```swift
+/// // ReolensiOSApp.init():
+/// EventNotifier.liveActivityBridge = MotionEventActivityBridge()
+/// ```
+public protocol MotionEventLiveActivityBridge: Sendable {
+    func start(
+        cameraID: UUID,
+        channel: Int,
+        cameraName: String,
+        aiTags: [String],
+        triggerFrameJPEG: Data?
+    ) async
+}
 
 /// macOS user-notification gateway for Reolink AI/motion events.
 ///
@@ -104,6 +128,11 @@ public final class EventNotifier {
     /// Per-(channel, kind) timestamp of the last delivered notification.
     /// Used to throttle sustained alarm streams.
     private var lastNotifiedAt: [String: Date] = [:]
+    /// Same throttle, but for the macOS CloudKit relay path. Relay is
+    /// deliberately independent from local notification authorization,
+    /// yet it must not download a snapshot for every repeated push in a
+    /// motion burst.
+    private var lastRelayedAt: [String: Date] = [:]
 
     private init() {
         // Default `enabled` to true; the OS permission state is what
@@ -209,29 +238,55 @@ public final class EventNotifier {
         cameraName: String,
         snapshotURL: URL?
     ) async {
-        // Relay to the user's other Apple devices via CloudKit IF
-        // the user has opted in (macOS only; on iOS the publisher
-        // setting is irrelevant because the iOS app receives, it
-        // doesn't publish). This runs OUTSIDE the local-notification
-        // gates so an opted-in macOS Reolens still publishes events
-        // even when local notifications are muted on that machine —
-        // the user might have muted on the Mac specifically because
-        // they want the alerts on iPhone.
-        #if os(macOS)
-        if MotionEventRelaySettings.publisherEnabled {
-            await relayToCloudKit(event: event, cameraID: cameraID, snapshotURL: snapshotURL)
-        }
-        #endif
-        guard enabled, permissionStatus == .authorized else { return }
-
         let (title, body, throttleKey) = format(event: event, cameraName: cameraName)
         guard !title.isEmpty else { return }
 
-        if let last = lastNotifiedAt[throttleKey],
-           Date().timeIntervalSince(last) < Self.cooldown {
+        let relayAllowed: Bool
+        #if os(macOS)
+        // Relay to the user's other Apple devices via CloudKit IF
+        // the user has opted in. This stays outside the local
+        // notification authorization gates so an opted-in Mac can
+        // still publish events when local banners are muted, but it
+        // now shares the same burst throttle. Before this, a single
+        // sustained event could spawn dozens of snapshot downloads,
+        // saturating the hub and making foreground Search/RTSP feel
+        // painfully slow.
+        relayAllowed = MotionEventRelaySettings.publisherEnabled
+            && consumeRelayCooldown(for: throttleKey)
+        #else
+        relayAllowed = false
+        #endif
+
+        let localNotificationAllowed = enabled
+            && permissionStatus == .authorized
+            && consumeLocalNotificationCooldown(for: throttleKey)
+
+        guard relayAllowed || localNotificationAllowed else {
             return
         }
-        lastNotifiedAt[throttleKey] = Date()
+
+        // Download once and reuse the temp file for both CloudKit relay
+        // and the local notification. Reolink snapshot requests are
+        // expensive on busy hubs; doing this before throttle checks was
+        // the source of the macOS timeout storm seen in unified logs.
+        let attachment: UNNotificationAttachment?
+        if let snapshotURL {
+            attachment = await downloadSnapshotAttachment(from: snapshotURL)
+        } else {
+            attachment = nil
+        }
+
+        #if os(macOS)
+        if relayAllowed {
+            await relayToCloudKit(
+                event: event,
+                cameraID: cameraID,
+                snapshotFileURL: attachment?.url
+            )
+        }
+        #endif
+
+        guard localNotificationAllowed else { return }
 
         let content = UNMutableNotificationContent()
         content.title = title
@@ -254,8 +309,7 @@ public final class EventNotifier {
         // under a second, and the user shouldn't have a notification
         // delayed by a slow camera. If we can't get the JPEG, we still
         // post the notification with just the text.
-        if let snapshotURL,
-           let attachment = await downloadSnapshotAttachment(from: snapshotURL) {
+        if let attachment {
             content.attachments = [attachment]
         }
 
@@ -288,26 +342,140 @@ public final class EventNotifier {
         } else {
             log.info("Notified: \(title, privacy: .public) — \(body, privacy: .public)")
         }
+
+        // 0.5.0 — record the event into the shared App Group so
+        // widgets (CameraSnapshotWidget, LastMotionWidget,
+        // MotionDigestWidget) can render the most-recent fire
+        // without re-querying the camera. Also bumps the
+        // `lastMotionAt` on the per-camera snapshot record so the
+        // snapshot widget's "fired 4m ago" relative timestamp stays
+        // fresh.
+        Self.publishToWidgetContainer(
+            event: event,
+            cameraID: cameraID,
+            cameraName: cameraName,
+            snapshotURL: attachment?.url
+        )
+
+        #if os(iOS)
+        // Start (or replace) the in-flight motion-event Live Activity
+        // on iOS. Activities are short-lived (4 h cap) and
+        // replace-on-new-fire so the Dynamic Island stays readable.
+        // The activity controller no-ops on macOS — this whole branch
+        // is iOS-only.
+        await startOrUpdateLiveActivity(
+            event: event,
+            cameraID: cameraID,
+            cameraName: cameraName,
+            snapshotURL: attachment?.url
+        )
+        #endif
     }
+
+    /// Persist the event to the App-Group container that widgets
+    /// read from. Atomic, idempotent, and never throws into the
+    /// caller — a failure here just means the widget will miss this
+    /// fire (it'll catch up on the next one). AGENTS.md §16: no
+    /// network, no Keychain, the container is device-local.
+    private static func publishToWidgetContainer(
+        event: BaichuanEvent,
+        cameraID: UUID,
+        cameraName: String,
+        snapshotURL: URL?
+    ) {
+        let aiTags: [String]
+        switch event.kind {
+        case .ai(let tag): aiTags = [tag]
+        case .motionStart, .motionStop: aiTags = ["motion"]
+        case .other: aiTags = []
+        }
+        // Copy the snapshot into the App-Group `activity-assets/`
+        // folder so the widget extension can read it without
+        // re-downloading (it has no network entitlement).
+        var assetRelativePath: String?
+        if let snapshotURL,
+           let jpegData = try? Data(contentsOf: snapshotURL),
+           let assetURL = try? SharedContainer.writeActivityFrame(eventID: UUID(), jpegData: jpegData) {
+            assetRelativePath = assetURL.lastPathComponent
+        }
+        let record = SharedContainer.RecentMotionEvent(
+            id: UUID(),
+            cameraID: cameraID,
+            channel: Int(event.channelID),
+            cameraName: cameraName,
+            timestamp: Date(),
+            aiTags: aiTags,
+            triggerFrameRelativePath: assetRelativePath
+        )
+        try? SharedContainer.appendMotionEvent(record, cap: 50)
+
+        // Bump lastMotionAt on the per-camera snapshot record so the
+        // CameraSnapshotWidget's "fired Xm ago" subtitle is fresh.
+        var snapshots = SharedContainer.readLatestSnapshots()
+        if let index = snapshots.firstIndex(where: { $0.cameraID == cameraID && $0.channel == Int(event.channelID) }) {
+            let prior = snapshots[index]
+            snapshots[index] = SharedContainer.LatestSnapshot(
+                cameraID: prior.cameraID,
+                channel: prior.channel,
+                cameraName: prior.cameraName,
+                lastUpdated: prior.lastUpdated,
+                imageRelativePath: prior.imageRelativePath,
+                lastMotionAt: Date()
+            )
+            try? SharedContainer.writeLatestSnapshots(snapshots)
+        }
+        // Trigger widget reload so the new event appears within
+        // seconds rather than at the next scheduled timeline tick.
+        #if canImport(WidgetKit)
+        Task { @MainActor in
+            WidgetCenter.shared.reloadAllTimelines()
+        }
+        #endif
+    }
+
+    #if os(iOS)
+    private func startOrUpdateLiveActivity(
+        event: BaichuanEvent,
+        cameraID: UUID,
+        cameraName: String,
+        snapshotURL: URL?
+    ) async {
+        let aiTags: [String]
+        switch event.kind {
+        case .ai(let tag): aiTags = [tag]
+        case .motionStart: aiTags = ["motion"]
+        case .motionStop, .other: return
+        }
+        let jpegData = snapshotURL.flatMap { try? Data(contentsOf: $0) }
+        // The controller lives in `AppiOS/Sources/LiveActivities/` —
+        // not built by SPM. EventNotifier hands off via a small
+        // protocol-typed bridge so AppShared doesn't import iOS-only
+        // ActivityKit / MotionEventActivityController types.
+        guard let bridge = Self.liveActivityBridge else { return }
+        await bridge.start(
+            cameraID: cameraID,
+            channel: Int(event.channelID),
+            cameraName: cameraName,
+            aiTags: aiTags,
+            triggerFrameJPEG: jpegData
+        )
+    }
+
+    /// Set by the iOS app at launch (see `ReolensiOSApp.swift`'s
+    /// init) to a real `MotionEventActivityController` adapter. Stays
+    /// nil on macOS and in SPM unit tests — `startOrUpdateLiveActivity`
+    /// is then a no-op.
+    nonisolated(unsafe) public static var liveActivityBridge: (any MotionEventLiveActivityBridge)? = nil
+    #endif
 
     /// Build the title/body for an event, plus a stable key for the
     /// throttle map. `nil`-keyed events return an empty triple so the
-    /// macOS-only CloudKit relay hook. Downloads the snapshot once,
-    /// stages it as a `CKAsset`, publishes the record via the shared
-    /// publisher. Errors are logged but never user-visible — relay
-    /// is opportunistic; the local notification is the source of
-    /// truth.
+    /// macOS-only CloudKit relay hook. Publishes the record via the
+    /// shared publisher. Errors are logged but never user-visible —
+    /// relay is opportunistic; the local notification is the source
+    /// of truth on this device.
     #if os(macOS)
-    private func relayToCloudKit(event: BaichuanEvent, cameraID: UUID, snapshotURL: URL?) async {
-        // Stage the snapshot as a local temp file so we can hand it
-        // to CKAsset by URL. (`CKAsset` requires a fileURL on disk
-        // at upload time.) Best-effort — events without a snapshot
-        // still relay; the iOS subscriber renders the text.
-        var stagedSnapshot: URL?
-        if let snapshotURL,
-           let attachment = await downloadSnapshotAttachment(from: snapshotURL) {
-            stagedSnapshot = attachment.url
-        }
+    private func relayToCloudKit(event: BaichuanEvent, cameraID: UUID, snapshotFileURL: URL?) async {
         let detection: String
         switch event.kind {
         case .ai(let tag): detection = tag
@@ -319,7 +487,7 @@ public final class EventNotifier {
             channel: Int(event.channelID),
             detection: detection,
             timestamp: Date(),
-            snapshotFileURL: stagedSnapshot
+            snapshotFileURL: snapshotFileURL
         )
         let publisher = CloudKitMotionEventPublisher()
         await publisher.publish(payload)
@@ -350,14 +518,32 @@ public final class EventNotifier {
         }
     }
 
+    private func consumeLocalNotificationCooldown(for key: String) -> Bool {
+        if let last = lastNotifiedAt[key],
+           Date().timeIntervalSince(last) < Self.cooldown {
+            return false
+        }
+        lastNotifiedAt[key] = Date()
+        return true
+    }
+
+    private func consumeRelayCooldown(for key: String) -> Bool {
+        if let last = lastRelayedAt[key],
+           Date().timeIntervalSince(last) < Self.cooldown {
+            return false
+        }
+        lastRelayedAt[key] = Date()
+        return true
+    }
+
     /// Download the snapshot JPEG to a temp file and wrap it in a
     /// `UNNotificationAttachment`. AppKit auto-moves the file into its
     /// own storage on `add(request:)`, so we don't need to keep the temp
     /// path around afterward.
     private func downloadSnapshotAttachment(from url: URL) async -> UNNotificationAttachment? {
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 4
-        config.timeoutIntervalForResource = 8
+        config.timeoutIntervalForRequest = 2
+        config.timeoutIntervalForResource = 4
         let session = URLSession(configuration: config)
         do {
             let (data, response) = try await session.data(from: url)
@@ -425,6 +611,24 @@ public final class NotificationTapDelegate: NSObject, UNUserNotificationCenterDe
     ) {
         let userInfo = response.notification.request.content.userInfo
         defer { completionHandler() }
+
+        // 0.5.0 Theme A5 — digest notification tap routes to the
+        // digest detail sheet. Recognized by category identifier so
+        // the digest path doesn't share the cameraID/channel
+        // contract of the alarm notifications.
+        if response.notification.request.content.categoryIdentifier == DigestScheduler.notificationCategory {
+            let dayEpoch = userInfo[DigestScheduler.userInfoDigestDayKey] as? TimeInterval
+            let day = dayEpoch.map { Date(timeIntervalSince1970: $0) } ?? Date()
+            AppIntentFocus.request(.digest(day: day))
+            // Also re-build the digest in case the user tapped the
+            // scheduled placeholder before the app had a chance to
+            // run the pipeline (cold-launch tap).
+            Task {
+                await DigestScheduler.shared.runDigest(now: day)
+            }
+            return
+        }
+
         guard
             let cameraString = userInfo[EventNotifier.userInfoCameraIDKey] as? String,
             let cameraID = UUID(uuidString: cameraString)
@@ -448,4 +652,3 @@ public final class NotificationTapDelegate: NSObject, UNUserNotificationCenterDe
         // is belt-and-suspenders.
     }
 }
-

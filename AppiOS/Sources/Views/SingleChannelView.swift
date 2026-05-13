@@ -434,10 +434,11 @@ private struct FullscreenLiveView: View {
             HStack {
                 Text(channel.name ?? "Channel \(channel.channel + 1)")
                     .font(.headline)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(.black.opacity(0.55), in: Capsule())
+                    .foregroundStyle(.primary)
+                    // 0.5.0 Liquid Glass — fullscreen-overlay name
+                    // pill adapts to the underlying video instead of
+                    // a fixed 55 % black tint.
+                    .reolensGlassToast()
                 Spacer()
                 Button {
                     dismiss()
@@ -445,9 +446,8 @@ private struct FullscreenLiveView: View {
                     Label("Done", systemImage: "xmark")
                         .labelStyle(.iconOnly)
                         .font(.title3.weight(.semibold))
-                        .foregroundStyle(.white)
                         .frame(width: 44, height: 44)
-                        .background(.black.opacity(0.55), in: Circle())
+                        .glassEffect(.regular, in: .circle)
                 }
                 .accessibilityLabel("Exit fullscreen")
             }

@@ -42,6 +42,7 @@ struct LiveCameraTile: View {
     @Environment(CameraStore.self) private var store
     @State private var player: LiveVideoPlayer?
     @State private var didStart = false
+    @State private var isVisible = false
 
     var body: some View {
         // Effective rotation has two parts:
@@ -189,9 +190,11 @@ struct LiveCameraTile: View {
                 }
             }
         }
+        .onAppear {
+            isVisible = true
+        }
         .task(id: channel.channel) {
             guard !preferPreview, autoStart, !channel.isAsleep, !session.isBatteryPowered(channel: channel.channel), !didStart, !paused else { return }
-            didStart = true
             await startPlayer()
         }
         .onChange(of: rotation) { _, newValue in
@@ -241,7 +244,6 @@ struct LiveCameraTile: View {
                 // grids briefly stream live after a rich-viewer close
                 // even with the static-preview toggle on.
                 Task {
-                    didStart = true
                     await startPlayer()
                 }
             }
@@ -263,12 +265,12 @@ struct LiveCameraTile: View {
                 // Switched to Live — start the player if eligible.
                 // Eligibility mirrors the `.task` guards above.
                 Task {
-                    didStart = true
                     await startPlayer()
                 }
             }
         }
         .onDisappear {
+            isVisible = false
             player?.stop()
             player = nil
             didStart = false
@@ -287,9 +289,20 @@ struct LiveCameraTile: View {
             HStack(spacing: 6) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.yellow)
-                Text("Live unavailable")
+                Text(liveFailureTitle(error: message))
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.white)
+                if authenticationFailureIsLikely(error: message), let onEnterPassword {
+                    Button {
+                        onEnterPassword()
+                    } label: {
+                        Label("Update Password", systemImage: "key.fill")
+                            .labelStyle(.iconOnly)
+                            .foregroundStyle(.white)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Update Password")
+                }
                 Button {
                     Task {
                         player?.stop()
@@ -307,10 +320,30 @@ struct LiveCameraTile: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(.black.opacity(0.7), in: Capsule())
+            // 0.5.0 Liquid Glass — failure-overlay action pill stays
+            // legible without an opaque shell.
+            .glassEffect(.regular, in: .capsule)
             .padding(8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func liveFailureTitle(error message: String) -> String {
+        authenticationFailureIsLikely(error: message) ? "Check password" : "Live unavailable"
+    }
+
+    private func authenticationFailureIsLikely(error message: String) -> Bool {
+        if case .failed(let reason) = session.connectionStage {
+            let lowered = reason.lowercased()
+            if lowered.contains("auth") || lowered.contains("password") {
+                return true
+            }
+        }
+        let lowered = message.lowercased()
+        return lowered.contains("auth")
+            || lowered.contains("401")
+            || lowered.contains("unauthorized")
+            || lowered.contains("password")
     }
 
     private var sleepingOverlay: some View {
@@ -363,9 +396,11 @@ struct LiveCameraTile: View {
                     Image(systemName: "sparkles").foregroundStyle(.green)
                 }
             }
-            .foregroundStyle(.white)
-            .padding(6)
-            .background(.black.opacity(0.45), in: .rect(cornerRadius: 6))
+            .foregroundStyle(.primary)
+            // 0.5.0 Liquid Glass — name + motion/AI indicator pill on
+            // the live tile. Adapts to whatever the camera frame
+            // currently shows instead of a fixed 45 % black tint.
+            .reolensGlassBadge()
         }
         .padding(8)
     }
@@ -397,15 +432,22 @@ struct LiveCameraTile: View {
     private func capturePreviewWhenReady() {
         let cameraID = session.entry.id
         let channelID = channel.channel
+        // 0.5.0: hand the camera + channel name to the publisher so
+        // widgets get a human-readable label alongside the snapshot.
+        let cameraName: String = {
+            let channelName = (channel.name?.trimmingCharacters(in: .whitespaces)).flatMap { $0.isEmpty ? nil : $0 }
+            return channelName ?? session.entry.displayName
+        }()
         Task { @MainActor in
             for attempt in 1...5 {
                 try? await Task.sleep(nanoseconds: UInt64(attempt) * 800_000_000)
                 guard let cgImage = player?.currentSnapshot() else { continue }
                 Task.detached(priority: .utility) {
-                    await CameraPreviewService.shared.storeFromLive(
+                    await CameraPreviewService.shared.storeFromLiveAndPublishToWidget(
                         cgImage: cgImage,
                         cameraID: cameraID,
-                        channel: channelID
+                        channel: channelID,
+                        cameraName: cameraName
                     )
                 }
                 return
@@ -431,17 +473,27 @@ struct LiveCameraTile: View {
         // "Connect" wire-up), preview mode tiles must never spin up an
         // RTSP session. The whole point of preview mode is no live
         // streaming until the user opens a single-channel view.
-        if preferPreview { return }
-        if player != nil { return }
+        if preferPreview || !isVisible { return }
+        if player != nil {
+            didStart = true
+            return
+        }
+        guard !didStart else { return }
+        didStart = true
         // Rate-limit concurrent RTSP starts so a 16-tile grid flipping
         // Stills → Live doesn't open 16 sessions in parallel and trip
         // the hub's concurrency cap. Tiles still go live progressively
         // (~500 ms apart) rather than all-or-nothing.
-        await LivePlayerStartGate.shared.acquire()
+        guard await LivePlayerStartGate.shared.acquire() else {
+            didStart = false
+            return
+        }
         // Re-check `preferPreview` after the gate wait — the user may
         // have flipped Live → Stills while we were queued.
-        if preferPreview { return }
-        didStart = true
+        if preferPreview || !isVisible {
+            didStart = false
+            return
+        }
         // For battery cameras, poke the hub via Baichuan first to wake the
         // sleeping camera. If we go straight to RTSP, the camera won't
         // respond because it's offline at the radio layer.
@@ -449,9 +501,14 @@ struct LiveCameraTile: View {
             _ = try? await baichuan.wakeBatteryCamera(channelID: UInt8(channel.channel))
         }
         let credentials = await session.client.credentials
+        if preferPreview || !isVisible {
+            didStart = false
+            return
+        }
         let urls = StreamURLs(credentials: credentials).candidatesForLive(
             channel: channel.channel,
-            stream: stream
+            stream: stream,
+            preferredCodec: session.entry.preferredCodec
         )
         let rotation = rotationDegrees ?? store.rotation(for: session.entry.id, channel: channel.channel, stream: stream)
         let p = LiveVideoPlayer(

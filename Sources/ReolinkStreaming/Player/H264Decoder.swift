@@ -95,20 +95,31 @@ public final class H264SampleBufferAssembler: @unchecked Sendable {
     }
 
     private static func makeFormatDescription(sps: Data, pps: Data) throws -> CMFormatDescription {
+        // Empty SPS/PPS would yield a nil baseAddress; reject before
+        // dereferencing rather than trap (0.5.0 hardening pass).
+        guard !sps.isEmpty, !pps.isEmpty else {
+            throw AssemblerError.formatDescriptionFailed(-1)
+        }
         var fd: CMFormatDescription?
         let result: OSStatus = sps.withUnsafeBytes { spsBuf -> OSStatus in
             pps.withUnsafeBytes { ppsBuf -> OSStatus in
-                let spsPtr = spsBuf.baseAddress!.assumingMemoryBound(to: UInt8.self)
-                let ppsPtr = ppsBuf.baseAddress!.assumingMemoryBound(to: UInt8.self)
+                guard let spsBase = spsBuf.baseAddress, let ppsBase = ppsBuf.baseAddress else {
+                    return OSStatus(-1)
+                }
+                let spsPtr = spsBase.assumingMemoryBound(to: UInt8.self)
+                let ppsPtr = ppsBase.assumingMemoryBound(to: UInt8.self)
                 let pointers = [spsPtr, ppsPtr]
                 let sizes = [sps.count, pps.count]
                 return pointers.withUnsafeBufferPointer { pPtr in
                     sizes.withUnsafeBufferPointer { sPtr in
-                        CMVideoFormatDescriptionCreateFromH264ParameterSets(
+                        guard let pBase = pPtr.baseAddress, let sBase = sPtr.baseAddress else {
+                            return OSStatus(-1)
+                        }
+                        return CMVideoFormatDescriptionCreateFromH264ParameterSets(
                             allocator: kCFAllocatorDefault,
                             parameterSetCount: 2,
-                            parameterSetPointers: pPtr.baseAddress!,
-                            parameterSetSizes: sPtr.baseAddress!,
+                            parameterSetPointers: pBase,
+                            parameterSetSizes: sBase,
                             nalUnitHeaderLength: 4,
                             formatDescriptionOut: &fd
                         )
@@ -139,8 +150,14 @@ public final class H264SampleBufferAssembler: @unchecked Sendable {
             cursor[1] = UInt8((length >> 16) & 0xFF)
             cursor[2] = UInt8((length >> 8) & 0xFF)
             cursor[3] = UInt8(length & 0xFF)
-            slice.withUnsafeBytes { src in
-                memcpy(cursor.advanced(by: 4), src.baseAddress!, length)
+            let copied: Bool = slice.withUnsafeBytes { src -> Bool in
+                guard let srcBase = src.baseAddress else { return false }
+                memcpy(cursor.advanced(by: 4), srcBase, length)
+                return true
+            }
+            if !copied {
+                free(memory)
+                throw AssemblerError.blockBufferFailed(-1)
             }
             cursor = cursor.advanced(by: 4 + length)
         }

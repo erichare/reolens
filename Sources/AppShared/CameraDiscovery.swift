@@ -36,11 +36,23 @@ public actor CameraDiscovery {
 
     private let session: URLSession
 
+    /// Cap on concurrent /24 probes. iOS / iPadOS get cranky with
+    /// 254 simultaneous TCP setups (the OS rate-limits the network
+    /// stack and Bonjour ends up starved on the same dispatch
+    /// queue). 32 is a compromise: scans finish in ~3 s on a typical
+    /// home network and Bonjour stays responsive. macOS could carry
+    /// more but staying uniform across platforms keeps behavior
+    /// predictable. AGENTS.md §1.
+    public static let concurrentProbeLimit: Int = 32
+
     private init() {
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 1.5
-        config.timeoutIntervalForResource = 2.0
-        config.httpMaximumConnectionsPerHost = 16
+        // 0.5.0 Theme E — tighter probe timeouts. Reolink CGI on a
+        // reachable LAN responds in < 200 ms; 1 s is generous and
+        // gets a full sweep done well inside 3 s wall-clock.
+        config.timeoutIntervalForRequest = 1.0
+        config.timeoutIntervalForResource = 1.5
+        config.httpMaximumConnectionsPerHost = 8
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         // Disable cookies — pointless on a discovery scan.
         config.httpShouldSetCookies = false
@@ -54,6 +66,35 @@ public actor CameraDiscovery {
     /// (whatever the owner set during setup — typically "Home Hub Pro",
     /// "Driveway", etc.) while the HTTP sweep catches devices that
     /// don't advertise. Returns the deduped list in increasing-IP order.
+    ///
+    /// 0.5.0: checks the Local Network permission state up front on
+    /// iOS / iPadOS. If the user has explicitly denied, returns
+    /// `ScanResult.permissionDenied` so the UI can surface a
+    /// "Settings → Privacy → Local Network" hint instead of an
+    /// empty list. Pending prompts proceed optimistically — the
+    /// first probe triggers the system dialog.
+    public enum ScanOutcome: Sendable {
+        case success([DiscoveredDevice])
+        case permissionDenied
+    }
+
+    public func scanWithPermissionGate(progress: (@Sendable (Double) -> Void)? = nil) async -> ScanOutcome {
+        // 0.5.0 fix — generous timeout. The original 0.5 s was shorter
+        // than the iOS Local Network permission prompt's appearance
+        // delay, so the gate returned `.pending` before the user had a
+        // chance to see (let alone tap) the system dialog. With the
+        // continuation-leak in `ProbeBox` fixed, a longer wait now
+        // actually resolves to `.granted` or `.denied` once the user
+        // answers. macOS short-circuits inside `check(...)` and is
+        // unaffected.
+        let permission = await LocalNetworkPermission.check(timeoutSeconds: 8.0)
+        if permission == .denied {
+            return .permissionDenied
+        }
+        let results = await scan(progress: progress)
+        return .success(results)
+    }
+
     public func scan(progress: (@Sendable (Double) -> Void)? = nil) async -> [DiscoveredDevice] {
         guard let subnet = Self.primarySubnetPrefix() else {
             log.warning("Couldn't determine a usable /24 subnet — discovery skipped")
@@ -64,11 +105,18 @@ public actor CameraDiscovery {
         // (AGENTS.md §11).
         log.info("Discovery scanning subnet \(subnet, privacy: .private).0/24")
 
-        async let bonjour = Self.bonjourIndex(duration: 3.0)
-        async let httpSweep = httpSweepScan(subnet: subnet, progress: progress)
-
-        let nameByHost = await bonjour
-        var httpResults = await httpSweep
+        // 0.5.0 fix — run Bonjour FIRST, then the HTTP sweep. The
+        // original code raced them concurrently, which broke iOS
+        // discovery on the first launch: the URLSession TCP probes
+        // would fire 32-at-a-time into local-IP space *before* the
+        // user had answered the Local Network prompt. Every probe
+        // failed in ~1.5 s and the scan returned an empty list even
+        // when the user later tapped "Allow". Running Bonjour to
+        // completion first guarantees the prompt has been resolved
+        // (or denied) by the time we start hitting IPs, and adds
+        // only ~3 s wall-clock to the scan.
+        let nameByHost = await Self.bonjourIndex(duration: 3.0)
+        var httpResults = await httpSweepScan(subnet: subnet, progress: progress)
 
         // Enrich each HTTP-probed Reolink with the matching Bonjour name.
         for i in httpResults.indices {
@@ -95,13 +143,25 @@ public actor CameraDiscovery {
         let total = candidates.count
         var completed = 0
         var results: [DiscoveredDevice] = []
-        await withTaskGroup(of: DiscoveredDevice?.self) { group in
-            for ip in candidates {
+
+        // 0.5.0 Theme E — throttled task group. Adding all 254 probes
+        // up-front would saturate iOS's network stack and starve
+        // Bonjour. Instead we keep `concurrentProbeLimit` in flight
+        // at any moment and feed new ones as old ones drain.
+        let limit = Self.concurrentProbeLimit
+        await withTaskGroup(of: (Int, DiscoveredDevice?).self) { group in
+            var nextIndex = 0
+            // Prime the pipeline with up to `limit` probes.
+            while nextIndex < min(limit, candidates.count) {
+                let ip = candidates[nextIndex]
+                let captured = nextIndex
                 group.addTask { [session] in
-                    await Self.probe(ip: ip, port: 80, session: session)
+                    (captured, await Self.probe(ip: ip, port: 80, session: session))
                 }
+                nextIndex += 1
             }
-            for await found in group {
+            // For each completion, queue the next probe (if any).
+            while let (_, found) = await group.next() {
                 completed += 1
                 progress?(Double(completed) / Double(total))
                 if let found {
@@ -109,6 +169,14 @@ public actor CameraDiscovery {
                     results.append(found)
                 }
                 if Task.isCancelled { break }
+                if nextIndex < candidates.count {
+                    let ip = candidates[nextIndex]
+                    let captured = nextIndex
+                    group.addTask { [session] in
+                        (captured, await Self.probe(ip: ip, port: 80, session: session))
+                    }
+                    nextIndex += 1
+                }
             }
         }
         return results

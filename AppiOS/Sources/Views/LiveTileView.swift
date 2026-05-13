@@ -45,6 +45,7 @@ struct LiveTileView: View {
     @Environment(CameraStore.self) private var store
     @State private var player: LiveVideoPlayer?
     @State private var didStart = false
+    @State private var isVisible = false
     /// Brief HUD shown after a snapshot completes. nil = no HUD.
     @State private var snapshotHUD: SnapshotHUDState?
 
@@ -159,18 +160,23 @@ struct LiveTileView: View {
             if let snapshotHUD {
                 Text(snapshotHUD.text)
                     .font(.callout.weight(.semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(.primary)
+                    // 0.5.0 Liquid Glass — Save-Snapshot HUD reads
+                    // as a tinted glass toast rather than a 90 %
+                    // opaque pill.
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
-                    .background(snapshotHUD.tint.opacity(0.9), in: Capsule())
+                    .glassEffect(.regular.tint(snapshotHUD.tint.opacity(0.55)), in: .capsule)
                     .padding(.bottom, 16)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
         .animation(.easeInOut(duration: 0.2), value: snapshotHUD)
+        .onAppear {
+            isVisible = true
+        }
         .task(id: channel.channel) {
             guard !preferPreview, autoStart, !channel.isAsleep, !session.isBatteryPowered(channel: channel.channel), !didStart, !paused else { return }
-            didStart = true
             await startPlayer()
         }
         .onChange(of: rotation) { _, newValue in
@@ -203,7 +209,6 @@ struct LiveTileView: View {
                 // Preview-mode tiles must never auto-resume the player
                 // when `paused` flips off — same fix as macOS.
                 Task {
-                    didStart = true
                     await startPlayer()
                 }
             }
@@ -218,12 +223,12 @@ struct LiveTileView: View {
                 didStart = false
             } else if autoStart, !channel.isAsleep, !session.isBatteryPowered(channel: channel.channel), !didStart, !paused {
                 Task {
-                    didStart = true
                     await startPlayer()
                 }
             }
         }
         .onDisappear {
+            isVisible = false
             player?.stop()
             player = nil
             didStart = false
@@ -247,7 +252,7 @@ struct LiveTileView: View {
             HStack(spacing: 6) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.yellow)
-                Text("Live unavailable")
+                Text(liveFailureTitle(error: message))
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.white)
                 Button {
@@ -266,10 +271,29 @@ struct LiveTileView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(.black.opacity(0.7), in: Capsule())
+            // 0.5.0 Liquid Glass — failure-overlay action pill.
+            .glassEffect(.regular, in: .capsule)
             .padding(8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func liveFailureTitle(error message: String) -> String {
+        authenticationFailureIsLikely(error: message) ? "Check password" : "Live unavailable"
+    }
+
+    private func authenticationFailureIsLikely(error message: String) -> Bool {
+        if case .failed(let reason) = session.connectionStage {
+            let lowered = reason.lowercased()
+            if lowered.contains("auth") || lowered.contains("password") {
+                return true
+            }
+        }
+        let lowered = message.lowercased()
+        return lowered.contains("auth")
+            || lowered.contains("401")
+            || lowered.contains("unauthorized")
+            || lowered.contains("password")
     }
 
     private var sleepingOverlay: some View {
@@ -321,9 +345,11 @@ struct LiveTileView: View {
                 Image(systemName: "sparkles").foregroundStyle(.green)
             }
         }
-        .foregroundStyle(.white)
-        .padding(6)
-        .background(.black.opacity(0.45), in: .rect(cornerRadius: 6))
+        .foregroundStyle(.primary)
+        // 0.5.0 Liquid Glass — name + motion/AI indicator pill on the
+        // live tile. AGENTS.md §1 (platform parity): same modifier as
+        // the macOS twin.
+        .reolensGlassBadge()
         .padding(8)
     }
 
@@ -347,22 +373,37 @@ struct LiveTileView: View {
         // Belt-and-suspenders preview-mode guard. Same rationale as
         // macOS: no RTSP from grid tiles unless the user has opted in
         // to live grids.
-        if preferPreview { return }
-        if player != nil { return }
+        if preferPreview || !isVisible { return }
+        if player != nil {
+            didStart = true
+            return
+        }
+        guard !didStart else { return }
+        didStart = true
         // Rate-limit concurrent RTSP starts so a 16-tile grid flipping
         // Stills → Live doesn't open 16 sessions in parallel and trip
         // the hub's concurrency cap.
-        await LivePlayerStartGate.shared.acquire()
-        if preferPreview { return }
-        didStart = true
+        guard await LivePlayerStartGate.shared.acquire() else {
+            didStart = false
+            return
+        }
+        if preferPreview || !isVisible {
+            didStart = false
+            return
+        }
         if session.isBatteryPowered(channel: channel.channel) || channel.isAsleep,
            let baichuan = session.baichuanClient {
             _ = try? await baichuan.wakeBatteryCamera(channelID: UInt8(channel.channel))
         }
         let credentials = await session.client.credentials
+        if preferPreview || !isVisible {
+            didStart = false
+            return
+        }
         let urls = StreamURLs(credentials: credentials).candidatesForLive(
             channel: channel.channel,
-            stream: stream
+            stream: stream,
+            preferredCodec: session.entry.preferredCodec
         )
         let rotation = store.rotation(for: session.entry.id, channel: channel.channel, stream: stream)
         let p = LiveVideoPlayer(
@@ -395,15 +436,22 @@ struct LiveTileView: View {
     private func capturePreviewWhenReady() {
         let cameraID = session.entry.id
         let channelID = channel.channel
+        // 0.5.0: hand the camera + channel name to the publisher so
+        // widgets get a human-readable label alongside the snapshot.
+        let cameraName: String = {
+            let channelName = (channel.name?.trimmingCharacters(in: .whitespaces)).flatMap { $0.isEmpty ? nil : $0 }
+            return channelName ?? session.entry.displayName
+        }()
         Task { @MainActor in
             for attempt in 1...5 {
                 try? await Task.sleep(nanoseconds: UInt64(attempt) * 800_000_000)
                 guard let cgImage = player?.currentSnapshot() else { continue }
                 Task.detached(priority: .utility) {
-                    await CameraPreviewService.shared.storeFromLive(
+                    await CameraPreviewService.shared.storeFromLiveAndPublishToWidget(
                         cgImage: cgImage,
                         cameraID: cameraID,
-                        channel: channelID
+                        channel: channelID,
+                        cameraName: cameraName
                     )
                 }
                 return

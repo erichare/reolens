@@ -26,6 +26,7 @@ struct CameraDetailView: View {
     /// tile in the grid.
     var focusedChannel: Int? = nil
 
+    @State private var passwordEntryEntry: CameraEntry?
     @State private var slowConnect = false
 
     /// How long the session may sit in `.connecting` before the UI
@@ -67,6 +68,9 @@ struct CameraDetailView: View {
         }
         .navigationTitle(session.entry.displayName)
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $passwordEntryEntry) { entry in
+            EnterPasswordSheet(entry: entry)
+        }
     }
 
     @ViewBuilder
@@ -81,15 +85,24 @@ struct CameraDetailView: View {
                 Text(retryDescription)
                     .multilineTextAlignment(.center)
             } actions: {
-                Button {
-                    Task {
-                        slowConnect = false
-                        await session.reconnect()
+                VStack {
+                    if session.status.isError {
+                        Button {
+                            passwordEntryEntry = session.entry
+                        } label: {
+                            Label("Update Password", systemImage: "key.fill")
+                        }
                     }
-                } label: {
-                    Label("Try Again", systemImage: "arrow.clockwise")
+                    Button {
+                        Task {
+                            slowConnect = false
+                            await session.reconnect()
+                        }
+                    } label: {
+                        Label("Try Again", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
-                .buttonStyle(.borderedProminent)
             }
         } else {
             ContentUnavailableView {

@@ -142,8 +142,16 @@ extension BaichuanClient {
             }
         }
         // Close the search on the hub side. Same channel-extension envelope.
+        // Best-effort: the hub will GC the cursor once the search lease
+        // expires, so a failed close doesn't strand resources permanently
+        // — but a regression that breaks close for every search is worth
+        // surfacing in unified logging (0.5.0 hardening pass).
         let closeXML = buildFindAlarmPageXML(channel: Int(channel), fileHandle: fileHandle)
-        _ = try? await send(cmdID: 274, channelID: channel, body: closeXML, stage: "findAlarmVideo close", timeout: 4)
+        do {
+            _ = try await send(cmdID: 274, channelID: channel, body: closeXML, stage: "findAlarmVideo close", timeout: 4)
+        } catch {
+            log.debug("findAlarmVideo close failed: \(String(describing: error), privacy: .public)")
+        }
 
         log.info("findAlarmVideos channel=\(channel) returned \(results.count) entries")
         return results

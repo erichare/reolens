@@ -1,5 +1,8 @@
 import Foundation
 import CryptoKit
+import OSLog
+
+private let log = Logger(subsystem: "com.reolens.api", category: "cgi")
 
 public enum ReolinkClientError: Error, CustomStringConvertible {
     case transport(any Error)
@@ -34,6 +37,8 @@ public actor CGIClient {
     private let decoder: JSONDecoder
     private var token: Token?
     private var loginTask: Task<Token, any Error>?
+    private var transportBusy = false
+    private var transportWaiters: [CheckedContinuation<Void, Never>] = []
 
     public init(
         credentials: CameraCredentials,
@@ -98,7 +103,12 @@ public actor CGIClient {
         do {
             _ = try await self.send(Commands.logout(), as: EmptyResult.self)
         } catch {
-            // ignore — best effort
+            // Best-effort: the camera will GC the session on its own once
+            // the lease expires, so a network/credential blip here isn't
+            // user-visible. We log it so a regression that breaks logout
+            // for every call doesn't disappear silently (0.5.0 hardening
+            // pass: replace try? swallows with logged catches).
+            log.notice("Logout best-effort send failed: \(String(describing: error), privacy: .public)")
         }
         token = nil
     }
@@ -117,15 +127,74 @@ public actor CGIClient {
 
     /// Send a single command without decoding the value.
     public func sendIgnoringValue<P: Encodable & Sendable>(_ command: CGICommand<P>) async throws {
-        _ = try await self.send(command, as: EmptyResult.self)
+        let responses: [CGIResponse<EmptyResult>] = try await sendBatch([command])
+        guard let response = responses.first else { throw ReolinkClientError.emptyResponse }
+        if let err = response.error {
+            throw ReolinkClientError.commandFailed(cmd: command.cmd, error: err)
+        }
     }
 
     /// Send a single command and return the raw response body bytes. Useful for
     /// diagnostics when the typed model doesn't match a particular firmware's
     /// JSON shape — you can inspect/log the actual fields.
+    ///
+    /// 0.5.0: now mirrors `sendBatchRetrying` — if the response envelope
+    /// signals `rspCode == -10` (loginRequired) we drop the cached token
+    /// and retry once. Before this fix, a stale token caused
+    /// `RecordingsView.reload()` to surface "Empty response from camera"
+    /// because the typed decode of the error envelope returned a `nil`
+    /// `value` field and the caller had no idea why.
+    ///
+    /// Also adds a single-shot retry on `URLError`-class transport
+    /// failures (timeout, connection reset, network unreachable) with a
+    /// short backoff. Reolink hubs occasionally drop one request under
+    /// load and the next one succeeds; one transparent retry keeps the
+    /// recordings list robust without bouncing the whole reconnect path.
     public func sendCapturingRaw<P: Encodable & Sendable>(_ command: CGICommand<P>) async throws -> Data {
-        let activeToken = try await login()
-        return try await postRaw(commands: [AnyEncodable(command)], token: activeToken.name)
+        var attempt = 0
+        while true {
+            attempt += 1
+            let activeToken = try await login()
+            let data: Data
+            do {
+                data = try await postRaw(commands: [AnyEncodable(command)], token: activeToken.name)
+            } catch let urlError as URLError where Self.isTransientTransportError(urlError) && attempt == 1 {
+                log.notice("sendCapturingRaw transient \(urlError.code.rawValue); one retry after 300 ms")
+                try await Task.sleep(for: .milliseconds(300))
+                continue
+            }
+            if attempt == 1, Self.responseSignalsLoginRequired(data) {
+                log.notice("sendCapturingRaw response indicates loginRequired; dropping token and retrying once")
+                self.token = nil
+                continue
+            }
+            return data
+        }
+    }
+
+    /// Inspect a raw response payload for the `rspCode == -10`
+    /// (loginRequired) signal without forcing a typed decode. Used by
+    /// `sendCapturingRaw` to decide whether to drop the token and
+    /// retry. Stays lenient — a parse failure here means "don't
+    /// retry," which keeps behavior conservative.
+    private static func responseSignalsLoginRequired(_ data: Data) -> Bool {
+        // The wire shape is `[{ ..., "error": { "rspCode": -10 } }]`.
+        // A substring check is cheap and accurate; the only `-10`
+        // we'd ever see in a Reolink response with this exact
+        // shape is the loginRequired code.
+        guard let text = String(data: data, encoding: .utf8) else { return false }
+        return text.contains("\"rspCode\":-10") || text.contains("\"rspCode\": -10")
+    }
+
+    private static func isTransientTransportError(_ error: URLError) -> Bool {
+        switch error.code {
+        case .timedOut, .networkConnectionLost, .notConnectedToInternet,
+             .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed,
+             .secureConnectionFailed:
+            return true
+        default:
+            return false
+        }
     }
 
     /// Send a batch of homogeneous commands and decode each value as `T`.
@@ -152,6 +221,11 @@ public actor CGIClient {
     }
 
     private func postRaw(commands: [AnyEncodable], token: String?) async throws -> Data {
+        try Task.checkCancellation()
+        await acquireTransportSlot()
+        defer { releaseTransportSlot() }
+        try Task.checkCancellation()
+
         var url = credentials.cgiURL
         var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
         var query = [URLQueryItem(name: "cmd", value: commands.first?.command)]
@@ -173,6 +247,31 @@ public actor CGIClient {
             throw ReolinkClientError.http(status: http.statusCode, body: String(data: data, encoding: .utf8))
         }
         return data
+    }
+
+    /// Reolink hubs are very easy to overload with overlapping CGI
+    /// requests. Actor isolation alone does not serialize this method
+    /// because `URLSession.data(for:)` suspends and the actor is
+    /// re-entrant while the request is in flight. This small FIFO gate
+    /// keeps one HTTP CGI request on the wire per camera session.
+    private func acquireTransportSlot() async {
+        if !transportBusy {
+            transportBusy = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            transportWaiters.append(continuation)
+        }
+        transportBusy = true
+    }
+
+    private func releaseTransportSlot() {
+        if transportWaiters.isEmpty {
+            transportBusy = false
+        } else {
+            let next = transportWaiters.removeFirst()
+            next.resume()
+        }
     }
 
     private func decodeAny<T: Decodable & Sendable>(_ data: Data, as: T.Type) throws -> [CGIResponse<T>] {

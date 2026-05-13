@@ -128,6 +128,15 @@ struct DeviceSidebarRow: View {
             Button("Reconnect", systemImage: "arrow.clockwise.circle") {
                 store.reconnect(entry.id)
             }
+            // 0.5.0 — multi-window: open this camera in its own
+            // window. SwiftUI's `openWindow(value:)` matches the
+            // value type against the secondary `WindowGroup(for:
+            // ReolensScene.self)` declared in ReolensApp. Pinned to
+            // channel 0 because the device-row context-menu doesn't
+            // know which specific channel the user wanted — the
+            // per-channel row's own menu (added below) handles
+            // multi-channel hubs precisely.
+            OpenInNewWindowButton(scene: .camera(id: entry.id, channel: 0))
         }
         Divider()
         Button("Remove", role: .destructive) {
@@ -178,6 +187,13 @@ struct DeviceRowLabel: View {
     }
 
     private var detailLine: String {
+        // 0.5.0 Theme E: prefer the structured connection-stage label
+        // over the generic "host · N channels" copy while a session
+        // is mid-connect, so the user sees "Logging in (retry 2)…"
+        // or "Retrying in 3 s" instead of an unexplained yellow dot.
+        if let session, session.connectionStage.isWorking {
+            return session.connectionStage.shortLabel
+        }
         if channelCount > 1 {
             return "\(entry.host) · \(channelCount) channels"
         }
@@ -226,6 +242,12 @@ struct ChannelSidebarRow: View {
                     .foregroundStyle(.tertiary)
                     .font(.caption2)
             }
+        }
+        // 0.5.0 — per-channel "Open in New Window" routes through
+        // the same secondary scene as the device-row context menu,
+        // but with the exact channel selected.
+        .contextMenu {
+            OpenInNewWindowButton(scene: .camera(id: deviceID, channel: channel.channel))
         }
         // Make the sidebar row a drag source carrying the same
         // `ChannelDragPayload` the grid tiles use. Dropping it onto any

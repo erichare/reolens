@@ -130,12 +130,40 @@ public struct NoOpMotionEventPublisher: MotionEventPublisher {
 
 /// Real CloudKit-backed publisher. Writes to the user's *private*
 /// CloudKit database — never shared, never public. AGENTS.md §5.
+///
+/// 0.5.0 hardening (Theme B3): the publisher composes three safety
+/// behaviors on top of the original 0.4.1 path:
+///
+///   1. **Deduplication via content-addressed record IDs**
+///      (`MotionEventRecordID.recordName(...)`). Two retries of the
+///      same event collapse to one server-side record via
+///      `serverRecordChanged`; the timestamp is 5-second-bucketed so
+///      genuinely-different events on a busy camera stay distinct.
+///
+///   2. **Rate limit + burst coalescing**
+///      (`MotionEventRateLimiter`). A high-motion scene (rain, a
+///      busy street) is capped at 30 events / 10 min / camera and
+///      excess events are batched into a once-per-minute "burst"
+///      summary record so the receiving device sees a count instead
+///      of being firehosed.
+///
+///   3. **Multi-account guard**
+///      (`CloudKitAccountIdentityGuard`). If the user signs out of
+///      iCloud and into a different account between publishes, we
+///      refuse to publish until they re-enroll via the trust-
+///      changed modal. Stops a stale publisher from pushing into
+///      a family member's iCloud.
 public actor CloudKitMotionEventPublisher: MotionEventPublisher {
     private let containerID: String
+    private let rateLimiter: MotionEventRateLimiter
     private let log = Logger(subsystem: "com.reolens.Reolens", category: "MotionRelay")
 
-    public init(containerID: String = "iCloud.com.reolens.Reolens") {
+    public init(
+        containerID: String = "iCloud.com.reolens.Reolens",
+        rateLimiter: MotionEventRateLimiter = MotionEventRateLimiter()
+    ) {
         self.containerID = containerID
+        self.rateLimiter = rateLimiter
     }
 
     public func publish(_ event: MotionEvent) async {
@@ -153,20 +181,108 @@ public actor CloudKitMotionEventPublisher: MotionEventPublisher {
             log.info("CloudKit unavailable on this binary (no iCloud entitlement); skipping relay")
             return
         }
+        // Multi-account guard. The first publish from a given iCloud
+        // account auto-enrolls; subsequent publishes against a
+        // *different* iCloud account are blocked until the user
+        // explicitly re-enrolls via the trust-changed modal.
+        let identity = CloudKitAccountIdentityGuard.decide()
+        let enrolledHash: String?
+        switch identity {
+        case .accountChanged:
+            log.error("Skipping relay: iCloud account identity changed since last publish")
+            return
+        case .unavailable:
+            log.info("Skipping relay: no iCloud identity token available")
+            return
+        case .allow:
+            enrolledHash = nil  // already enrolled
+        case .enrollAndAllow(let hash):
+            enrolledHash = hash
+        }
+
+        // Rate limit per camera. Suppressed events accumulate into a
+        // periodic burst-summary record so the receiver still sees
+        // *that* a burst occurred and how many events were dropped.
+        let decision = await rateLimiter.decide(for: event.cameraID)
+        let recordToSave: CKRecord
+        switch decision {
+        case .allow:
+            recordToSave = makeDedupedRecord(for: event)
+        case .suppress:
+            log.debug("Rate-limited motion event suppressed (channel \(event.channel))")
+            return
+        case .burstSummary(let suppressed):
+            recordToSave = makeBurstRecord(for: event, suppressed: suppressed)
+            log.info("Emitting burst summary for channel \(event.channel) (suppressed: \(suppressed))")
+        }
+
         let container = CKContainer(identifier: containerID)
         let db = container.privateCloudDatabase
-        let record = event.toRecord()
         do {
-            _ = try await db.save(record)
+            _ = try await db.save(recordToSave)
             log.info("Relayed motion event for channel \(event.channel) (detection \(event.detection, privacy: .public))")
+            if let enrolledHash {
+                CloudKitAccountIdentityGuard.enroll(hash: enrolledHash)
+            }
         } catch let error as CKError where error.code == .serverRecordChanged {
-            // Already published (e.g. retry after partial success).
-            // Idempotent — CloudKit told us the record exists with a
-            // matching recordName; nothing to do.
-            log.debug("Motion event already in CloudKit (recordChanged)")
+            // Already published (e.g. retry after partial success or
+            // a dedup hash collision because two events fell in the
+            // same 5-second bucket). Idempotent — CloudKit told us
+            // the record exists with a matching recordName; nothing
+            // to do.
+            log.debug("Motion event already in CloudKit (recordChanged) — dedup OK")
+            if let enrolledHash {
+                CloudKitAccountIdentityGuard.enroll(hash: enrolledHash)
+            }
         } catch {
             log.warning("Motion event relay failed: \(error.localizedDescription, privacy: .public)")
         }
+    }
+
+    /// Build a content-addressed `CKRecord` so duplicates collapse on
+    /// `serverRecordChanged`. Replaces the 0.4.1 UUID-per-event scheme.
+    private func makeDedupedRecord(for event: MotionEvent) -> CKRecord {
+        let recordName = MotionEventRecordID.recordName(
+            cameraID: event.cameraID,
+            channel: event.channel,
+            detection: event.detection,
+            timestamp: event.timestamp
+        )
+        let recordID = CKRecord.ID(recordName: recordName, zoneID: .default)
+        let record = CKRecord(recordType: MotionEvent.recordType, recordID: recordID)
+        record[MotionEvent.RecordKey.cameraID] = event.cameraID.uuidString as NSString
+        record[MotionEvent.RecordKey.channel] = event.channel as NSNumber
+        record[MotionEvent.RecordKey.detection] = event.detection as NSString
+        record[MotionEvent.RecordKey.timestamp] = event.timestamp as NSDate
+        if let snapshotFileURL = event.snapshotFileURL {
+            record[MotionEvent.RecordKey.snapshot] = CKAsset(fileURL: snapshotFileURL)
+        }
+        return record
+    }
+
+    /// Build a "burst" summary record. `detection` is suffixed with
+    /// `.burst` and a `suppressed` count is included so the receiver
+    /// can show "Front Door · +12 events (rain?)" instead of an
+    /// individual frame for each.
+    private func makeBurstRecord(for event: MotionEvent, suppressed: Int) -> CKRecord {
+        let burstDetection = "\(event.detection).burst"
+        let recordName = MotionEventRecordID.recordName(
+            cameraID: event.cameraID,
+            channel: event.channel,
+            detection: burstDetection,
+            timestamp: event.timestamp
+        )
+        let recordID = CKRecord.ID(recordName: recordName, zoneID: .default)
+        let record = CKRecord(recordType: MotionEvent.recordType, recordID: recordID)
+        record[MotionEvent.RecordKey.cameraID] = event.cameraID.uuidString as NSString
+        record[MotionEvent.RecordKey.channel] = event.channel as NSNumber
+        record[MotionEvent.RecordKey.detection] = burstDetection as NSString
+        record[MotionEvent.RecordKey.timestamp] = event.timestamp as NSDate
+        record["suppressedSinceLast"] = suppressed as NSNumber
+        if let snapshotFileURL = event.snapshotFileURL {
+            record[MotionEvent.RecordKey.snapshot] = CKAsset(fileURL: snapshotFileURL)
+        }
+        return record
     }
 }
 

@@ -3,6 +3,9 @@ import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
 import os
+#if canImport(WidgetKit)
+import WidgetKit
+#endif
 
 /// Owns the on-disk preview-snapshot cache for each (cameraID, channel)
 /// pair. Added in 0.4.0 alongside the static-preview-by-default grid
@@ -114,6 +117,86 @@ public actor CameraPreviewService {
     public func storeFromLive(cgImage: CGImage, cameraID: UUID, channel: Int) async {
         guard let data = Self.jpegData(from: cgImage, quality: 0.85) else { return }
         await storeFromLive(data: data, cameraID: cameraID, channel: channel)
+    }
+
+    /// 0.5.0 — store the live frame to both the local app cache AND the
+    /// shared App-Group container so the WidgetKit extension can render
+    /// it. `cameraName` and `channelName` round out the metadata the
+    /// `CameraSnapshotWidget` shows alongside the image. Last-motion
+    /// timestamp comes from `EventNotifier.recordWidgetEvent(...)`
+    /// independently.
+    ///
+    /// Best-effort: a missing App Group entitlement (ad-hoc dev build,
+    /// see AGENTS.md §1 carve-outs) drops the widget-side write
+    /// silently while still updating the local cache. AGENTS.md §16.
+    public func storeFromLiveAndPublishToWidget(
+        cgImage: CGImage,
+        cameraID: UUID,
+        channel: Int,
+        cameraName: String
+    ) async {
+        guard let data = Self.jpegData(from: cgImage, quality: 0.85) else { return }
+        await storeFromLive(data: data, cameraID: cameraID, channel: channel)
+        await Self.publishToSharedContainer(
+            data: data,
+            cameraID: cameraID,
+            channel: channel,
+            cameraName: cameraName
+        )
+    }
+
+    /// Publish a snapshot + cameraName tuple into the App-Group shared
+    /// container. Merges with the existing `LatestSnapshots.plist`:
+    /// previous entries for OTHER cameras are preserved; the entry for
+    /// `(cameraID, channel)` is replaced. Triggers a `WidgetCenter`
+    /// reload so the widget refreshes within a few seconds.
+    nonisolated public static func publishToSharedContainer(
+        data: Data,
+        cameraID: UUID,
+        channel: Int,
+        cameraName: String
+    ) async {
+        do {
+            let relPath = try SharedContainer.writeSnapshotImage(
+                cameraID: cameraID,
+                channel: channel,
+                jpegData: data
+            )
+            var snapshots = SharedContainer.readLatestSnapshots()
+            // Pull any preserved last-motion timestamp from the existing
+            // record. Event-side updates land separately.
+            let priorLastMotion = snapshots.first { $0.cameraID == cameraID && $0.channel == channel }?.lastMotionAt
+            snapshots.removeAll { $0.cameraID == cameraID && $0.channel == channel }
+            snapshots.append(SharedContainer.LatestSnapshot(
+                cameraID: cameraID,
+                channel: channel,
+                cameraName: cameraName,
+                lastUpdated: Date(),
+                imageRelativePath: relPath,
+                lastMotionAt: priorLastMotion
+            ))
+            try SharedContainer.writeLatestSnapshots(snapshots)
+            await reloadWidgetTimelines()
+        } catch {
+            Self.publishLogger.debug("Skipping widget publish (likely no App Group entitlement): \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Static logger so the `nonisolated public static func
+    /// publishToSharedContainer` doesn't reach for the actor's
+    /// instance logger.
+    private static let publishLogger = Logger(subsystem: "com.reolens.Reolens", category: "PreviewWidgetPublish")
+
+    /// Reload widget timelines after a fresh write. WidgetKit lives in
+    /// the iOS / macOS frameworks (not SPM-buildable on Linux), but we
+    /// only ship for Apple platforms anyway — `canImport(WidgetKit)`
+    /// covers macOS, iOS, iPadOS without churn.
+    private nonisolated static func reloadWidgetTimelines() async {
+        #if canImport(WidgetKit)
+        await MainActor.run {
+            WidgetCenter.shared.reloadAllTimelines()
+        }
+        #endif
     }
 
     /// JPEG-encode a `CGImage` with ImageIO. Quality is 0.85 — visibly

@@ -23,8 +23,12 @@ struct AddCameraSheet: View {
             .padding(.horizontal)
             .padding(.top, 12)
             .labelsHidden()
+            .padding(.bottom, 12)
+            // 0.5.0 Liquid Glass — segmented switcher sits atop a
+            // glass toolbar that pairs with the rest of the chrome.
+            .reolensGlassToolbar()
 
-            Divider().padding(.top, 12)
+            Divider()
 
             switch mode {
             case .autoDetect:

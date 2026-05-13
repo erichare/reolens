@@ -1,0 +1,4 @@
+module AppShared {
+header "AppShared-Swift.h"
+export *
+}

@@ -17,5 +17,13 @@
 	<array>
 		<string>iCloud.com.reolens.Reolens</string>
 	</array>
+	<!-- 0.5.0: shared container for the WidgetKit extension + Live
+	     Activity asset purge. Main app writes; widget + activity
+	     extension reads. Device-local, never CloudKit-synced.
+	     AGENTS.md §5, §16. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.reolens.Reolens</string>
+	</array>
 </dict>
 </plist>

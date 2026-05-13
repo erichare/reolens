@@ -45,6 +45,9 @@ struct ChannelDetailContent: View {
             .pickerStyle(.segmented)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
+            // 0.5.0 Liquid Glass — Live / Recordings / Settings tab
+            // picker reads as a glass header bar above the panel body.
+            .reolensGlassToolbar()
             Divider()
             content
         }

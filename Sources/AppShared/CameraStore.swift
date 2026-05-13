@@ -325,9 +325,20 @@ public final class CameraStore {
                 channel: channelID,
                 at: at
             )
+        case .digest(let day):
+            // 0.5.0 Theme A5 — open the digest detail sheet. The
+            // active scene observes `pendingDigestDay` and presents
+            // `DigestDetailView` as a sheet.
+            pendingDigestDay = day
         }
         pendingIntentNavigation = target
     }
+
+    /// 0.5.0 Theme A5 — set by `applyPendingIntentFocus` when the
+    /// user taps the overnight digest notification. The hosting
+    /// scene's `.sheet(item:)` reads (and clears) this to present
+    /// `DigestDetailView`.
+    public var pendingDigestDay: Date?
 
     /// Read-and-clear accessor for `pendingRecordingScroll`. Used by
     /// `RecordingsView` on appear so the scroll target only triggers

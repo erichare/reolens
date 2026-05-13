@@ -96,6 +96,7 @@ struct SettingsView: View {
             }
             .disabled(!notifier.enabled)
             NotificationCategoriesSection(notifier: notifier)
+            OvernightDigestSection()
             Section("System permission") {
                 permissionRow
             }
@@ -164,5 +165,46 @@ struct SettingsView: View {
                 .multilineTextAlignment(.center)
         }
         .padding()
+    }
+}
+
+/// 0.5.0 Theme A5 — overnight digest controls. Edits the
+/// `OvernightDigestSettings` UserDefaults pair; on change, kicks
+/// `DigestScheduler.reconcileSchedule()` so the local notification
+/// trigger matches the new settings.
+private struct OvernightDigestSection: View {
+    @State private var enabled: Bool = OvernightDigestSettings.enabled
+    @State private var hour: Int = OvernightDigestSettings.hourOfDay
+    @State private var showingPreview: Bool = false
+
+    var body: some View {
+        Section("Overnight digest") {
+            Toggle("Daily summary notification", isOn: $enabled)
+                .onChange(of: enabled) { _, value in
+                    OvernightDigestSettings.setEnabled(value)
+                    Task { await DigestScheduler.shared.reconcileSchedule() }
+                }
+            Picker("Time of day", selection: $hour) {
+                ForEach(0..<24, id: \.self) { h in
+                    Text(String(format: "%02d:00", h)).tag(h)
+                }
+            }
+            .disabled(!enabled)
+            .onChange(of: hour) { _, value in
+                OvernightDigestSettings.setHourOfDay(value)
+                Task { await DigestScheduler.shared.reconcileSchedule() }
+            }
+            Text("Bundles last night's motion events into a single notification at the configured time. Default 07:00 local.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+            Button("Preview last digest…") { showingPreview = true }
+                .sheet(isPresented: $showingPreview) {
+                    DigestDetailView()
+                }
+            Button("Build a digest now") {
+                Task { await DigestScheduler.shared.runDigest() }
+            }
+            .help("Useful for verifying the pipeline without waiting for the scheduled time.")
+        }
     }
 }

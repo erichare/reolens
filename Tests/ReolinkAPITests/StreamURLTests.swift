@@ -20,6 +20,17 @@ struct StreamURLTests {
         #expect(url.absoluteString.contains("/h265Preview_16_sub"))
     }
 
+    @Test func live_candidates_default_to_h264_first() {
+        let urls = StreamURLs(credentials: creds).candidatesForLive(channel: 0, stream: .main)
+        #expect(urls.first?.absoluteString.contains("/h264Preview_01_main") == true)
+    }
+
+    @Test func live_candidates_can_prefer_h265_first() {
+        let urls = StreamURLs(credentials: creds).candidatesForLive(channel: 0, stream: .main, preferredCodec: .h265)
+        #expect(urls.first?.absoluteString.contains("/h265Preview_01_main") == true)
+        #expect(urls.dropFirst().first?.absoluteString.contains("/h264Preview_01_main") == true)
+    }
+
     @Test func snapshot_url_uses_token_when_provided() {
         let urls = StreamURLs(credentials: creds)
         let url = urls.snapshot(channel: 0, token: "abc123")

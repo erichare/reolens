@@ -56,6 +56,13 @@ struct RecordingsView: View {
     /// `Search` response. Feeds the day-density calendar above the
     /// list. New in 0.4.0.
     @State private var monthStatuses: [SearchStatus] = []
+    /// 0.5.0 Theme C1 — bookmarks for this camera. Loaded lazily on
+    /// first appear so the recording list itself never blocks on
+    /// iCloud Drive lookup. Surfaces in the toolbar "Bookmarks" button
+    /// + the per-row "Bookmark this clip" context-menu item.
+    @State private var bookmarks: [RecordingBookmark] = []
+    @State private var showingBookmarks = false
+    @State private var bookmarkExportStatus: String?
 
     private let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -66,8 +73,12 @@ struct RecordingsView: View {
     var body: some View {
         VStack(spacing: 0) {
             controls
+            // 0.5.0 Liquid Glass — calendar, timeline, and filter
+            // bar all use the same glass toolbar surface so the
+            // recordings header reads as one continuous hovering
+            // chrome strip.
             MonthRecordingDensity(selectedDate: $selectedDate, monthStatuses: monthStatuses)
-                .background(.background.secondary)
+                .reolensGlassToolbar()
             if !filteredFiles.isEmpty {
                 DayTimelineStrip(
                     day: selectedDate,
@@ -75,10 +86,10 @@ struct RecordingsView: View {
                     events: dayEvents,
                     onTapSegment: { preview($0) }
                 )
-                .background(.background.secondary)
+                .reolensGlassToolbar()
             }
             AIEventFilterBar(selected: $aiFilter)
-                .background(.background.secondary)
+                .reolensGlassToolbar()
             Divider()
             content
             if !files.isEmpty {
@@ -98,6 +109,7 @@ struct RecordingsView: View {
             }
         }
         .task(id: selectedDate) {
+            loadBookmarks()
             await reload()
             // After the day's files load, if the user got here via a
             // notification tap with a target time, auto-play the
@@ -133,6 +145,90 @@ struct RecordingsView: View {
         .sheet(item: $nowPlaying) { recording in
             RecordingPlayerSheet(recording: recording)
         }
+        .sheet(isPresented: $showingBookmarks) {
+            BookmarksSheet(
+                cameraID: session.entry.id,
+                cameraName: session.entry.displayName,
+                bookmarks: $bookmarks,
+                onPlay: { bookmark in
+                    showingBookmarks = false
+                    playBookmark(bookmark)
+                },
+                onExport: { bookmark in
+                    exportBookmark(bookmark)
+                }
+            )
+        }
+    }
+
+    /// 0.5.0 Theme C1 — export a bookmarked clip to MP4. Re-uses the
+    /// existing high-quality download path (the bookmark always
+    /// brackets a single underlying source recording, so a direct
+    /// per-segment download is sufficient for v1). The trim-to-range
+    /// step (`ClipExporter`) runs after the download completes and
+    /// writes the trimmed MP4 to the user's chosen destination.
+    private func exportBookmark(_ bookmark: RecordingBookmark) {
+        guard let source = files.first(where: {
+            guard let s = $0.startDate, let e = $0.endDate else { return false }
+            return s <= bookmark.startDate && bookmark.startDate <= e
+        }) ?? files.first(where: {
+            guard let s = $0.startDate else { return false }
+            return abs(s.timeIntervalSince(bookmark.startDate)) < 90
+        }) else {
+            log.warning("exportBookmark: no source file in loaded day's files for bookmark \(bookmark.id.uuidString, privacy: .public)")
+            return
+        }
+        // Hand off to the existing save-to-disk path with high
+        // quality. The user picks a destination via NSSavePanel; the
+        // RecordingPlayerSheet shows download progress. After the
+        // download completes, `ClipExporter` trims to the bookmark's
+        // range if the source's range exceeds the bookmark's. The
+        // trim path is encapsulated in `RecordingPlayerSheet`'s
+        // post-download hook for the dedicated bookmark export flow
+        // — see `saveToDisk(_:quality:bookmarkRange:)`.
+        saveToDisk(source, quality: .high, bookmarkRange: bookmark.range)
+        showingBookmarks = false
+    }
+
+    /// 0.5.0 Theme C1 — add a bookmark covering the full duration of
+    /// a recording. The user can later trim it from the bookmarks
+    /// sheet. AI tags at the moment of bookmarking are captured so
+    /// the bookmark stays meaningful even after recordings rotate
+    /// off the hub's storage.
+    private func addBookmark(for file: SearchFile) {
+        guard let start = file.startDate, let end = file.endDate else { return }
+        let bookmark = RecordingBookmark(
+            cameraID: session.entry.id,
+            channel: channel.channel,
+            startEpoch: start.timeIntervalSince1970,
+            endEpoch: end.timeIntervalSince1970,
+            note: nil,
+            aiTagsAtMark: effectiveDetections(for: file).map { $0.label }
+        )
+        do {
+            try RecordingBookmarkStore.add(bookmark)
+            bookmarks = RecordingBookmarkStore.read(cameraID: session.entry.id)
+        } catch {
+            log.warning("Couldn't save bookmark: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func loadBookmarks() {
+        bookmarks = RecordingBookmarkStore.read(cameraID: session.entry.id)
+    }
+
+    /// Replay a bookmark by re-opening the recording whose time range
+    /// contains the bookmark's start. Reuses the existing preview
+    /// path so playback feels identical to a row tap.
+    private func playBookmark(_ bookmark: RecordingBookmark) {
+        guard let match = files.first(where: {
+            guard let s = $0.startDate, let e = $0.endDate else { return false }
+            return s <= bookmark.startDate && bookmark.startDate <= e
+        }) ?? files.first(where: {
+            guard let s = $0.startDate else { return false }
+            return abs(s.timeIntervalSince(bookmark.startDate)) < 90
+        }) else { return }
+        preview(match)
     }
 
     /// Locate the file whose time range contains `target` (preferred),
@@ -172,7 +268,8 @@ struct RecordingsView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(.background.tertiary)
+        // 0.5.0 Liquid Glass — recordings footer notice.
+        .reolensGlassToolbar()
     }
 
     private var baichuanActiveFooter: some View {
@@ -189,7 +286,8 @@ struct RecordingsView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(.background.tertiary)
+        // 0.5.0 Liquid Glass — recordings footer notice.
+        .reolensGlassToolbar()
     }
 
     private var controls: some View {
@@ -215,6 +313,14 @@ struct RecordingsView: View {
                     RawResponseView(text: rawResponse ?? "")
                 }
             }
+            // 0.5.0 — Bookmarks button. Shows a count badge when any
+            // exist; opens the bookmarks sheet.
+            Button {
+                showingBookmarks = true
+            } label: {
+                Label("Bookmarks (\(bookmarks.count))", systemImage: "bookmark")
+            }
+            .help("Show this camera's saved clip bookmarks.")
             Button {
                 Task { await reload() }
             } label: {
@@ -222,6 +328,9 @@ struct RecordingsView: View {
             }
         }
         .padding(12)
+        // 0.5.0 Liquid Glass — recordings header reads as a hovering
+        // toolbar over the calendar / timeline / list stack below.
+        .reolensGlassToolbar()
     }
 
     @ViewBuilder
@@ -268,6 +377,12 @@ struct RecordingsView: View {
                             saveToDisk(file, quality: .high)
                         } label: {
                             Label("Download High Quality…", systemImage: "arrow.down.circle.fill")
+                        }
+                        Divider()
+                        Button {
+                            addBookmark(for: file)
+                        } label: {
+                            Label("Bookmark this clip", systemImage: "bookmark")
                         }
                     }
             }
@@ -536,27 +651,62 @@ struct RecordingsView: View {
 
     private func reload() async {
         isLoading = true
-        defer { isLoading = false }
         errorMessage = nil
 
-        let cal = Calendar.current
-        let start = cal.startOfDay(for: selectedDate)
-        guard let end = cal.date(byAdding: .day, value: 1, to: start)?.addingTimeInterval(-1) else { return }
+        // 0.5.0: short pre-flight wait for the camera session to be
+        // connected before firing the Search. Previously, a fast
+        // pivot to "Recordings" while the session was still logging
+        // in surfaced a generic "Empty response" error and stranded
+        // the list. The wait is short (1.5 s) so a genuinely-broken
+        // session doesn't trap the user in a long spinner.
+        if session.status != .connected {
+            let deadline = Date().addingTimeInterval(1.5)
+            while session.status != .connected, Date() < deadline, !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(150))
+            }
+            if session.status != .connected {
+                isLoading = false
+                errorMessage = connectionUnavailableMessage()
+                files = []
+                return
+            }
+        }
 
-        // Sequence main → sub. Reolink Home Hub Pro returns `rcv failed`
-        // (rspCode=-17) when two `Search` commands hit it concurrently on
-        // the same channel — running them serially is reliable. Sub failure
-        // is non-fatal: not every camera produces a sub-stream recording
-        // (notably battery cameras), so we just skip the low-quality
-        // preview/download path for those rows.
-        let mainOutcome = await fetchSearchResults(channel: channel.channel, streamType: "main", start: start, end: end, captureRaw: true)
+        guard let (start, end) = searchWindow(for: selectedDate) else {
+            isLoading = false
+            files = []
+            return
+        }
+
+        // ───────────────────────────────────────────────────────────
+        // 0.5.0 Theme E follow-up: the user-visible list only needs
+        // the main-stream Search to populate. The previous flow
+        // sequenced main → sub → GetEvents → findAlarmVideo before
+        // dropping the `isLoading` spinner, which made the list feel
+        // like it was loading for 4-6 seconds even when the main
+        // Search had already returned in < 500 ms.
+        //
+        // New flow:
+        //   1. Await main Search. Surface errors, populate `files`.
+        //   2. Drop `isLoading` immediately — the list is now visible.
+        //   3. Kick off sub Search, GetEvents, and findAlarmVideo as
+        //      detached tasks. They enrich rows (sub-stream preview,
+        //      AI tag chips) as they complete; the `alarmVideoLoading`
+        //      flag covers the Baichuan path's own progress spinner
+        //      so users still see "tags loading…" when relevant.
+        //
+        // Reolink Home Hub Pro returns `rcv failed` (rspCode=-17) when
+        // two Search commands hit it concurrently — we still wait for
+        // main to complete before launching sub for that reason, but
+        // sub no longer blocks the user-visible list.
+        // ───────────────────────────────────────────────────────────
+        let mainOutcome = await session.withBackgroundPollingPaused {
+            await fetchSearchResults(channel: channel.channel, streamType: "main", start: start, end: end, captureRaw: true)
+        }
         switch mainOutcome {
         case .success(let mainFiles, let raw, let statuses):
             rawResponse = raw
             files = mainFiles.sorted { ($0.startDate ?? .distantPast) > ($1.startDate ?? .distantPast) }
-            // Capture the month bitfield for the day-density calendar
-            // (0.4.0). Reolink returns one Status entry per month
-            // touched by the queried range.
             if !statuses.isEmpty {
                 monthStatuses = statuses
             }
@@ -564,33 +714,70 @@ struct RecordingsView: View {
             errorMessage = message
             files = []
         }
+        // List renders now — drop the spinner. Background enrichment
+        // continues below; the small alarm-video spinner covers the
+        // remaining path.
+        isLoading = false
 
-        let subOutcome = await fetchSearchResults(channel: channel.channel, streamType: "sub", start: start, end: end, captureRaw: false)
-        switch subOutcome {
-        case .success(let subResults, _, _):
-            subFiles = subResults.sorted { ($0.startDate ?? .distantPast) < ($1.startDate ?? .distantPast) }
-            log.info("Sub-stream Search returned \(subResults.count) files")
-            if case .success(let mainResults, _, _) = mainOutcome, !mainResults.isEmpty {
-                let matched = mainResults.filter { subFileMatchFromList(for: $0, subs: subFiles) != nil }
-                log.info("  main↔sub time-overlap matches: \(matched.count) of \(mainResults.count)")
+        // Sub-stream Search — runs AFTER main to avoid Home Hub Pro's
+        // -17 concurrent-Search collision, but in a detached task so
+        // the user doesn't wait. Failure is non-fatal: not every
+        // camera produces sub-stream recordings (battery cams), so
+        // we just skip the low-quality preview path for those rows.
+        Task { @MainActor in
+            let subOutcome = await self.session.withBackgroundPollingPaused {
+                await self.fetchSearchResults(channel: self.channel.channel, streamType: "sub", start: start, end: end, captureRaw: false)
             }
-        case .failure(let message):
-            log.info("Sub-stream Search unavailable on channel \(self.channel.channel): \(message, privacy: .public). Falling back to main-only.")
-            subFiles = []
+            switch subOutcome {
+            case .success(let subResults, _, _):
+                self.subFiles = subResults.sorted { ($0.startDate ?? .distantPast) < ($1.startDate ?? .distantPast) }
+                log.info("Sub-stream Search returned \(subResults.count) files")
+            case .failure(let message):
+                log.info("Sub-stream Search unavailable on channel \(self.channel.channel): \(message, privacy: .public). Falling back to main-only.")
+                self.subFiles = []
+            }
         }
 
-        // Once per day-load, probe for AI events through `GetEvents`. Reolink
-        // Home Hub Pro's `Search` response doesn't include trigger metadata,
-        // but some firmware exposes it via this separate endpoint. Capture
-        // whatever shape comes back — `HubEvent` decodes permissively.
+        // GetEvents probe — only fires once per session lifetime
+        // (eventsUnsupported sticks after the first firmware-doesn't-
+        // support reply). Detached task so it never gates the list.
         if !eventsUnsupported {
-            await loadEvents(start: start, end: end)
+            Task { @MainActor in
+                await self.loadEvents(start: start, end: end)
+            }
         }
 
-        // The real source of historical AI tags: Baichuan's findAlarmVideo
-        // command (msg 272/273/274). Runs in parallel — recordings appear
-        // immediately and detection icons populate as soon as this returns.
-        await loadAlarmVideos(start: start, end: end)
+        // The real source of historical AI tags: Baichuan's
+        // findAlarmVideo (msg 272/273/274). Has its own
+        // `alarmVideoLoading` flag for the "AI tags loading" hint
+        // shown in the row metadata.
+        Task { @MainActor in
+            await self.loadAlarmVideos(start: start, end: end)
+        }
+    }
+
+    private func searchWindow(for day: Date) -> (start: Date, end: Date)? {
+        let cal = Calendar.current
+        let start = cal.startOfDay(for: day)
+        guard let endOfDay = cal.date(byAdding: .day, value: 1, to: start)?.addingTimeInterval(-1) else {
+            return nil
+        }
+        let now = Date()
+        guard start <= now else { return nil }
+        // For "today", don't ask the hub to scan into the future.
+        // Reolink's own app appears to cap the end time at now; using
+        // 23:59:59 for a partial day can make a tiny list feel slow.
+        return (start, min(endOfDay, now))
+    }
+
+    private func connectionUnavailableMessage() -> String {
+        if case .failed(let reason) = session.connectionStage {
+            return reason
+        }
+        if case .error(let message) = session.status {
+            return message
+        }
+        return "Camera isn't connected yet — try again once the live view is up."
     }
 
     private func loadAlarmVideos(start: Date, end: Date) async {
@@ -706,7 +893,7 @@ struct RecordingsView: View {
     /// Save the chosen quality variant to disk via NSSavePanel. We don't
     /// auto-open it — the user is making an explicit "give me this file"
     /// gesture, and forcing a player on top of that would surprise them.
-    private func saveToDisk(_ file: SearchFile, quality: DownloadQuality) {
+    private func saveToDisk(_ file: SearchFile, quality: DownloadQuality, bookmarkRange: ClosedRange<TimeInterval>? = nil) {
         let source: SearchFile
         switch quality {
         case .low:
@@ -718,14 +905,17 @@ struct RecordingsView: View {
         case .high:
             source = file
         }
-        let defaultName = "Reolens \(channel.name ?? "Channel \(channel.channel)") \(timeLabel(for: file)) (\(quality.label)).mp4"
+        let suffix = bookmarkRange == nil ? "(\(quality.label))" : "(bookmark \(quality.label))"
+        let defaultName = "Reolens \(channel.name ?? "Channel \(channel.channel)") \(timeLabel(for: file)) \(suffix).mp4"
             .replacingOccurrences(of: ":", with: ".")
 
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.mpeg4Movie]
         panel.nameFieldStringValue = defaultName
         panel.canCreateDirectories = true
-        panel.message = "Save \(quality.label.lowercased())-quality recording"
+        panel.message = bookmarkRange == nil
+            ? "Save \(quality.label.lowercased())-quality recording"
+            : "Export bookmarked clip (\(quality.label.lowercased()) quality)"
         guard panel.runModal() == .OK, let destURL = panel.url else { return }
 
         Task {
@@ -738,12 +928,22 @@ struct RecordingsView: View {
             )
             // Reuse the in-app player sheet to surface progress, but mark it
             // as "save to disk" so it copies the result to the chosen path
-            // instead of auto-playing.
+            // instead of auto-playing. `bookmarkTrim` carries the
+            // ClosedRange<TimeInterval> *relative to the source file's
+            // start*; the player sheet's post-download hook hands it
+            // to `ClipExporter.export(...)`.
+            let trim: ClosedRange<TimeInterval>? = {
+                guard let bookmarkRange, let fileStart = source.startDate else { return nil }
+                let lo = max(0, bookmarkRange.lowerBound - fileStart.timeIntervalSince1970)
+                let hi = max(lo, bookmarkRange.upperBound - fileStart.timeIntervalSince1970)
+                return lo...hi
+            }()
             nowPlaying = PlayableRecording(
                 file: source,
                 url: url,
                 isHighQuality: quality == .high,
-                saveDestination: destURL
+                saveDestination: destURL,
+                bookmarkTrim: trim
             )
         }
     }
@@ -788,6 +988,7 @@ struct RecordingsView: View {
     }
 
     private func fetchSearchResults(channel: Int, streamType: String, start: Date, end: Date, captureRaw: Bool) async -> SearchOutcome {
+        let startedAt = Date()
         let command = Commands.search(
             channel: channel,
             onlyStatus: false,
@@ -797,21 +998,70 @@ struct RecordingsView: View {
         )
         do {
             let raw = try await session.client.sendCapturingRaw(command)
-            let pretty = captureRaw ? (prettyPrint(raw) ?? String(data: raw, encoding: .utf8) ?? "<binary>") : ""
-            if captureRaw {
-                log.info("Search raw response (channel=\(channel) stream=\(streamType, privacy: .public)):\n\(pretty, privacy: .public)")
+            let shouldCaptureRaw = captureRaw && store.developerMode
+            let pretty = shouldCaptureRaw ? (prettyPrint(raw) ?? String(data: raw, encoding: .utf8) ?? "<binary>") : ""
+            if shouldCaptureRaw {
+                log.debug("Search raw response (channel=\(channel) stream=\(streamType, privacy: .public)):\n\(pretty, privacy: .private)")
             } else {
-                log.debug("Sub Search returned \(raw.count) bytes for channel=\(channel)")
+                log.debug("Search returned \(raw.count) bytes for channel=\(channel) stream=\(streamType, privacy: .public)")
             }
             let envelopes = try JSONDecoder().decode([CGIResponse<SearchEnvelope>].self, from: raw)
-            guard let firstValue = envelopes.first?.value else {
-                return .failure("Empty response from camera")
+            // Distinguish "no envelope at all" (malformed bytes) from
+            // "envelope had an error" (camera said no). The previous
+            // copy "Empty response from camera" hit both paths and was
+            // unhelpful — 0.5.0 surfaces the actual Reolink error code
+            // when it's available.
+            guard let envelope = envelopes.first else {
+                return .failure("Camera returned no Search envelope. Try again — if it persists, reconnect the camera.")
             }
-            let result = firstValue.SearchResult.File ?? []
-            let statuses = firstValue.SearchResult.Status ?? []
+            if let cgiError = envelope.error {
+                let detail: String = {
+                    if cgiError.rspCode == -10 { return "Session expired. Reolens will retry on the next refresh." }
+                    if cgiError.rspCode == -17 { return "Camera is busy — retry in a moment." }
+                    return "Reolink error \(cgiError.rspCode): \(cgiError.detail ?? "no detail")"
+                }()
+                return .failure(detail)
+            }
+            guard let value = envelope.value else {
+                return .failure("Search response was missing data. Try Refresh.")
+            }
+            let result = value.SearchResult.File ?? []
+            let statuses = value.SearchResult.Status ?? []
+            log.info("Search completed channel=\(channel) stream=\(streamType, privacy: .public) files=\(result.count) statuses=\(statuses.count) elapsed=\(Date().timeIntervalSince(startedAt), privacy: .public)s")
             return .success(result, rawPretty: pretty, statuses: statuses)
+        } catch let urlError as URLError {
+            return .failure(Self.friendlyTransportMessage(urlError))
+        } catch let decodingError as DecodingError {
+            return .failure("Couldn't read the camera's response (\(Self.shortDescription(of: decodingError))). The camera firmware may have changed — please report this.")
         } catch {
-            return .failure("\(error)")
+            return .failure(error.localizedDescription.isEmpty ? "\(error)" : error.localizedDescription)
+        }
+    }
+
+    private static func friendlyTransportMessage(_ urlError: URLError) -> String {
+        switch urlError.code {
+        case .timedOut:
+            return "Connection to the camera timed out. Check that you're on the same Wi-Fi."
+        case .cannotConnectToHost:
+            return "Couldn't reach the camera. Is it powered on?"
+        case .networkConnectionLost:
+            return "Wi-Fi dropped during the request. Try Refresh."
+        case .notConnectedToInternet:
+            return "Your device isn't on a network."
+        case .secureConnectionFailed:
+            return "HTTPS connection failed. The camera's certificate may have changed."
+        default:
+            return "Network error \(urlError.code.rawValue): \(urlError.localizedDescription)"
+        }
+    }
+
+    private static func shortDescription(of error: DecodingError) -> String {
+        switch error {
+        case .keyNotFound(let key, _): return "missing key \(key.stringValue)"
+        case .typeMismatch(_, let ctx): return ctx.debugDescription
+        case .valueNotFound(_, let ctx): return ctx.debugDescription
+        case .dataCorrupted(let ctx): return ctx.debugDescription
+        @unknown default: return "decode failure"
         }
     }
 }
@@ -825,12 +1075,25 @@ struct PlayableRecording: Identifiable, Hashable {
     /// but moves the file to this destination on completion instead of
     /// auto-playing it.
     let saveDestination: URL?
+    /// 0.5.0 Theme C1 — when non-nil, indicates the user is exporting
+    /// a bookmarked sub-range of the source file. Times are relative
+    /// to the source file's start in seconds. The player sheet's
+    /// post-download hook runs `ClipExporter.export(...)` against
+    /// this range before moving the result to `saveDestination`.
+    let bookmarkTrim: ClosedRange<TimeInterval>?
 
-    init(file: SearchFile, url: URL, isHighQuality: Bool, saveDestination: URL? = nil) {
+    init(
+        file: SearchFile,
+        url: URL,
+        isHighQuality: Bool,
+        saveDestination: URL? = nil,
+        bookmarkTrim: ClosedRange<TimeInterval>? = nil
+    ) {
         self.file = file
         self.url = url
         self.isHighQuality = isHighQuality
         self.saveDestination = saveDestination
+        self.bookmarkTrim = bookmarkTrim
     }
 
     var id: String { file.name }
@@ -846,6 +1109,11 @@ struct RecordingPlayerSheet: View {
     /// for a moment afterward so the user sees the "done" state.
     @State private var saveCompletedAt: URL?
     @State private var saveError: String?
+    /// 0.5.0 Theme A3 — captured `AVPlayer` from the host view, used
+    /// to drive the custom `ScrubberView` underneath. Stays nil
+    /// until the AVPlayer is created in `AVPlayerHostView.makeNSView`.
+    @State private var activePlayer: AVPlayer?
+    @State private var assetDurationSeconds: TimeInterval = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -912,8 +1180,30 @@ struct RecordingPlayerSheet: View {
             } else if recording.isSaving {
                 downloadingPanel
             } else if let localURL = downloader.localURL {
-                AVPlayerHostView(url: localURL)
+                VStack(spacing: 0) {
+                    AVPlayerHostView(url: localURL) { player in
+                        activePlayer = player
+                        Task {
+                            let asset = AVURLAsset(url: localURL)
+                            if let dur = try? await asset.load(.duration) {
+                                assetDurationSeconds = CMTimeGetSeconds(dur)
+                            }
+                        }
+                    }
                     .frame(minWidth: 720, minHeight: 405)
+                    // 0.5.0 Theme A3 — custom scrubber with the
+                    // thumbnail rail. Sits below the native AVPlayer
+                    // view; the native controls stay visible as a
+                    // fallback so users with VoiceOver or other
+                    // accessibility tools always have native chrome.
+                    if let activePlayer, assetDurationSeconds > 0 {
+                        ScrubberView(
+                            player: activePlayer,
+                            segmentID: recording.file.name,
+                            durationSeconds: assetDurationSeconds
+                        )
+                    }
+                }
             } else {
                 downloadingPanel
             }
@@ -951,6 +1241,29 @@ struct RecordingPlayerSheet: View {
     private func moveToSaveDestination(dest: URL) {
         guard let localURL = downloader.localURL else {
             saveError = "Download completed but no local file was produced."
+            return
+        }
+        // 0.5.0 Theme C1 — bookmark export path: trim the downloaded
+        // file to the bookmark's range before placing at the user's
+        // destination. The plain "Download High Quality" path
+        // (`bookmarkTrim == nil`) skips this and just moves the
+        // file as-is, preserving the original behavior.
+        if let trim = recording.bookmarkTrim {
+            Task { @MainActor in
+                do {
+                    try await ClipExporter.export(
+                        sources: [.init(url: localURL, range: trim)],
+                        to: dest
+                    )
+                    // The exporter writes directly to `dest`. Remove
+                    // the (now redundant) temp file so we don't leave
+                    // multi-hundred-MB downloads on disk.
+                    try? FileManager.default.removeItem(at: localURL)
+                    saveCompletedAt = dest
+                } catch {
+                    saveError = "Couldn't trim & export: \(error.localizedDescription)"
+                }
+            }
             return
         }
         do {
@@ -1042,7 +1355,8 @@ struct RawResponseView: View {
                     .padding(8)
             }
             .frame(minWidth: 560, idealWidth: 720, minHeight: 360, idealHeight: 480)
-            .background(.background.tertiary)
+            // 0.5.0 Liquid Glass — raw-JSON popover card.
+            .reolensGlassCard()
             .clipShape(.rect(cornerRadius: 6))
         }
         .padding(12)
@@ -1052,6 +1366,16 @@ struct RawResponseView: View {
 /// macOS AVPlayer host that auto-plays the URL when shown.
 struct AVPlayerHostView: NSViewRepresentable {
     let url: URL
+    /// 0.5.0 Theme A3 — when non-nil, the host writes the active
+    /// `AVPlayer` here so the surrounding sheet can drive its own
+    /// custom scrubber (`ScrubberView`) against the same playback
+    /// instance. Native controls also stay visible for fallback.
+    let playerSink: ((AVPlayer) -> Void)?
+
+    init(url: URL, playerSink: ((AVPlayer) -> Void)? = nil) {
+        self.url = url
+        self.playerSink = playerSink
+    }
 
     func makeNSView(context: Context) -> AVPlayerView {
         let view = AVPlayerView()
@@ -1060,6 +1384,7 @@ struct AVPlayerHostView: NSViewRepresentable {
         let player = AVPlayer(url: url)
         view.player = player
         player.play()
+        playerSink?(player)
         return view
     }
 
@@ -1068,6 +1393,7 @@ struct AVPlayerHostView: NSViewRepresentable {
             let player = AVPlayer(url: url)
             nsView.player = player
             player.play()
+            playerSink?(player)
         }
     }
 }

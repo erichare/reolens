@@ -36,6 +36,8 @@ struct SettingsView: View {
 
             NotificationCategoriesSection(notifier: notifier)
 
+            OvernightDigestSection()
+
             Section("System permission") {
                 permissionRow
             }
@@ -124,4 +126,43 @@ struct SettingsView: View {
     /// can bind to `store.developerMode` without us needing to thread
     /// the store down through a custom binding.
     private var bindable: Bindable<CameraStore> { Bindable(store) }
+}
+
+/// 0.5.0 Theme A5 — overnight digest controls. Mirrors the macOS
+/// implementation; AGENTS.md §1 platform parity.
+private struct OvernightDigestSection: View {
+    @State private var enabled: Bool = OvernightDigestSettings.enabled
+    @State private var hour: Int = OvernightDigestSettings.hourOfDay
+    @State private var showingPreview: Bool = false
+
+    var body: some View {
+        Section("Overnight digest") {
+            Toggle("Daily summary notification", isOn: $enabled)
+                .onChange(of: enabled) { _, value in
+                    OvernightDigestSettings.setEnabled(value)
+                    Task { await DigestScheduler.shared.reconcileSchedule() }
+                }
+            Picker("Time of day", selection: $hour) {
+                ForEach(0..<24, id: \.self) { h in
+                    Text(String(format: "%02d:00", h)).tag(h)
+                }
+            }
+            .pickerStyle(.menu)
+            .disabled(!enabled)
+            .onChange(of: hour) { _, value in
+                OvernightDigestSettings.setHourOfDay(value)
+                Task { await DigestScheduler.shared.reconcileSchedule() }
+            }
+            Text("Bundles last night's motion events into a single notification at the configured time. Default 07:00 local.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            Button("Preview last digest…") { showingPreview = true }
+                .sheet(isPresented: $showingPreview) {
+                    DigestDetailView()
+                }
+            Button("Build a digest now") {
+                Task { await DigestScheduler.shared.runDigest() }
+            }
+        }
+    }
 }

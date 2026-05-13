@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- 0.5.0 widget extension shares the App-Group container with
+         the main app. Widgets read snapshots + recent motion events
+         from this container (device-local, never CloudKit-synced).
+         AGENTS.md §5, §16. -->
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>group.com.reolens.Reolens</string>
+    </array>
+</dict>
+</plist>

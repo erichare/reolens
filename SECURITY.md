@@ -58,6 +58,18 @@ In scope:
   own services.
 - iCloud sync schema regressions that would expose camera passwords
   to other devices.
+- **App Group container leakage (0.5.0).** Widgets and the Live
+  Activity extension read snapshots and recent motion-event metadata
+  from `group.com.reolens.Reolens`. Any path that lets data outside
+  of (a) recent snapshot JPEGs, (b) recent motion-event metadata, or
+  (c) daily digest records into that container, or that lets the
+  extensions write *back* to the container, is in scope.
+- **CloudKit motion-event relay regressions.** The relay publishes
+  to the user's private CloudKit database. Any change that increases
+  the per-record payload beyond the documented `MotionEvent` /
+  `MotionEventRecordID` shape, that bypasses the per-camera rate
+  limit, or that publishes after the multi-account guard has fired
+  is in scope.
 
 Out of scope:
 
@@ -88,6 +100,12 @@ report alleging any of them is broken is automatically in scope:
    `com.reolens.channelDrag`, `com.reolens.deviceDrag`, and App
    Intents `OpenCameraIntent` paths all transport only UUIDs / channel
    integers.
+5. **Widget / Live Activity extensions are filesystem-only.** They
+   have no `com.apple.security.network.client` entitlement and no
+   Keychain access. Their only data source is the
+   `group.com.reolens.Reolens` App Group container, which is
+   device-local and never CloudKit-synced. AGENTS.md §16 codifies
+   the full constraint set.
 
 See [`AGENTS.md`](AGENTS.md) for the full engineering principles.
 
@@ -104,5 +122,12 @@ Once a fix is released:
 
 ## Supported versions
 
-Only the latest minor release is supported with security fixes. We
-will not backport to older minor releases.
+| Release | Platform floors                | Status                                                                                  |
+|---------|--------------------------------|-----------------------------------------------------------------------------------------|
+| 0.5.x   | macOS 26 / iOS 26 / iPadOS 26  | **Current.** Receives all security fixes and feature work.                              |
+| 0.4.x   | macOS 14 / iOS 18 / iPadOS 18  | **Security backports only**, through the end of the 0.5 cycle (~6 months after 0.5.0). |
+| ≤ 0.3.x | various                        | End of life. No backports.                                                              |
+
+The 0.5.0 deployment-floor bump exists so the app can adopt Liquid Glass plus the ActivityKit / WidgetKit / ControlWidget APIs Apple shipped in iOS 26 / macOS 26. Users who can't upgrade their OS should stay on the 0.4.x track. Any security fix that applies to both tracks will land on `main` (which targets 0.5.x) and be cherry-picked to the `release/0.4.x` branch for backport.
+
+Outside this support matrix, we will not backport.

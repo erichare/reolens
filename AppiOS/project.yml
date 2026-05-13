@@ -2,14 +2,14 @@ name: ReolensiOS
 options:
   bundleIdPrefix: com.reolens
   deploymentTarget:
-    iOS: "18.0"
+    iOS: "26.0"
   developmentLanguage: en
   createIntermediateGroups: true
 settings:
   base:
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
-    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "26.0"
     TARGETED_DEVICE_FAMILY: "1,2"
     ENABLE_USER_SCRIPT_SANDBOXING: NO
     ENABLE_HARDENED_RUNTIME: YES
@@ -20,7 +20,7 @@ targets:
   ReolensiOS:
     type: application
     platform: iOS
-    deploymentTarget: "18.0"
+    deploymentTarget: "26.0"
     sources:
       - path: Sources
       - path: Resources/Assets.xcassets
@@ -29,8 +29,8 @@ targets:
       path: Resources/Info.plist
       properties:
         CFBundleDisplayName: Reolens
-        CFBundleShortVersionString: "0.4.3"
-        CFBundleVersion: "7"
+        CFBundleShortVersionString: "0.5.0"
+        CFBundleVersion: "8"
         # iOS 11+ requires apps using asset-catalog icons to also
         # declare CFBundleIconName so the OS / App Store knows which
         # icon set to consult at runtime. Without this key, ASC's
@@ -123,12 +123,17 @@ targets:
         # Production for App Store / TestFlight builds; xcodegen
         # automatically swaps in development for debug archives.
         aps-environment: production
+        # 0.5.0: shared App Group container for the WidgetKit
+        # extension + Live Activity assets. Device-local; never
+        # CloudKit-synced. AGENTS.md §5, §16.
+        com.apple.security.application-groups:
+          - group.com.reolens.Reolens
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.reolens.Reolens.iOS
         PRODUCT_NAME: Reolens
-        MARKETING_VERSION: "0.4.3"
-        CURRENT_PROJECT_VERSION: "7"
+        MARKETING_VERSION: "0.5.0"
+        CURRENT_PROJECT_VERSION: "8"
         # Same Apple Developer team as the macOS app. Xcode's automatic
         # signing uses this to fetch / create the Apple Distribution
         # certificate and the App Store provisioning profile on first
@@ -148,3 +153,55 @@ targets:
         product: ReolinkBaichuan
       - package: Reolens
         product: AppShared
+      - target: ReolensiOSWidgets
+        embed: true
+        codeSign: true
+  # ------------------------------------------------------------------
+  # WidgetKit + ActivityKit extension (0.5.0).
+  #
+  # One iOS extension holds every Reolens widget surface: Home Screen
+  # widgets (CameraSnapshot, MotionDigest), Lock Screen widgets
+  # (LastMotion), the Control Center widget (OpenCameraControl), and
+  # the in-flight motion-event Live Activity (Dynamic Island +
+  # Lock Screen). All read from the App Group shared container
+  # (group.com.reolens.Reolens) — no network, no Keychain.
+  #
+  # The container payloads (LatestSnapshots.plist, RecentMotionEvents.plist,
+  # the per-event jpeg blobs, and the daily-digest JSONs) are
+  # atomically rewritten by the main app via AppShared/SharedContainer.swift.
+  # AGENTS.md §5 (no telemetry), §16 (widgets + Live Activities).
+  # ------------------------------------------------------------------
+  ReolensiOSWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Widgets
+    info:
+      path: Widgets/Info.plist
+      properties:
+        CFBundleDisplayName: Reolens Widgets
+        CFBundleShortVersionString: "0.5.0"
+        CFBundleVersion: "8"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    entitlements:
+      path: Widgets/ReolensiOSWidgets.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.reolens.Reolens
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.reolens.Reolens.iOS.Widgets
+        PRODUCT_NAME: ReolensiOSWidgets
+        MARKETING_VERSION: "0.5.0"
+        CURRENT_PROJECT_VERSION: "8"
+        DEVELOPMENT_TEAM: 5M9UT7VQ8Q
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: YES
+    dependencies:
+      - package: Reolens
+        product: AppShared
+      - package: Reolens
+        product: ReolinkAPI

@@ -13,6 +13,13 @@
     <key>com.apple.security.application-groups</key>
     <array>
         <string>com.reolens.Reolens</string>
+        <!-- 0.5.0: shared container for the WidgetKit extension. The
+             widget reads latest snapshots + recent motion-event metadata
+             from this container; the main app atomically rewrites those
+             files via SharedContainer.swift. The container is device-
+             local (never CloudKit-synced); Keychain entries stay off it
+             entirely. AGENTS.md §5, §16 (new). -->
+        <string>group.com.reolens.Reolens</string>
     </array>
     <!-- iCloud Drive sync for cameras.json shared across Mac/iPad/iPhone.
          Container is "iCloud.com.reolens.Reolens"; the JSON lives under

@@ -1,11 +1,15 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 import PackageDescription
 
 let package = Package(
     name: "Reolens",
     platforms: [
-        .macOS(.v14),
-        .iOS(.v18)
+        // 0.5.0 raises the floor to macOS 26 / iOS 26 to adopt Liquid Glass
+        // and the ActivityKit + ControlWidget APIs that ship in those
+        // releases. Users on macOS 14 / iOS 18 receive security-only
+        // backports against the 0.4.x track per SECURITY.md.
+        .macOS(.v26),
+        .iOS(.v26)
     ],
     products: [
         .library(name: "ReolinkAPI", targets: ["ReolinkAPI"]),
@@ -79,7 +83,12 @@ let package = Package(
                 .product(name: "Sparkle", package: "Sparkle")
             ],
             path: "App",
-            exclude: ["Info.plist", "Reolens.entitlements"],
+            // 0.5.0 — Widgets/ is a separate WidgetKit app-extension
+            // target built by Xcode, not by SPM. Excluding it from
+            // the main Reolens target keeps `swift build` clean and
+            // prevents the @main collision between
+            // `ReolensApp` and `ReolensWidgetsBundle`.
+            exclude: ["Info.plist", "Reolens.entitlements", "Widgets"],
             swiftSettings: [
                 // StrictConcurrency is implicit at swift-tools-version 6.0;
                 // enabling it explicitly is rejected by the toolchain.

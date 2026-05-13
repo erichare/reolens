@@ -30,17 +30,25 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # Xcode 16 ships Swift 6.0+, which Package.swift requires
-      # (`swift-tools-version: 6.0`). The runner image rotates available
-      # Xcodes, so we pin to a major version rather than a build number
-      # to stay green when Apple refreshes the image.
-      - name: Select Xcode 16
-        run: sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
+      # 0.5.0 floor: Package.swift declares `swift-tools-version: 6.2`
+      # plus `.macOS(.v26)` / `.iOS(.v26)`, so we need Xcode 26 (which
+      # ships Swift 6.2+). The runner image rotates available Xcodes,
+      # so we pin to a major version rather than a build number to
+      # stay green when Apple refreshes the image.
+      - name: Select Xcode 26
+        run: sudo xcode-select -s /Applications/Xcode_26.app/Contents/Developer
 
       - name: Print toolchain
         run: |
           swift --version
           xcodebuild -version
+
+      # AGENTS.md §13: macOS + iOS MARKETING_VERSION must align. This
+      # gate fails the build if `App/Info.plist` and
+      # `AppiOS/project.yml` diverge — caught at PR time instead of at
+      # tag time, the latter of which is too late to fix cleanly.
+      - name: Verify macOS / iOS versions align
+        run: ./Scripts/check-versions.sh
 
       # Cache the SPM build dir keyed on Package.swift / Package.resolved
       # so the second-and-later runs skip module rebuilds.
@@ -91,6 +99,13 @@ jobs:
             -ignore-filename-regex '\.build|Tests' | tee coverage-summary.txt
         continue-on-error: true
 
+      # AGENTS.md §12 (0.5.0): 80% line-coverage floor on the four
+      # library targets that carry the project's correctness surface.
+      # Fails the PR if any target dips below — was aspirational
+      # through 0.4.x, now enforced. See Scripts/coverage-gate.sh.
+      - name: Coverage gate (≥80% on libs)
+        run: ./Scripts/coverage-gate.sh
+
       - name: Upload coverage artifact
         if: success() || failure()
         uses: actions/upload-artifact@v7
@@ -114,8 +129,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Select Xcode 16
-        run: sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
+      - name: Select Xcode 26
+        run: sudo xcode-select -s /Applications/Xcode_26.app/Contents/Developer
 
       - name: Cache .build
         uses: actions/cache@v5

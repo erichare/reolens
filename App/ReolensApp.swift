@@ -26,6 +26,13 @@ struct ReolensApp: App {
                     // we never add a menu-bar icon without the user
                     // opting in.
                     MenuBarController.shared.syncFromDefaults(store: store)
+                    // 0.5.0 Theme A5 — reconcile the daily overnight
+                    // digest with the user's current settings. Idle
+                    // until the user opts in; then a single
+                    // `UNCalendarNotificationTrigger` (repeats: true)
+                    // fires at the configured hour without needing
+                    // any background mode.
+                    Task { await DigestScheduler.shared.reconcileSchedule() }
                 }
                 .onContinueUserActivity(CameraContinuity.cameraDetailActivityType) { activity in
                     if CameraContinuity.handle(activity: activity) {
@@ -56,6 +63,15 @@ struct ReolensApp: App {
                     TrustChangedSheet(request: request)
                         .environment(store)
                 }
+                // 0.5.0 Theme A5 — digest sheet, presented when a
+                // digest notification tap routes through
+                // `applyPendingIntentFocus()`.
+                .sheet(item: Binding<DigestDaySheet?>(
+                    get: { store.pendingDigestDay.map { DigestDaySheet(day: $0) } },
+                    set: { _ in store.pendingDigestDay = nil }
+                )) { sheet in
+                    DigestDetailView(requestedDay: sheet.day)
+                }
                 // Keychain write failures bubble up here as an alert
                 // so the user sees them instead of bouncing back to
                 // "No password on this Mac" silently after entering
@@ -76,6 +92,20 @@ struct ReolensApp: App {
                 }
         }
         .windowToolbarStyle(.unified(showsTitle: false))
+
+        // 0.5.0 — secondary scene for "Open in New Window" on a
+        // single camera. `WindowGroup(for: ReolensScene.self)` opens a
+        // fresh window keyed by the scene value; SwiftUI handles
+        // multi-window state automatically. Used by the sidebar
+        // context-menu's "Open in New Window" item — see
+        // [CameraListView.swift].
+        WindowGroup(for: ReolensScene.self) { $scene in
+            CameraSceneHost(scene: scene ?? .main)
+                .environment(store)
+                .frame(minWidth: 720, minHeight: 480)
+        }
+        .windowToolbarStyle(.unified(showsTitle: true))
+
         .commands {
             // Replace the default About item with our own custom panel.
             // SwiftUI's `CommandGroup(replacing: .appInfo)` swaps out the
@@ -113,6 +143,14 @@ struct ReolensApp: App {
     private func showAboutPanel() {
         AboutPanelController.shared.show()
     }
+}
+
+/// 0.5.0 Theme A5 — `Identifiable` wrapper for `Date` so the digest
+/// sheet's `.sheet(item:)` binding has a stable identity that matches
+/// the requested-day epoch.
+private struct DigestDaySheet: Identifiable {
+    let day: Date
+    var id: TimeInterval { day.timeIntervalSince1970 }
 }
 
 /// Singleton owner of the About panel so its window stays alive across

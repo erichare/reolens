@@ -65,7 +65,9 @@ public struct TrustChangedSheet: View {
                     .foregroundStyle(.orange)
             }
             .padding(10)
-            .background(.background.tertiary, in: .rect(cornerRadius: 8))
+            // 0.5.0 Liquid Glass — fingerprint comparison block reads
+            // as a glass card inside the trust-changed dialog.
+            .reolensGlassCard()
             HStack {
                 Button("Cancel", role: .cancel) {
                     store.pendingTrustChange = nil

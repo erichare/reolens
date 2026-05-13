@@ -36,14 +36,21 @@ public actor LivePlayerStartGate {
     /// Returns immediately when the gate has been idle longer than
     /// `minStartIntervalSeconds` — the rate-limit only kicks in when
     /// many starts pile up at once.
-    public func acquire() async {
+    public func acquire() async -> Bool {
+        guard !Task.isCancelled else { return false }
         let now = ContinuousClock.now
         let elapsed = lastStartTime.duration(to: now)
         let minimum = Duration.seconds(minStartIntervalSeconds)
         if elapsed < minimum {
             let wait = minimum - elapsed
-            try? await Task.sleep(for: wait)
+            do {
+                try await Task.sleep(for: wait)
+            } catch {
+                return false
+            }
         }
+        guard !Task.isCancelled else { return false }
         lastStartTime = .now
+        return true
     }
 }

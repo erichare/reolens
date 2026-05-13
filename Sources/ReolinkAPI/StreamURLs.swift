@@ -15,26 +15,24 @@ public struct StreamURLs: Sendable {
     /// and TrackMix models expose their "main" view at non-standard paths. We try the
     /// common ones in priority order; the RTSP player walks through them and uses
     /// whichever responds with a video track.
-    public func candidatesForLive(channel: Int = 0, stream: StreamKind = .main, rtspPort: Int = 554) -> [URL] {
+    public func candidatesForLive(
+        channel: Int = 0,
+        stream: StreamKind = .main,
+        rtspPort: Int = 554,
+        preferredCodec: VideoCodec = .h264
+    ) -> [URL] {
+        let codecs = orderedCodecs(preferred: preferredCodec)
         switch stream {
         case .sub:
-            return [
-                rtsp(channel: channel, stream: .sub, codec: .h264, rtspPort: rtspPort),
-                rtsp(channel: channel, stream: .sub, codec: .h265, rtspPort: rtspPort)
-            ]
+            return codecs.map { rtsp(channel: channel, stream: .sub, codec: $0, rtspPort: rtspPort) }
         case .main:
             return [
-                rtsp(channel: channel, stream: .main, codec: .h265, rtspPort: rtspPort),
-                rtsp(channel: channel, stream: .main, codec: .h264, rtspPort: rtspPort),
-                rtsp(channel: channel, stream: .ext, codec: .h264, rtspPort: rtspPort),
-                rtsp(channel: channel, stream: .ext, codec: .h265, rtspPort: rtspPort),
-                rtsp(channel: channel, stream: .sub, codec: .h264, rtspPort: rtspPort)
-            ]
+                codecs.map { rtsp(channel: channel, stream: .main, codec: $0, rtspPort: rtspPort) },
+                codecs.map { rtsp(channel: channel, stream: .ext, codec: $0, rtspPort: rtspPort) },
+                codecs.map { rtsp(channel: channel, stream: .sub, codec: $0, rtspPort: rtspPort) }
+            ].flatMap { $0 }
         case .ext:
-            return [
-                rtsp(channel: channel, stream: .ext, codec: .h264, rtspPort: rtspPort),
-                rtsp(channel: channel, stream: .ext, codec: .h265, rtspPort: rtspPort)
-            ]
+            return codecs.map { rtsp(channel: channel, stream: .ext, codec: $0, rtspPort: rtspPort) }
         }
     }
 
@@ -108,6 +106,15 @@ public struct StreamURLs: Sendable {
             URLQueryItem(name: "password", value: credentials.password)
         ]
         return components.url!
+    }
+}
+
+private func orderedCodecs(preferred: VideoCodec) -> [VideoCodec] {
+    switch preferred {
+    case .h264:
+        return [.h264, .h265]
+    case .h265:
+        return [.h265, .h264]
     }
 }
 

@@ -90,6 +90,23 @@ public enum Commands {
         CGICommand(cmd: "GetHddInfo", action: .get, param: EmptyParam())
     }
 
+    /// 0.5.0 Theme C2 — fetch the current privacy-mask rectangles for
+    /// a channel. Reolink firmware returns up to 4 areas in
+    /// normalized 0…1 image-space. Older firmware responds with
+    /// rspCode = -9 (not supported); callers fall back to local-only
+    /// persistence in that case.
+    public static func getMask(channel: Int = 0) -> CGICommand<ChannelParam> {
+        CGICommand(cmd: "GetMask", action: .get, param: .init(channel: channel))
+    }
+
+    /// 0.5.0 Theme C2 — write the privacy-mask rectangles back to
+    /// the camera. Most firmware caps `area.count` at 4; the caller
+    /// (`PrivacyZoneEditorModel`) enforces that ceiling before
+    /// reaching this command.
+    public static func setMask(_ mask: MaskSettings) -> CGICommand<SetMaskParam> {
+        CGICommand(cmd: "SetMask", action: .get, param: SetMaskParam(Mask: mask))
+    }
+
     /// Speculative probe for an alarm-event log endpoint. Reolink's official
     /// CGI docs don't mention this command, but some newer NVR/hub firmware
     /// implements it. Returns -9 (not supported) on hubs that don't.

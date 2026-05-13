@@ -1,0 +1,236 @@
+{
+  "" : {
+    "const-values" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/AppShared-primary.swiftconstvalues",
+    "dependencies" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/AppShared-primary.d",
+    "diagnostics" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/AppShared-primary.dia",
+    "emit-module-dependencies" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/AppShared-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/AppShared-primary-emit-module.dia",
+    "pch" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/AppShared-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/AppShared-primary.swiftdeps"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/AIEventFilterBar.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/AIEventFilterBar.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/AIEventFilterBar.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/AIEventFilterBar.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/AppIntents/CameraIntents.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/CameraIntents.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/CameraIntents.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/CameraIntents.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/CameraContinuity.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/CameraContinuity.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/CameraContinuity.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/CameraContinuity.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/CameraDiscovery.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/CameraDiscovery.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/CameraDiscovery.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/CameraDiscovery.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/CameraPreviewImage.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/CameraPreviewImage.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/CameraPreviewImage.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/CameraPreviewImage.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/CameraPreviewService.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/CameraPreviewService.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/CameraPreviewService.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/CameraPreviewService.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/CameraSession.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/CameraSession.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/CameraSession.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/CameraSession.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/CameraStore.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/CameraStore.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/CameraStore.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/CameraStore.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/ChannelDragPayload.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ChannelDragPayload.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ChannelDragPayload.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ChannelDragPayload.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/ChannelSettingsView.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ChannelSettingsView.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ChannelSettingsView.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ChannelSettingsView.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/ClipExporter.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ClipExporter.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ClipExporter.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ClipExporter.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/ConnectionProgress.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ConnectionProgress.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ConnectionProgress.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ConnectionProgress.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/DeviceDragPayload.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/DeviceDragPayload.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/DeviceDragPayload.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/DeviceDragPayload.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/DigestBuilder.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/DigestBuilder.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/DigestBuilder.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/DigestBuilder.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/DigestDetailView.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/DigestDetailView.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/DigestDetailView.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/DigestDetailView.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/DigestScheduler.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/DigestScheduler.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/DigestScheduler.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/DigestScheduler.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/EnterPasswordSheet.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/EnterPasswordSheet.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/EnterPasswordSheet.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/EnterPasswordSheet.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/EventNotifier.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/EventNotifier.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/EventNotifier.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/EventNotifier.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/GridPreset.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/GridPreset.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/GridPreset.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/GridPreset.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/HubEvent.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/HubEvent.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/HubEvent.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/HubEvent.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/ICloudCameraStorage.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ICloudCameraStorage.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ICloudCameraStorage.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ICloudCameraStorage.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/ICloudKeychainSyncSection.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ICloudKeychainSyncSection.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ICloudKeychainSyncSection.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ICloudKeychainSyncSection.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/JiggleModifier.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/JiggleModifier.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/JiggleModifier.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/JiggleModifier.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/Keychain.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/Keychain.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/Keychain.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/Keychain.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/LivePlayerStartGate.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/LivePlayerStartGate.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/LivePlayerStartGate.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/LivePlayerStartGate.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/LocalNetworkPermission.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/LocalNetworkPermission.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/LocalNetworkPermission.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/LocalNetworkPermission.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/MotionEventActivityAttributes.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/MotionEventActivityAttributes.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/MotionEventActivityAttributes.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/MotionEventActivityAttributes.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/MotionEventRelay.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/MotionEventRelay.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/MotionEventRelay.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/MotionEventRelay.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/MotionEventRelayHardening.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/MotionEventRelayHardening.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/MotionEventRelayHardening.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/MotionEventRelayHardening.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/MotionRelayPublisherSection.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/MotionRelayPublisherSection.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/MotionRelayPublisherSection.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/MotionRelayPublisherSection.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/NotificationCategoriesSection.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/NotificationCategoriesSection.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/NotificationCategoriesSection.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/NotificationCategoriesSection.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/PrivacyZoneEditorModel.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/PrivacyZoneEditorModel.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/PrivacyZoneEditorModel.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/PrivacyZoneEditorModel.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/PrivacyZoneEditorView.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/PrivacyZoneEditorView.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/PrivacyZoneEditorView.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/PrivacyZoneEditorView.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/RecordingBookmark.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/RecordingBookmark.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/RecordingBookmark.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/RecordingBookmark.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/RecordingDownloader.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/RecordingDownloader.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/RecordingDownloader.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/RecordingDownloader.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/RecordingTimelineViews.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/RecordingTimelineViews.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/RecordingTimelineViews.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/RecordingTimelineViews.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/ReolensGlass.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ReolensGlass.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ReolensGlass.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ReolensGlass.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/ReolensScene.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ReolensScene.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ReolensScene.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ReolensScene.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/Reorderable.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/Reorderable.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/Reorderable.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/Reorderable.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/ScrubberView.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ScrubberView.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ScrubberView.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ScrubberView.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/SharedContainer.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/SharedContainer.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/SharedContainer.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/SharedContainer.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/SidebarSelection.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/SidebarSelection.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/SidebarSelection.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/SidebarSelection.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/SnapshotSaver.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/SnapshotSaver.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/SnapshotSaver.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/SnapshotSaver.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/ThumbnailCache.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ThumbnailCache.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ThumbnailCache.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/ThumbnailCache.o"
+  },
+  "/Users/erichare/GitHub/reolens/Sources/AppShared/TrustChangedSheet.swift" : {
+    "index-unit-output-path" : "/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/TrustChangedSheet.o",
+    "llvm-bc" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/TrustChangedSheet.bc",
+    "object" : "/Users/erichare/GitHub/reolens/build/Reolens.build/Release-iphoneos/AppShared.build/Objects-normal/arm64/TrustChangedSheet.o"
+  }
+}

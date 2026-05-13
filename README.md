@@ -11,8 +11,8 @@
   <a href="https://github.com/jestatsio/reolens/actions/workflows/ci.yml"><img src="https://github.com/jestatsio/reolens/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/jestatsio/reolens/releases/latest"><img src="https://img.shields.io/github/v/release/jestatsio/reolens?label=download&color=4cd2ff" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT"></a>
-  <img src="https://img.shields.io/badge/macOS-14%2B-1ba6d8" alt="macOS 14+">
-  <img src="https://img.shields.io/badge/iOS-18%2B-1ba6d8" alt="iOS 18+">
+  <img src="https://img.shields.io/badge/macOS-26%2B-1ba6d8" alt="macOS 26+">
+  <img src="https://img.shields.io/badge/iOS-26%2B-1ba6d8" alt="iOS 26+">
 </p>
 
 <p align="center">
@@ -30,26 +30,31 @@ AVFoundation/VideoToolbox — no Electron, no Java, no QtWebEngine. Cold
 launches in under a second; battery-friendly; feels like every other native
 Apple app on each platform.
 
-**As of v0.4.3**, the macOS, iPadOS, and iPhone apps are at feature parity
-for the live-viewing experience — same grid presets, tap-and-hold
-rearrange, search, save-snapshot, Shortcuts/Siri, and a per-channel
-Settings tab on every platform (plus Picture-in-Picture and pinch-to-zoom
-on iOS/iPadOS). 0.4.1 brings **iOS background notifications** via a
-CloudKit motion-event relay through the user's own iCloud account (no
-Reolens server), **trust-on-first-use TLS pinning** for self-signed HTTPS
-cameras, **notification-tap deep-linking to the captured clip**, and a
-**logging-redaction sweep** that closes the gap between AGENTS.md §11's
-promise and reality. 0.4.0 layered on the **see-further** features: a
-day-density calendar + per-day segment timeline above the recordings
-list, AI event filters, Continuity / Handoff between iPhone, iPad, and
-Mac, and an **opt-in to iCloud Keychain Sync** for users who want their
-camera passwords on every device. macOS gains a **"Run in the menu bar
-when closed"** mode so motion notifications keep firing after the window
-closes, and the camera grid now defaults to **static still previews**
-(streaming only when you open a single camera — toggle in Settings to
-restore continuous live grids). Camera list and grid preferences sync
-via iCloud Drive. Passwords stay per-device in Keychain unless the user
-explicitly opts in to iCloud Keychain Sync.
+**As of v0.5.0**, Reolens is the largest release the project has shipped:
+**Home Screen + Lock Screen + Control Center widgets** on iOS / iPadOS
+plus **desktop widgets on macOS**, **iOS Live Activities + Dynamic
+Island** for in-flight motion events, a **custom recording scrubber**
+with a thumbnail rail, **Stage Manager / multi-window on iPad**, an
+**overnight digest** (once-a-day local push + dedicated widget), **clip
+bookmarks + MP4 export**, a **motion privacy zones editor** that writes
+back to the camera via `SetMask`, full **Liquid Glass adoption** (iOS 26
+/ macOS 26 floor), and a deliberate hardening pass — force-unwrap
+removal in the VideoToolbox decoders and Baichuan talkback, CloudKit
+relay v2 with content-addressed dedup + token-bucket rate-limit + a
+multi-account guard, and an **80 % coverage floor on the shared
+libraries** now CI-enforced. 0.4.1 had brought **iOS background
+notifications** via the CloudKit motion-event relay (no Reolens server),
+**trust-on-first-use TLS pinning** for self-signed HTTPS cameras,
+**notification-tap deep-linking to the captured clip**, and a
+**logging-redaction sweep**. 0.4.0 had layered on the **see-further**
+features: a day-density calendar + per-day segment timeline above the
+recordings list, AI event filters, Continuity / Handoff between
+iPhone, iPad, and Mac, and an **opt-in to iCloud Keychain Sync**. macOS
+gained a **"Run in the menu bar when closed"** mode so motion
+notifications keep firing after the window closes, and the camera grid
+defaults to **static still previews**. Camera list and grid preferences
+sync via iCloud Drive. Passwords stay per-device in Keychain unless the
+user explicitly opts in to iCloud Keychain Sync.
 
 See [`AGENTS.md`](AGENTS.md) for the engineering principles that gate
 every change (platform parity by default, no telemetry, no credentials
@@ -67,7 +72,8 @@ project layout.
 
 - **Cross-platform feature parity** — every layout, gesture, and
   surface available on macOS is available on iPadOS and iOS (and vice
-  versa) — see [`AGENTS.md`](AGENTS.md) §1.
+  versa) — see [`AGENTS.md`](AGENTS.md) §1. Documented carve-outs:
+  Live Activities (iOS-only) and Picture-in-Picture (iOS / iPadOS).
 - **Live multi-camera grids** — adaptive layout fills the window;
   switch to spotlight, 2×2, 3×3, 4×4, or 5×5 with one click — on every
   platform.
@@ -84,6 +90,38 @@ project layout.
   window while using other apps.
 - **Pinch-to-zoom + drag-to-pan (iOS/iPadOS)** — up to 4× digital zoom
   for inspecting detail. Double-tap to reset.
+- **Stage Manager / multi-window (iPadOS + macOS, 0.5.0)** —
+  "Open in New Window" on any camera row opens an independent scene
+  via `WindowGroup(for: ReolensScene.self)`. Tile cameras side-by-side
+  in Stage Manager on iPad.
+- **Home Screen + Lock Screen + Control Center widgets (0.5.0)** —
+  camera snapshot, last-motion-fired, and overnight-digest widgets on
+  iOS / iPadOS; desktop widgets on macOS. Configurable per camera via
+  `SelectCameraIntent`. No network, no Keychain reads from the
+  extension (AGENTS.md §16).
+- **Live Activities + Dynamic Island (iOS, 0.5.0)** — in-flight
+  motion events appear in compact + expanded + minimal Dynamic Island
+  states; trigger-frame thumbnails live in the App Group container
+  and are purged at the 4 h cap.
+- **Custom recording scrubber (0.5.0)** — the recordings player has
+  a thumbnail rail (one keyframe per 5 s, cached via `ThumbnailCache`
+  with a 500 MB LRU cap), a draggable position cursor with a
+  time-preview bubble, and the native AVPlayerView controls underneath
+  as an accessibility fallback.
+- **Clip bookmarks + MP4 export (0.5.0)** — right-click any recording
+  to bookmark it; the Bookmarks sheet lists, plays, and exports
+  trimmed MP4s via `AVMutableComposition`. Bookmark metadata syncs via
+  iCloud Drive (references only, no media uploaded).
+- **Motion privacy zones (0.5.0)** — visual rectangle editor in
+  per-channel Settings (drag to draw, drag to move, × to delete, up to
+  4 zones). Writes back to the camera via `SetMask`, with graceful
+  local-only fallback when the firmware responds with `rspCode = -9`
+  (not supported).
+- **Overnight digest (0.5.0)** — local notification at a user-
+  configurable hour (default 07:00) summarizing motion events from
+  the previous local-midnight window. Paired with `MotionDigestWidget`
+  on the Home Screen. Tap → digest detail sheet with a 24-hour bar
+  chart, per-camera + per-tag breakdowns.
 - **Shortcuts & Siri** — "Hey Siri, open the Front Door camera in
   Reolens" works on every platform. The intent only stores a camera
   UUID — no credentials cross the intent boundary.
@@ -91,24 +129,41 @@ project layout.
   patrols) from the dedicated control bar.
 - **Rich alarm notifications** — when motion fires, get a notification
   with the trigger frame, not just text.
+- **CloudKit motion-event relay v2 (0.5.0)** — iOS background
+  notifications ride through the user's own iCloud private database.
+  0.5.0 added content-addressed record IDs (real dedup), a token-
+  bucket rate limit per camera (default 30 events / 10 min with a
+  once-per-minute "burst summary" record), and a multi-account guard
+  that surfaces a trust-changed modal when the iCloud account changes.
 - **Two-way talkback** — for Reolink cameras that support it.
 - **Native streaming** — RTSP / FLV / JPEG fallback, hardware-decoded
-  with VideoToolbox.
+  with VideoToolbox. 0.5.0 hardened the H.264 / H.265 decoders against
+  zero-length SPS / PPS / VPS NALs (typed `AssemblerError` instead of
+  a force-unwrap trap).
+- **Liquid Glass throughout (0.5.0)** — toolbars, sidebars, tile
+  badges, popovers, sheets, chips, and HUDs all use the iOS 26 /
+  macOS 26 `.glassEffect()` material via centralized
+  `ReolensGlass` design tokens.
 - **Auto-updates (macOS)** — Sparkle in-app updates from a single
   signed appcast. iOS goes through TestFlight / App Store.
-- **iCloud sync** — camera list, grid layout, channel order, rotations
-  syncs across all your Apple devices. Passwords stay per-device in
-  Keychain (never synced).
+- **iCloud sync** — camera list, grid layout, channel order,
+  rotations sync across all your Apple devices. Passwords stay
+  per-device in Keychain unless the user explicitly opts in to iCloud
+  Keychain Sync (Settings → Privacy → off by default).
 - **Open source** — MIT-licensed, build it yourself if you prefer.
 
 ## System requirements
 
-**macOS app**
-- macOS 14 Sonoma or later
+**macOS app (0.5.0)**
+- macOS 26 Tahoe or later — Liquid Glass + WidgetKit desktop widgets
+  are 26-only APIs. Users on macOS 14/15 should stay on the 0.4.x
+  track, which receives security backports through the 0.5 cycle.
 - Apple Silicon (M-series) or Intel — universal binary
 
-**iPad / iPhone app**
-- iPadOS 18 / iOS 18 or later
+**iPad / iPhone app (0.5.0)**
+- iPadOS 26 / iOS 26 or later — ActivityKit Dynamic Island, Control
+  Center widgets, and Liquid Glass are all 26-only. Users on iOS 18
+  should stay on the 0.4.x track.
 - Any device that runs them
 
 **Both**
@@ -163,7 +218,7 @@ open ReolensiOS.xcodeproj
 # Set the team ID, then ⌘R to a Simulator or device
 ```
 
-Requires Xcode 16 (macOS) / 26 (iOS) + Swift 6.
+Requires Xcode 26 + Swift 6.2.
 
 ## Quick start
 
@@ -191,18 +246,28 @@ Drag tiles to rearrange them. Right-click a tile for "Make primary",
 Layered, dependency-only-downward:
 
 ```
-┌────────────────────────────────────────────────┐
-│ App (SwiftUI views, @Observable state)         │
-├────────────────────────────────────────────────┤
-│ ReolinkBaichuan (port 9000 protocol)           │
-│ ReolinkStreaming (RTSP + VideoToolbox)         │
-├────────────────────────────────────────────────┤
-│ ReolinkAPI (CGI client, models, URLs)          │
-└────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│ App (SwiftUI views, @Observable state, ReolensApp / RootView)    │
+│ AppiOS/ (iOS twin)                                               │
+│ AppiOS/Widgets/, App/Widgets/, AppiOS/Sources/LiveActivities/    │
+├──────────────────────────────────────────────────────────────────┤
+│ AppShared (CameraStore, CameraSession, EventNotifier,            │
+│            SharedContainer, ReolensGlass, ScrubberView,          │
+│            DigestBuilder/Scheduler, ThumbnailCache, …)           │
+├──────────────────────────────────────────────────────────────────┤
+│ ReolinkBaichuan (port 9000 protocol — talkback, alarm push,      │
+│                  findAlarmVideo)                                 │
+│ ReolinkStreaming (RTSP + VideoToolbox + H.264 / H.265 + SDP)     │
+├──────────────────────────────────────────────────────────────────┤
+│ ReolinkAPI (CGI client, Commands, Codable models, StreamURLs)    │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-`ReolinkAPI` knows nothing about SwiftUI, AppKit, or video frameworks — it's
-testable in isolation and ships as a standalone SPM library.
+`ReolinkAPI` knows nothing about SwiftUI, AppKit, or video frameworks —
+it's testable in isolation and ships as a standalone SPM library.
+`AppShared` is the cross-platform behavior layer: same code drives the
+macOS app, the iPadOS / iPhone app, both widget extensions, and the iOS
+Live Activity extension.
 
 ### Concurrency model
 
@@ -218,19 +283,41 @@ testable in isolation and ships as a standalone SPM library.
 ## Repository layout
 
 ```
-Package.swift            — SwiftPM manifest (libs + executable + tests)
-App/                     — SwiftUI executable
-  ReolensApp.swift       — @main, About panel, Check-for-Updates menu
-  State/                 — CameraStore, CameraSession, UpdaterController
-  Views/                 — sidebar, grid, detail, PTZ, settings, About
+Package.swift            — SwiftPM manifest (libs + macOS executable + tests)
+App/                     — macOS SwiftUI executable
+  ReolensApp.swift       — @main, About panel, Check-for-Updates menu,
+                           secondary WindowGroup(for: ReolensScene.self)
+  MenuBar/               — Status-bar item + Recent-events popover
+  Views/                 — sidebar, grid, detail, PTZ, settings, scrubber,
+                           bookmarks, About, CameraSceneHost
+  Widgets/               — macOS desktop WidgetKit extension target
+                           (CameraSnapshot / LastMotion / MotionDigest)
+AppiOS/                  — iOS / iPadOS Xcode project (xcodegen-managed)
+  Sources/               — RootView, iPadSplitShell, iPhoneTabShell,
+                           SingleChannelView, LiveActivities/, etc.
+  Widgets/               — iOS WidgetKit + Control Center + ActivityKit
+                           extension target (5 widget surfaces total)
+  project.yml            — xcodegen spec; run `xcodegen generate` after edits
 Sources/
-  ReolinkAPI/            — CGI client + Codable models (no UI deps)
-  ReolinkStreaming/      — RTSP / VideoToolbox / SDP
+  AppShared/             — cross-platform behavior layer: CameraStore,
+                           CameraSession, EventNotifier, SharedContainer,
+                           ReolensGlass, ScrubberView, DigestBuilder,
+                           DigestScheduler, ThumbnailCache,
+                           PrivacyZoneEditorView, RecordingBookmark,
+                           ClipExporter, MotionEventActivityAttributes…
+  ReolinkAPI/            — CGI client + Codable models + StreamURLs
+                           (no UI deps; ships standalone)
+  ReolinkStreaming/      — RTSP / VideoToolbox / H.264 + H.265 / SDP
   ReolinkBaichuan/       — port-9000 protocol (talkback, push, alarms)
-Tests/
-  ReolinkAPITests/       — Codable + URL builders
-  ReolinkStreamingTests/ — SDP parsing, RTSP digest, codec depacketization
-  ReolinkBaichuanTests/  — Baichuan encryption + framing
+Tests/                   — 158 tests across 43 suites
+  AppSharedTests/        — SharedContainer, MotionEventRelayHardening,
+                           DigestBuilder, ConnectionProgress,
+                           EventNotifier, recording-retry, TLS pinning,
+                           CameraPreview, schema, log redaction…
+  ReolinkAPITests/       — Codable + URL builders + Search retry
+  ReolinkStreamingTests/ — SDP parsing, RTSP digest, codec
+                           depacketization, DecoderHardening
+  ReolinkBaichuanTests/  — Baichuan encryption + framing, XML helpers
   ReolensE2ETests/       — end-to-end integration test (mocked transport)
 Scripts/
   build-app.sh           — assemble .app, embed Sparkle, sign
@@ -238,10 +325,13 @@ Scripts/
   make-icon.swift        — generate icon master from CoreGraphics
   make-dmg.sh            — package .app into a styled DMG
   notarize.sh            — submit to Apple notary + staple
-docs/                    — reolens.io landing page (GitHub Pages)
+  check-versions.sh      — CI gate: macOS + iOS marketing versions match
+  coverage-gate.sh       — CI gate: ≥ 80% line coverage on shared libs
+docs/                    — reolens.io landing page (GitHub Pages),
+                           RELEASE.md + IOS_RELEASE.md runbooks
 dist/homebrew/reolens.rb — Homebrew cask formula template
 .github/workflows/
-  ci.yml                 — build + test + smoke launch on every PR
+  ci.yml                 — build + test + smoke launch + coverage gate
   release.yml            — on tag push: build → notarize → DMG → release
 ```
 
@@ -251,8 +341,15 @@ dist/homebrew/reolens.rb — Homebrew cask formula template
 
 ```sh
 swift build                # libs + app
-swift test                 # 70+ tests
+swift test                 # 158 tests across 43 suites
 ./Scripts/build-app.sh run # bundled .app (needed for Local Network access)
+```
+
+CI also enforces two gates locally runnable:
+
+```sh
+bash Scripts/check-versions.sh  # macOS + iOS marketing versions match
+bash Scripts/coverage-gate.sh   # ≥ 80% coverage on AppShared + Reolink*
 ```
 
 ### Release process
@@ -278,12 +375,70 @@ Implemented as typed `Commands.*` constructors:
 - `PtzCtrl` (all 17 ops including presets, patrol, zoom, focus)
 - `GetLocalLink`, `GetTime`, `GetOsd`, `SetOsd`, `GetHddInfo`
 - `Search` (recordings list + per-day status)
+- `GetEvents` (speculative event-log probe — graceful `-9` fallback)
+- `GetMask` / `SetMask` (0.5.0 — privacy mask rectangles, normalized
+  0…1 coordinates, up to 4 zones)
 
 Adding a new command is mechanical — define a typed param + value model,
 construct a `CGICommand`, and call `client.send(_:as:)`. See
 [Commands.swift](Sources/ReolinkAPI/Commands/Commands.swift) for examples.
 
+Beyond the CGI client, **Baichuan** (port 9000) covers the talkback
+(MSG_ID_201/202 ADPCM duplex), real-time alarm-event push
+(MSG_ID_33 `AlarmEventList`), and `findAlarmVideo` (MSG_ID_272/273/274)
+which supplies the AI tag metadata the CGI `Search` endpoint omits on
+Reolink Home Hub Pro firmware.
+
 ## Roadmap
+
+Shipped in 0.5.0:
+- **Widgets and Live Activities.** Five widget surfaces on iOS / iPadOS
+  (CameraSnapshot / LastMotion / MotionDigest on the Home + Lock Screens,
+  OpenCameraControl on Control Center, and an in-flight motion-event
+  Live Activity for Lock Screen + Dynamic Island). Three desktop widgets
+  on macOS (the iOS-only accessory + Live-Activity surfaces are a
+  documented carve-out per AGENTS.md §1).
+- **Custom recording scrubber (phase 2).** New `ScrubberView` with a
+  thumbnail rail, draggable cursor with time-preview bubble, and
+  background keyframe extraction cached via `ThumbnailCache`.
+- **Stage Manager / multi-window on iPad + macOS.** `WindowGroup(for:
+  ReolensScene.self)` scenes; "Open in New Window" on every camera row
+  (macOS right-click, iPadOS long-press).
+- **Overnight digest.** `DigestScheduler` actor with daily
+  `UNCalendarNotificationTrigger`, configurable hour (default 07:00),
+  `DigestDetailView` sheet showing total / 24-hour bar chart / per-
+  camera + per-tag breakdowns, paired with `MotionDigestWidget`.
+- **Clip bookmarks + MP4 export.** Mark a recording, list / play /
+  delete from the Bookmarks sheet, export trimmed MP4 via
+  `ClipExporter` + `AVMutableComposition`. Bookmark references sync
+  via iCloud Drive.
+- **Motion privacy zones.** Visual rectangle editor with up to 4
+  zones; writes back to the camera via `SetMask` with `-9` graceful
+  fallback to local-only persistence.
+- **Liquid Glass.** Broad adoption across toolbars / sidebars / chips /
+  badges / popovers / sheets via centralized `ReolensGlass` tokens
+  (`.glassEffect()` API on iOS 26 / macOS 26).
+- **CloudKit relay v2.** Content-addressed record IDs, token-bucket
+  rate limiting (30 events / 10 min / camera, with burst-summary
+  records), multi-account guard with trust-changed modal.
+- **Hardening pass.** Force-unwraps removed from H.264 / H.265 decoders
+  + Baichuan talkback audio format; `try?` swallows replaced with
+  logged catches in CGI logout / RTSP TEARDOWN / talkback reset /
+  alarm-video close; AVAudioEngine tap retain cycle fixed.
+- **CI gates.** `Scripts/check-versions.sh` (macOS + iOS marketing
+  versions must match) and `Scripts/coverage-gate.sh` (≥ 80 % line
+  coverage on `AppShared` + `Reolink*` libraries) now block PRs.
+- **Connection robustness overhaul (Theme E).** Parallel DevInfo +
+  GetChannelstatus, jittered exponential backoff with a 30 s overall
+  deadline, sidebar-visible `ConnectionStage` text, Local Network
+  permission probe on iOS, throttled /24 discovery sweep (32 concurrent
+  probes, 1 s timeout).
+- **Recordings list fixes.** `sendCapturingRaw` now performs the
+  loginRequired (`-10`) retry on token expiry + a one-shot transport
+  retry; reload renders the list as soon as main Search returns
+  instead of gating on four sequential CGI calls.
+- **iOS 26 / macOS 26 deployment floor.** Users on iOS 18 / macOS 14
+  stay on the 0.4.x security-backport track. See SECURITY.md.
 
 Shipped in 0.4.1:
 - iOS background notifications via CloudKit motion-event relay
@@ -326,16 +481,11 @@ Shipped in 0.3.0:
 - Picture-in-Picture, pinch-to-zoom, Shortcuts/Siri (iOS/iPadOS)
 - Save Snapshot on every tile
 
-Up next (planned for 0.5):
-- Home Screen / Lock Screen / Control Center widgets and iOS Live
-  Activities for in-flight motion events (motion-event pipeline is
-  ready; needs the widget-extension target setup)
-- Full custom recording scrubber with thumbnail-on-scrub and
-  cross-segment seek (the day-density calendar and segment timeline
-  shipped in 0.4.0 are phase one)
-- Stage Manager / multi-window on iPad
-- "Overnight digest" notification + widget — a once-a-day local summary
-  of motion events while you were away
+Up next (planned for 0.6):
+- Motion-zone scheduling (different zones at different times of day).
+- Cross-day AI event search ("show me every vehicle event last week").
+- Recording-schedule editor (`GetSchedule` / `SetSchedule` exposure).
+- macOS Quick Actions + Spotlight Quick Look for `.reolens` files.
 
 See the [GitHub issues](https://github.com/jestatsio/reolens/issues) for
 the full plan.

@@ -7,6 +7,8 @@ import AppShared
 struct CameraDetailView: View {
     let session: CameraSession
     let focusedChannel: Int?
+    @Environment(CameraStore.self) private var store
+    @State private var passwordEntryEntry: CameraEntry?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -25,11 +27,16 @@ struct CameraDetailView: View {
         }
         .navigationTitle(titleLine)
         .navigationSubtitle(session.deviceInfo?.model ?? session.entry.host)
+        .sheet(item: $passwordEntryEntry) { entry in
+            EnterPasswordSheet(entry: entry)
+        }
     }
 
     @ViewBuilder
     private var content: some View {
-        if let focusedChannel,
+        if case .error = session.status {
+            connectionErrorView
+        } else if let focusedChannel,
            let channel = session.channels.first(where: { $0.channel == focusedChannel }) {
             // Sidebar selecting a channel now opens the SAME detailed view
             // that clicking a grid tile opens — Live / Recordings / Settings
@@ -44,6 +51,35 @@ struct CameraDetailView: View {
         } else {
             ContentUnavailableView("Connecting…", systemImage: "bolt.horizontal")
         }
+    }
+
+    private var connectionErrorView: some View {
+        ContentUnavailableView {
+            Label("Couldn't Connect", systemImage: "exclamationmark.triangle")
+        } description: {
+            Text(connectionErrorMessage)
+                .multilineTextAlignment(.center)
+        } actions: {
+            HStack {
+                Button("Update Password…", systemImage: "key.fill") {
+                    passwordEntryEntry = session.entry
+                }
+                Button("Try Again", systemImage: "arrow.clockwise") {
+                    store.reconnect(session.entry.id)
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+    }
+
+    private var connectionErrorMessage: String {
+        if case .failed(let reason) = session.connectionStage {
+            return reason
+        }
+        if case .error(let message) = session.status {
+            return message
+        }
+        return "Reolens couldn't reach this camera."
     }
 
     private var titleLine: String {
@@ -568,12 +604,14 @@ private struct DragPreview: View {
                 .foregroundStyle(.white)
             Text(channel.name ?? "Channel \(channel.channel + 1)")
                 .font(.callout.weight(.semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(.primary)
                 .lineLimit(1)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(.black.opacity(0.85), in: .rect(cornerRadius: 8))
+        // 0.5.0 Liquid Glass — channel-name pill on the detail
+        // view's PTZ chrome.
+        .glassEffect(.regular, in: .rect(cornerRadius: 8))
         .frame(minWidth: 160)
     }
 }

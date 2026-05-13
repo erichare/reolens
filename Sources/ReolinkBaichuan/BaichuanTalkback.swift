@@ -78,15 +78,23 @@ public actor BaichuanTalkbackSession {
         // 2. Start mic capture and stream ADPCM frames.
         let engine = AVAudioEngine()
         let input = engine.inputNode
-        let inputFormat = input.outputFormat(forBus: 0)
+        _ = input.outputFormat(forBus: 0)
         // Target format: 16 kHz mono 16-bit PCM. AVAudioEngine will route
         // through its converter when we install the tap with this format.
-        let targetFormat = AVAudioFormat(
+        // The initializer is failable on platforms that refuse the requested
+        // configuration; guard rather than force-unwrap so a refused format
+        // surfaces as a typed talkback failure instead of a SIGABRT
+        // (0.5.0 hardening pass).
+        guard let targetFormat = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
             sampleRate: 16000,
             channels: 1,
             interleaved: true
-        )!
+        ) else {
+            state = .failed("Could not build 16 kHz mono Int16 AVAudioFormat")
+            log.error("Talkback aborted: AVAudioFormat init returned nil")
+            throw BaichuanError.unexpectedReply(msgID: BcMessageID.talkConfig, code: 0)
+        }
 
         let bus: AVAudioNodeBus = 0
         input.installTap(onBus: bus, bufferSize: 1024, format: targetFormat) { [weak self] buffer, _ in
@@ -124,7 +132,15 @@ public actor BaichuanTalkbackSession {
                 msgClass: BcConstants.classModernWithOffset,
                 payloadOffset: 0
             )
-            _ = try? await client.sendAndAwait(BcMessage(header: resetHeader, body: Data()), timeout: 3, stage: "talkReset")
+            // Failure during reset isn't fatal — the engine is already
+            // stopped and the camera will GC the talk session on its own
+            // — but record it so an audio-stop regression doesn't disappear
+            // into the void (0.5.0 hardening pass: replace try? swallows).
+            do {
+                _ = try await client.sendAndAwait(BcMessage(header: resetHeader, body: Data()), timeout: 3, stage: "talkReset")
+            } catch {
+                log.error("TalkReset failed during stop: \(String(describing: error), privacy: .public)")
+            }
         }
         state = .stopped
     }

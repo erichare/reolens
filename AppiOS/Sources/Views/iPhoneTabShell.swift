@@ -115,6 +115,14 @@ struct iPhoneTabShell: View {
                 selectedTab = .live
                 liveTabPath = NavigationPath()
                 liveTabPath.append(entry)
+            case .digest:
+                // 0.5.0 Theme A5 — digest tap shows the
+                // `DigestDetailView` sheet bound at the app
+                // entry point (`ReolensiOSApp` watches
+                // `store.pendingDigestDay`). Nothing to do here
+                // — the sheet binding takes care of presentation
+                // independently of the tab shell.
+                break
             }
             store.pendingIntentNavigation = nil
         }

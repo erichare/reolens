@@ -185,9 +185,8 @@ public struct DayTimelineStrip: View {
                     let scrubTime = startOfDay.addingTimeInterval(dayInterval * Double(fraction))
                     Text(scrubTime, format: .dateTime.hour().minute().second())
                         .font(.caption2.weight(.medium).monospacedDigit())
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(.regularMaterial, in: Capsule())
+                        // 0.5.0 Liquid Glass — scrub-position bubble.
+                        .reolensGlassToast()
                         .offset(x: max(0, min(x - 32, stripWidth - 64)), y: -22)
                         .accessibilityHidden(true)
                 }
