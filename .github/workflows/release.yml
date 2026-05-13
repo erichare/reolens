@@ -295,6 +295,27 @@ jobs:
       AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
       AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
       AC_API_KEY_P8_BASE64: ${{ secrets.AC_API_KEY_P8_BASE64 }}
+      # 0.5.0 — Apple Distribution cert + private key for iOS
+      # signing. Without this, `xcodebuild archive` fails with
+      # "Provisioning profile does not include signing certificate"
+      # because the runner has no usable identity for the bundle
+      # the profile references.
+      #
+      # Two paths:
+      #   1. Set IOS_CERTIFICATE_P12_BASE64 (+ IOS_CERTIFICATE_PASSWORD)
+      #      to a dedicated iOS-only .p12.
+      #   2. Reuse MACOS_CERTIFICATE_P12_BASE64 if the maintainer's
+      #      .p12 already contains BOTH identities (common when the
+      #      .p12 was exported from Keychain with all identities
+      #      selected).
+      #
+      # The "Import iOS signing cert" step below tries the dedicated
+      # secret first, falls back to the macOS one.
+      IOS_CERTIFICATE_P12_BASE64: ${{ secrets.IOS_CERTIFICATE_P12_BASE64 }}
+      IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+      MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
       TEAM_ID: ${{ vars.TEAM_ID }}
 
     steps:
@@ -389,6 +410,58 @@ jobs:
               echo "::error::Apple Distribution identity not visible after import" >&2
               exit 1
           }
+
+      # 0.5.0 — Import a signing cert into the runner keychain so
+      # xcodebuild has the private key matching the Apple
+      # Distribution cert that the provisioning profile references.
+      # Without this, `xcodebuild -allowProvisioningUpdates` can't
+      # produce a signed archive — the profile says "use cert X" but
+      # the keychain has no key for cert X.
+      #
+      # Prefers a dedicated IOS_CERTIFICATE_P12_BASE64 secret, falls
+      # back to MACOS_CERTIFICATE_P12_BASE64 (works when the
+      # maintainer exported both identities into a single .p12 from
+      # Keychain Access). Skips silently if neither is present —
+      # build still tries with API-key-only signing.
+      - name: Import iOS signing cert
+        run: |
+          set -euo pipefail
+          if [[ -n "${IOS_CERTIFICATE_P12_BASE64:-}" ]]; then
+            P12_BASE64="${IOS_CERTIFICATE_P12_BASE64}"
+            P12_PASSWORD="${IOS_CERTIFICATE_PASSWORD:-}"
+            echo "==> Importing IOS_CERTIFICATE_P12_BASE64 into runner keychain"
+          elif [[ -n "${MACOS_CERTIFICATE_P12_BASE64:-}" ]]; then
+            P12_BASE64="${MACOS_CERTIFICATE_P12_BASE64}"
+            P12_PASSWORD="${MACOS_CERTIFICATE_PASSWORD:-}"
+            echo "==> Falling back to MACOS_CERTIFICATE_P12_BASE64 (may contain both identities)"
+          else
+            echo "==> No iOS cert secret set — skipping import."
+            echo "    If signing fails, add IOS_CERTIFICATE_P12_BASE64 +"
+            echo "    IOS_CERTIFICATE_PASSWORD secrets."
+            exit 0
+          fi
+          KEYCHAIN="build.keychain"
+          security create-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN}"
+          security default-keychain -s "${KEYCHAIN}"
+          security set-keychain-settings -lut 7200 "${KEYCHAIN}"
+          security unlock-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN}"
+          echo "${P12_BASE64}" | base64 -D > /tmp/ios-cert.p12
+          security import /tmp/ios-cert.p12 -k "${KEYCHAIN}" \
+            -P "${P12_PASSWORD}" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          rm -f /tmp/ios-cert.p12
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "${KEYCHAIN_PASSWORD}" "${KEYCHAIN}"
+
+      # Diagnostic — print every codesigning identity the keychain
+      # exposes to xcodebuild. We can correlate this output against
+      # the certs visible in developer.apple.com to confirm the
+      # profile's cert is reachable.
+      - name: Dump available codesigning identities (diagnostic)
+        run: |
+          echo "==> Codesigning identities in default keychain:"
+          security find-identity -v -p codesigning || true
 
       - name: Install xcodegen
         run: brew install xcodegen
