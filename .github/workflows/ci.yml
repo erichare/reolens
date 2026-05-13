@@ -32,11 +32,20 @@ jobs:
 
       # 0.5.0 floor: Package.swift declares `swift-tools-version: 6.2`
       # plus `.macOS(.v26)` / `.iOS(.v26)`, so we need Xcode 26 (which
-      # ships Swift 6.2+). The runner image rotates available Xcodes,
-      # so we pin to a major version rather than a build number to
-      # stay green when Apple refreshes the image.
-      - name: Select Xcode 26
-        run: sudo xcode-select -s /Applications/Xcode_26.app/Contents/Developer
+      # ships Swift 6.2+). The runner image rotates point releases —
+      # the bare `Xcode_26.app` symlink isn't always present, only
+      # `Xcode_26.3.app` (or 26.x). Glob for the latest 26.x install
+      # so the workflow stays green across image refreshes.
+      - name: Select latest Xcode 26
+        run: |
+          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1)
+          if [ -z "$XCODE_PATH" ]; then
+            echo "No Xcode 26.x found on the runner image." >&2
+            ls /Applications/ | grep -i Xcode || true
+            exit 1
+          fi
+          echo "Selecting $XCODE_PATH"
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
 
       - name: Print toolchain
         run: |
@@ -129,8 +138,16 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Select Xcode 26
-        run: sudo xcode-select -s /Applications/Xcode_26.app/Contents/Developer
+      - name: Select latest Xcode 26
+        run: |
+          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1)
+          if [ -z "$XCODE_PATH" ]; then
+            echo "No Xcode 26.x found on the runner image." >&2
+            ls /Applications/ | grep -i Xcode || true
+            exit 1
+          fi
+          echo "Selecting $XCODE_PATH"
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
 
       - name: Cache .build
         uses: actions/cache@v5
@@ -212,14 +229,20 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # `Xcode_16.app` on macos-15 symlinks to Xcode **16.0** — the
-      # oldest version available — which lacks the iOS 18 simulator
-      # runtime. Even `Xcode.app` (the runner-image default = 16.4)
-      # has stripped down platforms in recent images. Xcode 26.3 ships
-      # iOS 26 SDK + simulator runtime pre-installed and builds our
-      # iOS 18 deployment-target app cleanly.
-      - name: Select Xcode 26.3
-        run: sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
+      # Use the latest Xcode 26.x available on the runner — ships the
+      # iOS 26 SDK + simulator runtime that our deployment-target
+      # 26.0 needs. Older runner images had `Xcode_16.x.app` which
+      # lacks the iOS 26 SDK entirely.
+      - name: Select latest Xcode 26
+        run: |
+          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1)
+          if [ -z "$XCODE_PATH" ]; then
+            echo "No Xcode 26.x found on the runner image." >&2
+            ls /Applications/ | grep -i Xcode || true
+            exit 1
+          fi
+          echo "Selecting $XCODE_PATH"
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
 
       - name: Install xcodegen
         run: brew install xcodegen
