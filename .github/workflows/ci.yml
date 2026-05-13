@@ -53,14 +53,16 @@ jobs:
           fi
           echo "Selecting $XCODE_PATH"
           sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
-          # Pin DEVELOPER_DIR for the rest of the job. The runner
-          # image presets it to the LATEST Xcode (often the beta);
-          # without this override, `xcodebuild` ignores
-          # `xcode-select` and uses the preset path — exactly the
-          # bug that caused "Selecting Xcode_26.5.0.app" to be
-          # followed by `/Applications/Xcode_26.5_beta_2.app/.../
-          # xcodebuild` in a later step.
+          # Pin both DEVELOPER_DIR and PATH for the rest of the job.
+          # The runner image presets BOTH env vars to the LATEST
+          # Xcode (often the beta). `DEVELOPER_DIR` controls
+          # internal xcodebuild behavior; PATH controls which
+          # `xcodebuild` binary gets *executed* in the first place.
+          # Without pinning PATH too, scripts calling `xcodebuild`
+          # unqualified still pick the beta's binary even after
+          # xcode-select + DEVELOPER_DIR point at the stable Xcode.
           echo "DEVELOPER_DIR=$XCODE_PATH/Contents/Developer" >> "$GITHUB_ENV"
+          echo "$XCODE_PATH/Contents/Developer/usr/bin" >> "$GITHUB_PATH"
 
       - name: Print toolchain
         run: |
@@ -179,14 +181,16 @@ jobs:
           fi
           echo "Selecting $XCODE_PATH"
           sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
-          # Pin DEVELOPER_DIR for the rest of the job. The runner
-          # image presets it to the LATEST Xcode (often the beta);
-          # without this override, `xcodebuild` ignores
-          # `xcode-select` and uses the preset path — exactly the
-          # bug that caused "Selecting Xcode_26.5.0.app" to be
-          # followed by `/Applications/Xcode_26.5_beta_2.app/.../
-          # xcodebuild` in a later step.
+          # Pin both DEVELOPER_DIR and PATH for the rest of the job.
+          # The runner image presets BOTH env vars to the LATEST
+          # Xcode (often the beta). `DEVELOPER_DIR` controls
+          # internal xcodebuild behavior; PATH controls which
+          # `xcodebuild` binary gets *executed* in the first place.
+          # Without pinning PATH too, scripts calling `xcodebuild`
+          # unqualified still pick the beta's binary even after
+          # xcode-select + DEVELOPER_DIR point at the stable Xcode.
           echo "DEVELOPER_DIR=$XCODE_PATH/Contents/Developer" >> "$GITHUB_ENV"
+          echo "$XCODE_PATH/Contents/Developer/usr/bin" >> "$GITHUB_PATH"
 
       - name: Cache .build
         uses: actions/cache@v5
@@ -289,14 +293,16 @@ jobs:
           fi
           echo "Selecting $XCODE_PATH"
           sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
-          # Pin DEVELOPER_DIR for the rest of the job. The runner
-          # image presets it to the LATEST Xcode (often the beta);
-          # without this override, `xcodebuild` ignores
-          # `xcode-select` and uses the preset path — exactly the
-          # bug that caused "Selecting Xcode_26.5.0.app" to be
-          # followed by `/Applications/Xcode_26.5_beta_2.app/.../
-          # xcodebuild` in a later step.
+          # Pin both DEVELOPER_DIR and PATH for the rest of the job.
+          # The runner image presets BOTH env vars to the LATEST
+          # Xcode (often the beta). `DEVELOPER_DIR` controls
+          # internal xcodebuild behavior; PATH controls which
+          # `xcodebuild` binary gets *executed* in the first place.
+          # Without pinning PATH too, scripts calling `xcodebuild`
+          # unqualified still pick the beta's binary even after
+          # xcode-select + DEVELOPER_DIR point at the stable Xcode.
           echo "DEVELOPER_DIR=$XCODE_PATH/Contents/Developer" >> "$GITHUB_ENV"
+          echo "$XCODE_PATH/Contents/Developer/usr/bin" >> "$GITHUB_PATH"
 
       - name: Install xcodegen
         run: brew install xcodegen
