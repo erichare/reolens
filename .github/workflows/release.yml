@@ -87,6 +87,16 @@ jobs:
           fi
           echo "Selecting $XCODE_PATH"
           sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          # GitHub's runner images preset `DEVELOPER_DIR` to the
+          # latest installed Xcode (which is the beta this image).
+          # That env var WINS over `xcode-select` for every
+          # subsequent `xcodebuild` lookup, which is why we saw
+          # `Selecting Xcode_26.5.0.app` immediately followed by
+          # `/Applications/Xcode_26.5_beta_2.app/.../xcodebuild`
+          # later in the same job. Pin DEVELOPER_DIR in
+          # $GITHUB_ENV so every step in this job inherits the
+          # selection.
+          echo "DEVELOPER_DIR=$XCODE_PATH/Contents/Developer" >> "$GITHUB_ENV"
 
       # AGENTS.md §13 (0.5.0): macOS + iOS MARKETING_VERSION must
       # align before a tag is allowed to release. Run this *before*
@@ -313,6 +323,16 @@ jobs:
           fi
           echo "Selecting $XCODE_PATH"
           sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          # GitHub's runner images preset `DEVELOPER_DIR` to the
+          # latest installed Xcode (which is the beta this image).
+          # That env var WINS over `xcode-select` for every
+          # subsequent `xcodebuild` lookup, which is why we saw
+          # `Selecting Xcode_26.5.0.app` immediately followed by
+          # `/Applications/Xcode_26.5_beta_2.app/.../xcodebuild`
+          # later in the same job. Pin DEVELOPER_DIR in
+          # $GITHUB_ENV so every step in this job inherits the
+          # selection.
+          echo "DEVELOPER_DIR=$XCODE_PATH/Contents/Developer" >> "$GITHUB_ENV"
 
       - name: Show available iOS SDKs (diagnostic)
         run: xcodebuild -showsdks | grep -i ios

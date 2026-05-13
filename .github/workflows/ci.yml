@@ -53,6 +53,14 @@ jobs:
           fi
           echo "Selecting $XCODE_PATH"
           sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          # Pin DEVELOPER_DIR for the rest of the job. The runner
+          # image presets it to the LATEST Xcode (often the beta);
+          # without this override, `xcodebuild` ignores
+          # `xcode-select` and uses the preset path — exactly the
+          # bug that caused "Selecting Xcode_26.5.0.app" to be
+          # followed by `/Applications/Xcode_26.5_beta_2.app/.../
+          # xcodebuild` in a later step.
+          echo "DEVELOPER_DIR=$XCODE_PATH/Contents/Developer" >> "$GITHUB_ENV"
 
       - name: Print toolchain
         run: |
@@ -171,6 +179,14 @@ jobs:
           fi
           echo "Selecting $XCODE_PATH"
           sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          # Pin DEVELOPER_DIR for the rest of the job. The runner
+          # image presets it to the LATEST Xcode (often the beta);
+          # without this override, `xcodebuild` ignores
+          # `xcode-select` and uses the preset path — exactly the
+          # bug that caused "Selecting Xcode_26.5.0.app" to be
+          # followed by `/Applications/Xcode_26.5_beta_2.app/.../
+          # xcodebuild` in a later step.
+          echo "DEVELOPER_DIR=$XCODE_PATH/Contents/Developer" >> "$GITHUB_ENV"
 
       - name: Cache .build
         uses: actions/cache@v5
@@ -273,6 +289,14 @@ jobs:
           fi
           echo "Selecting $XCODE_PATH"
           sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          # Pin DEVELOPER_DIR for the rest of the job. The runner
+          # image presets it to the LATEST Xcode (often the beta);
+          # without this override, `xcodebuild` ignores
+          # `xcode-select` and uses the preset path — exactly the
+          # bug that caused "Selecting Xcode_26.5.0.app" to be
+          # followed by `/Applications/Xcode_26.5_beta_2.app/.../
+          # xcodebuild` in a later step.
+          echo "DEVELOPER_DIR=$XCODE_PATH/Contents/Developer" >> "$GITHUB_ENV"
 
       - name: Install xcodegen
         run: brew install xcodegen
