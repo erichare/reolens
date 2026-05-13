@@ -286,14 +286,27 @@ else
     SIGN_BUILD_SETTINGS=("CODE_SIGN_IDENTITY=Apple Distribution")
 fi
 
-# Invoke via `xcrun xcodebuild` rather than bare `xcodebuild` so the
-# call resolves through DEVELOPER_DIR / xcode-select instead of PATH.
-# On macos-26 CI runners the bare-PATH lookup keeps resolving to
-# Xcode_26.5_beta_2.app's xcodebuild (PATH preset that wins over
-# $GITHUB_PATH additions), and the beta toolchain doesn't ship the
-# iOS device platform — `generic/platform=iOS` fails with "iOS 26.5
-# is not installed". `xcrun` honors DEVELOPER_DIR regardless.
-xcrun xcodebuild \
+# Invoke xcodebuild via an ABSOLUTE PATH derived from DEVELOPER_DIR.
+#
+# We have to go to this length because the macos-26 CI runner image
+# presets PATH so Xcode_26.5_beta_2.app's bin dir comes FIRST. That
+# preset wins over $GITHUB_PATH additions, AND over xcode-select.
+# Both bare `xcodebuild` and `xcrun xcodebuild` end up resolving to
+# the beta's binaries — and the beta's `xcrun` then forwards back
+# to the beta's `xcodebuild` even with DEVELOPER_DIR=stable. The
+# beta toolchain doesn't ship the iOS device platform, so
+# `generic/platform=iOS` fails with "iOS 26.5 is not installed".
+#
+# An absolute path skips the entire discovery dance:
+#   - bash executes the exact binary we hand it
+#   - that binary uses DEVELOPER_DIR / xcode-select for SDK lookup,
+#     which we've already pinned to the stable Xcode
+#
+# Falls back to bare `xcodebuild` when DEVELOPER_DIR isn't set
+# (local dev — `xcode-select -p` is honored by the bare command).
+XCODEBUILD="${DEVELOPER_DIR:-$(xcode-select -p)}/usr/bin/xcodebuild"
+echo "==> Using xcodebuild at: ${XCODEBUILD}"
+"${XCODEBUILD}" \
     -project "${PROJECT}" \
     -scheme "${SCHEME}" \
     -configuration Release \
@@ -348,8 +361,8 @@ cat > "${EXPORT_OPTIONS}" <<PLIST
 PLIST
 
 echo "==> Exporting .ipa"
-# Same DEVELOPER_DIR-vs-PATH rationale as the archive call above.
-xcrun xcodebuild \
+# Same absolute-path rationale as the archive call above.
+"${XCODEBUILD}" \
     -exportArchive \
     -archivePath "${ARCHIVE_PATH}" \
     -exportPath "${EXPORT_DIR}" \
