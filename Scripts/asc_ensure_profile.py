@@ -92,6 +92,14 @@ FLAVORS: dict[str, Flavor] = {
         bundle_platform="IOS",
         default_profile_name="Reolens iOS App Store",
     ),
+    "IOS_WIDGETS": Flavor(
+        platform_label="iOS App Store (Widgets extension)",
+        profile_type="IOS_APP_STORE",
+        cert_type="DISTRIBUTION",
+        bundle_env_var="IOS_WIDGETS_BUNDLE_ID",
+        bundle_platform="IOS",
+        default_profile_name="Reolens iOS Widgets App Store",
+    ),
     "MAC": Flavor(
         platform_label="macOS Developer ID (Direct)",
         profile_type="MAC_APP_DIRECT",

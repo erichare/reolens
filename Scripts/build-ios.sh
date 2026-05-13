@@ -252,18 +252,35 @@ mkdir -p "${BUILD_DIR}"
 # ~/Library/MobileDevice/Provisioning Profiles/) and prints the profile
 # name on stdout. We capture that name for PROVISIONING_PROFILE_SPECIFIER.
 PROFILE_NAME=""
+WIDGETS_PROFILE_NAME=""
 if [[ -n "${AC_API_KEY_ID:-}" && -n "${AC_API_KEY_P8_PATH:-}" ]]; then
-    echo "==> Ensuring App Store provisioning profile via ASC API"
+    echo "==> Ensuring App Store provisioning profile via ASC API (main app)"
     export PLATFORM=IOS
     export IOS_BUNDLE_ID="${IOS_BUNDLE_ID:-com.reolens.Reolens.iOS}"
     export PROFILE_NAME="${PROFILE_NAME:-Reolens iOS App Store}"
-    # Helper prints two lines: (1) profile name, (2) .mobileprovision path.
-    # We only need the name for the iOS path — xcodebuild's
-    # -allowProvisioningUpdates picks the file up from
-    # ~/Library/MobileDevice/Provisioning Profiles by name.
     HELPER_OUT="$(python3 "${REPO_ROOT}/Scripts/asc_ensure_profile.py")"
     PROFILE_NAME="$(printf '%s\n' "${HELPER_OUT}" | sed -n '1p')"
-    echo "    using profile: ${PROFILE_NAME}"
+    echo "    using main-app profile: ${PROFILE_NAME}"
+
+    # 0.5.0 — the widget extension target has its own bundle id
+    # (com.reolens.Reolens.iOS.Widgets) and Apple requires a
+    # SEPARATE provisioning profile per bundle id. Run the helper
+    # again with PLATFORM=IOS_WIDGETS so the widget extension gets
+    # its own profile registered/created/installed alongside the
+    # main app's.
+    echo "==> Ensuring App Store provisioning profile via ASC API (widget extension)"
+    export PLATFORM=IOS_WIDGETS
+    export IOS_WIDGETS_BUNDLE_ID="${IOS_WIDGETS_BUNDLE_ID:-com.reolens.Reolens.iOS.Widgets}"
+    # `PROFILE_NAME` was set to the main-app's name above. Clear it
+    # so the per-flavor default ("Reolens iOS Widgets App Store")
+    # applies inside asc_ensure_profile.py.
+    unset PROFILE_NAME
+    WIDGETS_HELPER_OUT="$(python3 "${REPO_ROOT}/Scripts/asc_ensure_profile.py")"
+    WIDGETS_PROFILE_NAME="$(printf '%s\n' "${WIDGETS_HELPER_OUT}" | sed -n '1p')"
+    echo "    using widgets profile: ${WIDGETS_PROFILE_NAME}"
+    # Reset PLATFORM so anything downstream that introspects it
+    # (none today, but defensively) sees the canonical iOS value.
+    export PLATFORM=IOS
 fi
 
 echo "==> Archiving for generic/iOS"
@@ -279,6 +296,18 @@ if [[ -n "${PROFILE_NAME}" ]]; then
         "PROVISIONING_PROFILE_SPECIFIER=${PROFILE_NAME}"
         "DEVELOPMENT_TEAM=5M9UT7VQ8Q"
     )
+    # 0.5.0 — override the widget extension target separately
+    # because it has its own bundle id + profile. xcodebuild's
+    # `[target=...]` selector overrides the unscoped settings
+    # above for that specific target only.
+    if [[ -n "${WIDGETS_PROFILE_NAME}" ]]; then
+        SIGN_BUILD_SETTINGS+=(
+            "CODE_SIGN_STYLE[target=ReolensiOSWidgets]=Manual"
+            "CODE_SIGN_IDENTITY[target=ReolensiOSWidgets]=Apple Distribution"
+            "PROVISIONING_PROFILE_SPECIFIER[target=ReolensiOSWidgets]=${WIDGETS_PROFILE_NAME}"
+            "DEVELOPMENT_TEAM[target=ReolensiOSWidgets]=5M9UT7VQ8Q"
+        )
+    fi
 else
     # No API key available — fall back to whatever the project has
     # configured (automatic signing with whatever Apple ID Xcode is
@@ -332,6 +361,14 @@ echo "==> Writing ExportOptions.plist"
 # for the same reason archive does).
 EXPORT_BUNDLE_ID="${IOS_BUNDLE_ID:-com.reolens.Reolens.iOS}"
 EXPORT_PROFILE_NAME="${PROFILE_NAME:-Reolens iOS App Store}"
+# 0.5.0 — emit a second `<key>...</key><string>...</string>` pair
+# for the widget extension target so xcodebuild's `-exportArchive`
+# step signs both the main app and the widget bundle correctly.
+# Without the widgets entry, xcodebuild falls back to automatic
+# signing for the widget extension (which fails on CI for the same
+# "no devices" reason the main app does).
+WIDGETS_BUNDLE_ID="${IOS_WIDGETS_BUNDLE_ID:-com.reolens.Reolens.iOS.Widgets}"
+WIDGETS_PROFILE_NAME_FOR_EXPORT="${WIDGETS_PROFILE_NAME:-Reolens iOS Widgets App Store}"
 cat > "${EXPORT_OPTIONS}" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -351,6 +388,8 @@ cat > "${EXPORT_OPTIONS}" <<PLIST
     <dict>
         <key>${EXPORT_BUNDLE_ID}</key>
         <string>${EXPORT_PROFILE_NAME}</string>
+        <key>${WIDGETS_BUNDLE_ID}</key>
+        <string>${WIDGETS_PROFILE_NAME_FOR_EXPORT}</string>
     </dict>
     <key>uploadSymbols</key>
     <true/>
