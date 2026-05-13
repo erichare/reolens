@@ -354,10 +354,9 @@ fi
 #     which we've already pinned to the stable Xcode
 #
 # Falls back to `xcode-select -p` when DEVELOPER_DIR isn't set.
-# Archive with `-sdk iphoneos` below rather than `-destination
-# generic/platform=iOS`; the destination resolver requires a separately
-# installed iOS platform on Xcode 26.5 even though the iphoneos SDK is
-# present and sufficient for an App Store archive.
+# Archive with both `-sdk iphoneos` and the generic iOS destination.
+# Xcode 26.5's archive action does not infer an archive destination from
+# the SDK alone, but the SDK pin keeps the selected device SDK explicit.
 XCODE_DEVELOPER_DIR="${DEVELOPER_DIR:-$(xcode-select -p)}"
 export DEVELOPER_DIR="${XCODE_DEVELOPER_DIR}"
 XCODEBUILD="${XCODE_DEVELOPER_DIR}/usr/bin/xcodebuild"
@@ -367,6 +366,7 @@ echo "==> Using xcodebuild at: ${XCODEBUILD}"
     -scheme "${SCHEME}" \
     -configuration Release \
     -sdk iphoneos \
+    -destination 'generic/platform=iOS' \
     -archivePath "${ARCHIVE_PATH}" \
     -allowProvisioningUpdates \
     ${AC_AUTH_FLAGS[@]+"${AC_AUTH_FLAGS[@]}"} \
