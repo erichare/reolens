@@ -6,9 +6,14 @@ import AppShared
 
 private let log = Logger(subsystem: "com.reolens.app", category: "ios-talk")
 
-/// Push-to-talk button for iOS/iPadOS. Holding captures mic audio,
+/// Push-to-talk button for iOS / iPadOS. Holding captures mic audio,
 /// ADPCM-encodes 16 kHz mono, and streams to the camera via Baichuan
 /// `MSG_ID_TALK`.
+///
+/// 0.5.1 redesign: big blue circular mic button, centered in its
+/// container. Replaces the previous "Hold to Talk" pill which read
+/// as just another bordered control. The big circle is unmistakable
+/// as a push-to-talk affordance.
 ///
 /// Differences from the macOS counterpart:
 /// - Configures `AVAudioSession` (`.playAndRecord` + voice-chat mode +
@@ -16,7 +21,9 @@ private let log = Logger(subsystem: "com.reolens.app", category: "ios-talk")
 ///   `BaichuanTalkbackSession` to start. macOS doesn't have
 ///   `AVAudioSession`; iOS won't capture mic without an active session
 ///   in a record-capable category.
-/// - 44pt minimum hit target (HIG).
+/// - Hit target is 88 pt (comfortably above the 44 pt HIG minimum,
+///   and intentionally large because push-to-talk needs to be
+///   confidently held).
 /// - Haptic feedback at start/stop.
 struct TalkbackButtonView: View {
     let session: CameraSession
@@ -26,34 +33,49 @@ struct TalkbackButtonView: View {
     @State private var isTalking = false
     @State private var error: String?
 
+    /// 88 pt circle. Comfortable thumb target and visually
+    /// proportional to the live tile that sits above it.
+    private static let diameter: CGFloat = 88
+
     var body: some View {
-        VStack(spacing: 6) {
-            Button { /* gesture below */ } label: {
-                Label(
-                    isTalking ? "Talking…" : "Hold to Talk",
-                    systemImage: isTalking ? "mic.fill" : "mic"
-                )
-                .font(.headline)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 12)
-                .frame(maxWidth: .infinity)
+        VStack(spacing: 8) {
+            ZStack {
+                Circle()
+                    .fill(isTalking ? Color.red : Color.accentColor)
+                    .frame(width: Self.diameter, height: Self.diameter)
+                    .shadow(color: (isTalking ? Color.red : Color.accentColor).opacity(0.4),
+                            radius: isTalking ? 14 : 6,
+                            x: 0,
+                            y: 3)
+                Image(systemName: isTalking ? "mic.fill" : "mic")
+                    .font(.system(size: 36, weight: .semibold))
+                    .foregroundStyle(.white)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
-            .tint(isTalking ? .red : .accentColor)
+            .scaleEffect(isTalking ? 1.06 : 1.0)
+            .animation(.spring(response: 0.28, dampingFraction: 0.7), value: isTalking)
+            .contentShape(Circle())
+            .accessibilityLabel(isTalking ? "Talking — release to stop" : "Hold to talk")
+            .accessibilityAddTraits(.isButton)
             .simultaneousGesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { _ in if !isTalking { Task { await start() } } }
                     .onEnded { _ in if isTalking { Task { await stop() } } }
             )
 
+            Text(isTalking ? "Talking…" : "Hold to talk")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(isTalking ? Color.red : .secondary)
+
             if let error {
                 Text(error)
                     .font(.caption2)
                     .foregroundStyle(.red)
                     .multilineTextAlignment(.center)
+                    .padding(.horizontal, 16)
             }
         }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
     }
 
     private func start() async {

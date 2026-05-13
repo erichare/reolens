@@ -312,7 +312,13 @@ struct CameraGridView: View {
                 }
             },
             preferPreview: !liveGridEnabled,
-            centerCropPreview: centerCrop
+            centerCropPreview: centerCrop,
+            // 0.5.1 — multi-channel grid: force the camera-name
+            // glass badge so users can tell adjacent tiles apart.
+            // Single-camera detail views (`SingleChannelView`) leave
+            // it false because the camera name is already in the
+            // nav title.
+            forcesNameBadge: true
         )
         .id(channel.channel)
         .opacity(draggingChannel == channel.channel ? 0.35 : 1.0)

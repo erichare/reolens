@@ -33,8 +33,8 @@ targets:
       path: Resources/Info.plist
       properties:
         CFBundleDisplayName: Reolens
-        CFBundleShortVersionString: "0.5.0"
-        CFBundleVersion: "8"
+        CFBundleShortVersionString: "0.5.1"
+        CFBundleVersion: "9"
         # iOS 11+ requires apps using asset-catalog icons to also
         # declare CFBundleIconName so the OS / App Store knows which
         # icon set to consult at runtime. Without this key, ASC's
@@ -136,8 +136,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.reolens.Reolens.iOS
         PRODUCT_NAME: Reolens
-        MARKETING_VERSION: "0.5.0"
-        CURRENT_PROJECT_VERSION: "8"
+        MARKETING_VERSION: "0.5.1"
+        CURRENT_PROJECT_VERSION: "9"
         # Same Apple Developer team as the macOS app. Xcode's automatic
         # signing uses this to fetch / create the Apple Distribution
         # certificate and the App Store provisioning profile on first
@@ -187,8 +187,8 @@ targets:
       path: Widgets/Info.plist
       properties:
         CFBundleDisplayName: Reolens Widgets
-        CFBundleShortVersionString: "0.5.0"
-        CFBundleVersion: "8"
+        CFBundleShortVersionString: "0.5.1"
+        CFBundleVersion: "9"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     entitlements:
@@ -200,8 +200,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.reolens.Reolens.iOS.Widgets
         PRODUCT_NAME: ReolensiOSWidgets
-        MARKETING_VERSION: "0.5.0"
-        CURRENT_PROJECT_VERSION: "8"
+        MARKETING_VERSION: "0.5.1"
+        CURRENT_PROJECT_VERSION: "9"
         DEVELOPMENT_TEAM: 5M9UT7VQ8Q
         CODE_SIGN_STYLE: Automatic
         PROVISIONING_PROFILE_SPECIFIER: "$(REOLENS_IOS_WIDGETS_PROFILE_NAME)"
@@ -213,3 +213,19 @@ targets:
         product: AppShared
       - package: Reolens
         product: ReolinkAPI
+    # 0.5.1 — Default the widget scheme to render `cameraSnapshot`
+    # so `xcodebuild -scheme ReolensiOSWidgets ... run` doesn't bail
+    # with `SBAvocadoDebuggingControllerErrorDomain Code=2 "Please
+    # specify the widget kind in the scheme's Environment Variables
+    # using the key '_XCWidgetKind'"`. The extension hosts four
+    # widget kinds; without this env var the simulator host
+    # (SpringBoard) can't pick which one to preview when the
+    # widgets scheme is run standalone. Designers iterating on
+    # other kinds can override the env var locally — Edit Scheme
+    # → Run → Arguments — without losing the default after the
+    # next `xcodegen generate`.
+    scheme:
+      environmentVariables:
+        - variable: _XCWidgetKind
+          value: io.reolens.widget.cameraSnapshot
+          isEnabled: true

@@ -89,7 +89,7 @@ Each new version, walk this list. It takes about 10 minutes.
 
 - [ ] **Tests green on `main`** — check the [CI badge](https://github.com/jestatsio/reolens/actions/workflows/ci.yml). Local sanity:
   ```sh
-  swift test                       # 158 tests, 43 suites at 0.5.0 baseline
+  swift test                       # 183 tests, 49 suites at 0.5.1 baseline
   bash Scripts/check-versions.sh   # macOS + iOS marketing versions match (AGENTS.md §13)
   bash Scripts/coverage-gate.sh    # ≥ 80% coverage on AppShared + Reolink* (AGENTS.md §12)
   ```
@@ -114,7 +114,75 @@ Each new version, walk this list. It takes about 10 minutes.
   ```
 - [ ] **Commit the bumps** as a single `chore(release): vX.Y.Z` commit
 
-### 0.5.0-specific verification
+### 0.5.1-specific verification
+
+The 0.5.1 release surface added the cross-hub All Recordings view,
+per-camera notifications, pre-view bookmarking with background
+auto-download (Wi-Fi by default + cellular toggle), the
+FoundationModels Today digest, two new App Intents, and a hub-grouped
+Live Activity rewrite with push-token registration. Walk this list
+before tagging:
+
+- [ ] **Sidebar click targets (macOS + iPadOS).** Click far-right
+  whitespace of every camera row; selects + jumps to Live.
+  Channel sub-rows under a hub do the same.
+- [ ] **iPad detail-pane refresh.** Switch from Cam A → Cam B in the
+  sidebar; right column updates within ~1 s. Re-select Cam A;
+  still rebuilds cleanly (force-reset is intentional).
+- [ ] **Camera-name badge default.** Fresh install with no
+  per-channel overrides: every live tile shows no name badge.
+  Settings → Display → "Show camera name on live feed" restores
+  it; flipping back hides again.
+- [ ] **Battery camera one-tap wake.** Tap a sleeping battery tile;
+  "Waking…" spinner appears, RTSP starts within ~5 s. Double-tap
+  is debounced (no second wake).
+- [ ] **Hub auto-expand + iCloud sync.** Add a fresh hub on Mac;
+  channels visible immediately under it. Collapse on Mac; iPad
+  reflects within ~30 s. Sign out of iCloud on a third device;
+  local UserDefaults fallback keeps the app working.
+- [ ] **All Recordings view (hub-scoped).** Open the macOS toolbar
+  "All Recordings" button on a multi-channel hub; ≤3 s to load
+  an 8-channel NVR's day. Camera pill narrows; AI pill stacks
+  (AND).
+- [ ] **All Recordings (cross-hub).** With ≥ 2 hubs configured,
+  open the same sheet; chips prefix the hub display name so
+  same-named cameras stay distinguishable. Bounded fan-out caps
+  network at ~6 in-flight requests.
+- [ ] **Today digest.** With Apple Intelligence available, the
+  digest at the top of All Recordings reads as FM-generated
+  (sparkles icon). On a non-AI device or with Apple Intelligence
+  disabled, falls back to "N clips today: …" (chart icon).
+- [ ] **Per-camera notifications.** Settings → Notifications →
+  Per-camera shows every camera with a toggle, default ON.
+  Flip one off on Mac; iPad reflects within ~30 s. Motion event
+  on the muted camera does NOT produce a notification.
+- [ ] **Pre-view bookmark (iOS).** Long-press a recording row →
+  Bookmark; row's bookmark appears in the Bookmarks sheet without
+  the clip having been played. Trailing-swipe also works.
+- [ ] **Background bookmark download.** Bookmark a clip; check
+  `~/Library/Application Support/Reolens/bookmarks/<id>.mp4`
+  appears after the background download finishes. Background
+  the app for 5 minutes; the clip still finishes downloading.
+- [ ] **Cellular toggle.** Default OFF. With cellular off and
+  Wi-Fi disabled, bookmark a clip; URLSession waits for Wi-Fi
+  rather than burning cellular. Flip the toggle on; next enqueue
+  proceeds on cellular.
+- [ ] **App Intents — Open Camera, Show Today's Events, Mute.**
+  Use Spotlight / Siri to fire each. "Hey Siri, mute the
+  Driveway camera" silences it; "Hey Siri, show today's events
+  from Front Door" lands in the filtered All Recordings.
+- [ ] **Hub-grouped Live Activity.** Trigger motion on channel 0
+  of a Hub; activity appears. Trigger motion on channel 1 of the
+  same Hub; the existing activity *updates* (no second activity
+  appears in Dynamic Island). `coalescedCount` bumps. Stale
+  date is now 8 h from start (was 4 h in 0.5.0).
+- [ ] **Live Activity push tokens.** After triggering an activity,
+  inspect the iCloud Drive
+  `Documents/live-activity-tokens/live-activity-tokens_v1.json`
+  file — entry exists with `activityID`, `cameraID`,
+  `pushTokenHex`. Ending the activity removes the entry.
+
+### 0.5.0-specific verification (still applies)
 
 The 0.5.0 release surface added widgets, Live Activities, and
 multi-window scenes. Walk this verification list before tagging:

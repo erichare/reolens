@@ -84,8 +84,23 @@ struct ReolensiOSApp: App {
                     }
                 }
                 .onChange(of: scenePhase) { _, phase in
-                    if phase == .active {
+                    switch phase {
+                    case .active:
                         store.applyPendingIntentFocus()
+                        // 0.5.1 — start (or resume) the background
+                        // snapshot prefetcher. Idempotent. Battery
+                        // cameras are skipped inside the prefetcher
+                        // — see CameraPreviewPrefetcher header.
+                        CameraPreviewPrefetcher.shared.start(store: store)
+                        Task { await CameraPreviewPrefetcher.shared.sweepNow() }
+                    case .background:
+                        // Cancel the periodic loop while backgrounded
+                        // so we don't fire snapshot HTTP calls iOS
+                        // would interrupt anyway. The next .active
+                        // transition kicks an immediate sweep.
+                        CameraPreviewPrefetcher.shared.stop()
+                    default:
+                        break
                     }
                 }
                 // Drain when a focus request is written AFTER the

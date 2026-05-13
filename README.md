@@ -30,7 +30,25 @@ AVFoundation/VideoToolbox — no Electron, no Java, no QtWebEngine. Cold
 launches in under a second; battery-friendly; feels like every other native
 Apple app on each platform.
 
-**As of v0.5.0**, Reolens is the largest release the project has shipped:
+**As of v0.5.1**, Reolens layers a big "polish + platform integration"
+release on top of 0.5.0's widget surface. Headlines: a hub-scoped
+(and cross-hub) **All Recordings view** with AI-event + camera filter
+pills, **per-camera notification toggles** (default on, iCloud-synced),
+**pre-view bookmarks** that auto-download in the background (Wi-Fi by
+default with a Settings toggle for cellular), an on-device
+**FoundationModels "Today" digest** at the top of All Recordings
+(deterministic count-based fallback on devices without Apple
+Intelligence), **hub-grouped Live Activities** with an 8-hour stale
+window + relevance score + push-token registration via
+`pushType: .token`, two new **App Intents** (Show Today's Events,
+Mute Camera Notifications) alongside Open Camera, **iPad layout fix**
+(stale detail-pane resolved), **whole-row click targets** on the
+macOS / iPadOS sidebar, **battery cameras wake on a single tap**,
+**hubs auto-expand by default** with collapse state synced via
+NSUbiquitousKeyValueStore, and **interactive Liquid Glass** on filter
+chips.
+
+0.5.0 had been the largest release the project had shipped:
 **Home Screen + Lock Screen + Control Center widgets** on iOS / iPadOS
 plus **desktop widgets on macOS**, **iOS Live Activities + Dynamic
 Island** for in-flight motion events, a **custom recording scrubber**
@@ -111,7 +129,23 @@ project layout.
 - **Clip bookmarks + MP4 export (0.5.0)** — right-click any recording
   to bookmark it; the Bookmarks sheet lists, plays, and exports
   trimmed MP4s via `AVMutableComposition`. Bookmark metadata syncs via
-  iCloud Drive (references only, no media uploaded).
+  iCloud Drive (references only, no media uploaded). **0.5.1: bookmark
+  via long-press / right-click / trailing-swipe without playing
+  first; the clip auto-downloads in the background via a dedicated
+  `URLSessionConfiguration.background(...)` session so it's available
+  offline.** Wi-Fi only by default; Settings → Background downloads
+  toggles cellular.
+- **All Recordings view (0.5.1)** — hub-scoped (and cross-hub) feed
+  above the existing per-camera tab. AI event pill + new camera pill
+  stack; both filter the same list. Bounded fan-out (6-way concurrent
+  globally) keeps multi-hub setups polite to the network.
+- **Per-camera notifications (0.5.1)** — silence individual cameras
+  from Settings → Notifications. Default ON for every camera; state
+  syncs across your Apple devices via `NSUbiquitousKeyValueStore`.
+- **Today digest (0.5.1)** — on-device `FoundationModels` summary
+  of the day's events at the top of All Recordings. Deterministic
+  count-based fallback on devices without Apple Intelligence —
+  no network calls either way.
 - **Motion privacy zones (0.5.0)** — visual rectangle editor in
   per-channel Settings (drag to draw, drag to move, × to delete, up to
   4 zones). Writes back to the camera via `SetMask`, with graceful
@@ -124,7 +158,9 @@ project layout.
   chart, per-camera + per-tag breakdowns.
 - **Shortcuts & Siri** — "Hey Siri, open the Front Door camera in
   Reolens" works on every platform. The intent only stores a camera
-  UUID — no credentials cross the intent boundary.
+  UUID — no credentials cross the intent boundary. **0.5.1 adds**
+  *Show Today's Events* (optionally per camera) and *Mute Camera
+  Notifications* (per-camera flip, iCloud-synced).
 - **Full PTZ** — all 17 PTZ ops (pan, tilt, zoom, focus, presets,
   patrols) from the dedicated control bar.
 - **Rich alarm notifications** — when motion fires, get a notification
@@ -143,7 +179,8 @@ project layout.
 - **Liquid Glass throughout (0.5.0)** — toolbars, sidebars, tile
   badges, popovers, sheets, chips, and HUDs all use the iOS 26 /
   macOS 26 `.glassEffect()` material via centralized
-  `ReolensGlass` design tokens.
+  `ReolensGlass` design tokens. **0.5.1** adopts the interactive
+  variant on filter chips so they morph subtly on press.
 - **Auto-updates (macOS)** — Sparkle in-app updates from a single
   signed appcast. iOS goes through TestFlight / App Store.
 - **iCloud sync** — camera list, grid layout, channel order,
@@ -154,16 +191,19 @@ project layout.
 
 ## System requirements
 
-**macOS app (0.5.0)**
+**macOS app (0.5.1)**
 - macOS 26 Tahoe or later — Liquid Glass + WidgetKit desktop widgets
   are 26-only APIs. Users on macOS 14/15 should stay on the 0.4.x
   track, which receives security backports through the 0.5 cycle.
 - Apple Silicon (M-series) or Intel — universal binary
 
-**iPad / iPhone app (0.5.0)**
+**iPad / iPhone app (0.5.1)**
 - iPadOS 26 / iOS 26 or later — ActivityKit Dynamic Island, Control
-  Center widgets, and Liquid Glass are all 26-only. Users on iOS 18
-  should stay on the 0.4.x track.
+  Center widgets, Liquid Glass, and on-device `FoundationModels`
+  inference are all 26-only. Users on iOS 18 should stay on the
+  0.4.x track. FoundationModels-driven features (e.g. the Today
+  digest) fall back to deterministic count-based summaries on
+  devices without Apple Intelligence.
 - Any device that runs them
 
 **Both**
@@ -304,12 +344,22 @@ Sources/
                            ReolensGlass, ScrubberView, DigestBuilder,
                            DigestScheduler, ThumbnailCache,
                            PrivacyZoneEditorView, RecordingBookmark,
-                           ClipExporter, MotionEventActivityAttributes…
+                           ClipExporter, MotionEventActivityAttributes,
+                           AllRecordingsView, AllRecordingsLoader,
+                           CameraFilterBar, RecordingsCache,
+                           HubExpansionStore,
+                           CameraNotificationPreferences,
+                           PerCameraNotificationsSection,
+                           BookmarkAutoDownloader,
+                           BackgroundDownloadPreferences,
+                           EventSummarizer,
+                           LiveActivityPushTokenRegistry,
+                           AppIntents/CameraIntents…
   ReolinkAPI/            — CGI client + Codable models + StreamURLs
                            (no UI deps; ships standalone)
   ReolinkStreaming/      — RTSP / VideoToolbox / H.264 + H.265 / SDP
   ReolinkBaichuan/       — port-9000 protocol (talkback, push, alarms)
-Tests/                   — 158 tests across 43 suites
+Tests/                   — 183 tests across 49 suites
   AppSharedTests/        — SharedContainer, MotionEventRelayHardening,
                            DigestBuilder, ConnectionProgress,
                            EventNotifier, recording-retry, TLS pinning,
@@ -341,7 +391,7 @@ dist/homebrew/reolens.rb — Homebrew cask formula template
 
 ```sh
 swift build                # libs + app
-swift test                 # 158 tests across 43 suites
+swift test                 # 183 tests across 49 suites
 ./Scripts/build-app.sh run # bundled .app (needed for Local Network access)
 ```
 
@@ -390,6 +440,57 @@ which supplies the AI tag metadata the CGI `Search` endpoint omits on
 Reolink Home Hub Pro firmware.
 
 ## Roadmap
+
+Shipped in 0.5.1:
+- **All Recordings view (hub-scoped + cross-hub).** Parallel
+  `Commands.search` fan-out (bounded to 6 concurrent) merges every
+  channel's recordings into one chronological feed. AI event pill +
+  new camera pill stack with AND semantics. **Rows paint
+  progressively** as each (session, channel) `Search` resolves — no
+  blocking on the slowest channel — and results cache via a new
+  `RecordingsCache` actor (30 s today, 1 h past days) so re-opening
+  the sheet for the same day paints instantly. **Bookmarks appear
+  inline** in the feed with a yellow pill + offline-ready check;
+  a header toggle hides them. **Explicit Close button** on the
+  control bar — `.keyboardShortcut(.cancelAction)` mirrors every
+  other overlay sheet in the app.
+- **Per-camera notification toggles.** Default ON; mute individual
+  cameras from Settings. Syncs across Apple devices via
+  `NSUbiquitousKeyValueStore`.
+- **Pre-view bookmarks + background auto-download.** Long-press /
+  right-click / trailing-swipe to bookmark a recording without
+  playing it. The clip downloads in the background via a dedicated
+  `URLSessionConfiguration.background(...)` session and is available
+  offline. Wi-Fi only by default; cellular toggle in Settings →
+  Background downloads.
+- **FoundationModels "Today" digest.** On-device summary of the
+  day's events at the top of All Recordings. Deterministic
+  count-based fallback on devices without Apple Intelligence.
+- **Two new App Intents.** *Show Today's Events* (optionally per
+  camera) and *Mute Camera Notifications* (per-camera flip,
+  iCloud-synced) join `OpenCameraIntent`.
+- **Hub-grouped Live Activities.** Multiple events on the same hub
+  merge into a single LA (dedup tags + bump `coalescedCount`)
+  rather than stacking. 8-hour stale window (was 4h), relevance
+  score for Dynamic Island prominence, push-token registration via
+  `pushType: .token` (tokens persisted to iCloud Drive for a
+  future server-driven sender).
+- **iPad detail-pane stale-state fix.** Collapsed 3-column
+  NavigationSplitView to 2-column; `NavigationStack` keyed off
+  `selectedSection` so any sidebar tap hard-resets navigation.
+- **Whole-row click targets.** Sidebar rows on macOS / iPadOS now
+  apply `.contentShape(.rect)` — click anywhere in the row.
+- **Battery cameras: one-tap auto-wake.** Tapping the sleeping tile
+  triggers the Baichuan wake call directly; the "Connect" button
+  is gone.
+- **Hubs auto-expand by default.** New `HubExpansionStore`
+  (NSUbiquitousKeyValueStore-backed) inverts the old expanded-set
+  to a collapsed-set so first-launch surfaces all channels.
+- **Camera-name badge hidden by default.** Settings → Display
+  toggle restores it. Preserves Reolink's burned-in date / time /
+  name OSD at the top-left of every frame.
+- **Interactive Liquid Glass on filter chips.**
+  `.glassEffect(.regular.interactive())` for press-state morph.
 
 Shipped in 0.5.0:
 - **Widgets and Live Activities.** Five widget surfaces on iOS / iPadOS

@@ -115,6 +115,8 @@ struct MultiChannelGridView: View {
         store.orderedChannels(for: session.entry.id, channels: session.liveChannels)
     }
 
+    @State private var showingAllRecordings = false
+
     var body: some View {
         // When the rich viewer is open, pause ALL grid tiles. Reolink Home Hub
         // has a small per-device concurrent-session cap; running 20+ sub-stream
@@ -130,6 +132,23 @@ struct MultiChannelGridView: View {
         .sheet(item: $richViewerChannel) { channel in
             RichViewerSheet(session: session, channel: channel)
         }
+        // 0.5.1 — All Recordings sheet, reachable from the grid
+        // control bar so users with multi-channel hubs can browse
+        // every camera's recordings in one chronological feed. When
+        // multiple Reolink hubs are configured, the sheet aggregates
+        // across all of them — bounded fan-out keeps the network
+        // polite. Single-hub users get the same UX as before.
+        .sheet(isPresented: $showingAllRecordings) {
+            AllRecordingsView(sessions: orderedAllSessions)
+                .frame(minWidth: 720, minHeight: 480)
+        }
+    }
+
+    /// Cross-hub session list for the All Recordings sheet. Honors the
+    /// user's sidebar ordering so the camera filter pills match the
+    /// list above.
+    private var orderedAllSessions: [CameraSession] {
+        store.orderedCameras().compactMap { store.session(for: $0.id) }
     }
 
     /// Preset picker + helpful hint about drag-to-rearrange. Lives above the
@@ -236,6 +255,12 @@ struct MultiChannelGridView: View {
             // duplicate of the native toggle `NavigationSplitView` puts
             // in the toolbar via `SidebarCommands()`. Drop it — users
             // get a single canonical sidebar control.
+            Button {
+                showingAllRecordings = true
+            } label: {
+                Label("All Recordings", systemImage: "clock.arrow.circlepath")
+            }
+            .help("Browse recordings across every camera on this hub. New in 0.5.1.")
             Button {
                 FullscreenViewer.shared.presentGrid(session: session, store: store)
             } label: {
@@ -530,7 +555,15 @@ struct MultiChannelGridView: View {
             },
             paused: richViewerOpen,
             preferPreview: !liveGridEnabled,
-            centerCropPreview: centerCrop
+            centerCropPreview: centerCrop,
+            // 0.5.1 — multi-channel grid: force the camera-name
+            // glass badge so users can tell adjacent tiles apart at
+            // a glance. Single-camera detail views (which use
+            // `ChannelDetailContent.liveTab`'s tile) leave this
+            // false because the name is already in the header /
+            // toolbar and the badge would collide with Reolink's
+            // own burned-in OSD timestamp.
+            forcesNameBadge: true
         )
         // Force a fresh view (and therefore a fresh `LiveCameraTile`
         // @State + `LiveVideoPlayer`) whenever a slot's channel changes.

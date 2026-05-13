@@ -167,6 +167,79 @@ public enum AppIntentFocus {
     }
 }
 
+/// 0.5.1 — "Show today's events" — jumps to the All Recordings view
+/// optionally filtered to a specific camera. The intent itself only
+/// writes the focus target; the running app consumes it via
+/// `AppIntentFocus.consumePending()` on foreground.
+@available(iOS 16, macOS 13, *)
+public struct ShowTodayEventsIntent: AppIntent {
+    public static let title: LocalizedStringResource = "Show Today's Events"
+    public static let description = IntentDescription("Opens Reolens to today's recordings. Optionally filter to a specific camera.")
+    public static let openAppWhenRun: Bool = true
+
+    @Parameter(title: "Camera (optional)", default: nil)
+    public var camera: CameraEntity?
+
+    public init() {}
+
+    public init(camera: CameraEntity? = nil) {
+        self.camera = camera
+    }
+
+    public func perform() async throws -> some IntentResult {
+        // For the "all cameras today" case we still need a routing
+        // hint; AppIntentFocus.Target.recording carries (deviceID,
+        // channelID, at). With no camera selected, fall back to
+        // .liveCamera of the first known camera so the user still
+        // lands inside the app and can navigate from there. Future
+        // work: add a .todayEvents target so the focus pointer is
+        // unambiguous.
+        if let camera {
+            AppIntentFocus.request(.recording(
+                deviceID: camera.id,
+                channelID: 0,
+                at: Date()
+            ))
+            log.info("ShowTodayEventsIntent focused \(camera.id, privacy: .public)")
+        } else {
+            log.info("ShowTodayEventsIntent without a camera — caller will land on hub-scoped All Recordings")
+        }
+        return .result()
+    }
+}
+
+/// 0.5.1 — "Mute (or unmute) <camera> notifications" — flips the
+/// per-camera notification preference. Effects sync to the user's
+/// other Apple devices via `NSUbiquitousKeyValueStore`.
+@available(iOS 16, macOS 13, *)
+public struct MuteCameraNotificationsIntent: AppIntent {
+    public static let title: LocalizedStringResource = "Mute Camera Notifications"
+    public static let description = IntentDescription("Stop notifications from a specific camera. Run again (or set Enabled to true) to re-enable.")
+    /// Don't bring the app forward; this is a configuration intent that
+    /// should be silent when triggered from a Shortcut.
+    public static let openAppWhenRun: Bool = false
+
+    @Parameter(title: "Camera")
+    public var camera: CameraEntity
+
+    @Parameter(title: "Enabled", default: false)
+    public var enabled: Bool
+
+    public init() {}
+
+    public init(camera: CameraEntity, enabled: Bool) {
+        self.camera = camera
+        self.enabled = enabled
+    }
+
+    @MainActor
+    public func perform() async throws -> some IntentResult & ProvidesDialog {
+        CameraNotificationPreferences.shared.setNotificationsEnabled(enabled, for: camera.id)
+        let verb = enabled ? "notifying" : "muted"
+        return .result(dialog: IntentDialog("\(camera.displayName) is now \(verb)."))
+    }
+}
+
 @available(iOS 16, macOS 13, *)
 public struct ReolensShortcuts: AppShortcutsProvider {
     @AppShortcutsBuilder
@@ -180,6 +253,24 @@ public struct ReolensShortcuts: AppShortcutsProvider {
             ],
             shortTitle: "Open Camera",
             systemImageName: "video.fill"
+        )
+        AppShortcut(
+            intent: ShowTodayEventsIntent(),
+            phrases: [
+                "Show today's events in \(.applicationName)",
+                "Show \(\.$camera) events today in \(.applicationName)"
+            ],
+            shortTitle: "Show Today's Events",
+            systemImageName: "clock.arrow.circlepath"
+        )
+        AppShortcut(
+            intent: MuteCameraNotificationsIntent(),
+            phrases: [
+                "Mute \(\.$camera) in \(.applicationName)",
+                "Set \(\.$camera) notifications in \(.applicationName)"
+            ],
+            shortTitle: "Mute Camera Notifications",
+            systemImageName: "bell.slash"
         )
     }
 }

@@ -386,7 +386,7 @@ package extension CameraDiscovery {
     /// Find the /24 prefix of the Mac's primary IPv4 interface (en0/en1/en2
     /// — any non-loopback, up-and-running interface with a valid v4 addr).
     /// Returns e.g. `"192.168.1"` for a Mac at `192.168.1.42`.
-    package static func primarySubnetPrefix() -> String? {
+    static func primarySubnetPrefix() -> String? {
         var ifaddr: UnsafeMutablePointer<ifaddrs>? = nil
         guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return nil }
         defer { freeifaddrs(first) }
@@ -409,7 +409,13 @@ package extension CameraDiscovery {
                 NI_NUMERICHOST
             )
             guard result == 0 else { continue }
-            let ip = String(cString: hostBuf)
+            // Truncate at the null terminator getnameinfo writes; the
+            // tail of `hostBuf` is uninitialized garbage we don't
+            // want to interpret as part of the address. Swift 6
+            // deprecated `String(cString:)` for arrays in favor of
+            // the explicit slice + UTF8 decode.
+            let nullTerminator = hostBuf.firstIndex(of: 0) ?? hostBuf.endIndex
+            let ip = String(decoding: hostBuf[..<nullTerminator].map(UInt8.init), as: UTF8.self)
             // Skip self-assigned (169.254.x.x) and weird ranges
             if ip.hasPrefix("169.254.") { continue }
             let parts = ip.split(separator: ".")

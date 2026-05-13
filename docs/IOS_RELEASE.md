@@ -106,7 +106,7 @@ duplicates).
 
 ## Bumping the iOS version
 
-`MARKETING_VERSION` (the user-facing version, e.g. `0.5.0`) lives in
+`MARKETING_VERSION` (the user-facing version, e.g. `0.5.1`) lives in
 `AppiOS/project.yml`. Bump it there for major changes; CI handles the
 build number automatically.
 
@@ -114,7 +114,7 @@ build number automatically.
 # AppiOS/project.yml
 settings:
   base:
-    MARKETING_VERSION: "0.5.1"   # ← edit here
+    MARKETING_VERSION: "0.5.2"   # ← edit here
 ```
 
 `MARKETING_VERSION` here MUST match `App/Info.plist`

@@ -20,32 +20,25 @@ struct CameraListView: View {
         List(selection: $store.selection) {
             Section("Devices") {
                 ForEach(displayedCameras) { entry in
-                    DeviceSidebarRow(entry: entry, passwordEntryEntry: $passwordEntryEntry)
-                        .opacity(draggingDevice == entry.id ? 0.35 : 1.0)
-                        .jiggle(isActive: isReordering)
-                        .onLongPressGesture(minimumDuration: 0.7) {
-                            if !isReordering {
-                                withAnimation(.easeIn(duration: 0.2)) { isReordering = true }
-                            }
-                        }
-                        .draggable(DeviceDragPayload(deviceID: entry.id)) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "video.fill")
-                                    .foregroundStyle(.white)
-                                Text(entry.displayName)
-                                    .foregroundStyle(.white)
-                                    .lineLimit(1)
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(.black.opacity(0.85), in: .rect(cornerRadius: 6))
-                            .onAppear { draggingDevice = entry.id }
-                            .onDisappear { draggingDevice = nil }
-                        }
-                        .dropDestination(for: DeviceDragPayload.self) { payload, _ in
-                            guard let source = payload.first, source.deviceID != entry.id else { return false }
-                            return store.reorderCamera(source: source.deviceID, before: entry.id)
-                        }
+                    // 0.5.1 — drag / drop / long-press modifiers used
+                    // to wrap the whole `DeviceSidebarRow`, but with
+                    // hubs auto-expanded by default those modifiers
+                    // also covered the child channel rows inside the
+                    // DisclosureGroup, intercepting clicks before
+                    // `List(selection:)` could process them. They now
+                    // live INSIDE `DeviceSidebarRow`, scoped to the
+                    // device label only — channel children stay
+                    // cleanly tappable. The reorder-mode helpers (jiggle
+                    // + opacity-while-dragging) still wrap the row
+                    // because they don't touch hit-testing.
+                    DeviceSidebarRow(
+                        entry: entry,
+                        passwordEntryEntry: $passwordEntryEntry,
+                        isReordering: $isReordering,
+                        draggingDevice: $draggingDevice
+                    )
+                    .opacity(draggingDevice == entry.id ? 0.35 : 1.0)
+                    .jiggle(isActive: isReordering)
                 }
             }
         }
@@ -90,6 +83,8 @@ struct DeviceSidebarRow: View {
     @Environment(CameraStore.self) private var store
     let entry: CameraEntry
     @Binding var passwordEntryEntry: CameraEntry?
+    @Binding var isReordering: Bool
+    @Binding var draggingDevice: UUID?
 
     var body: some View {
         let session = store.session(for: entry.id)
@@ -105,17 +100,67 @@ struct DeviceSidebarRow: View {
             DisclosureGroup(isExpanded: bindingForExpansion(deviceID: entry.id)) {
                 ForEach(channels) { channel in
                     ChannelSidebarRow(deviceID: entry.id, channel: channel)
+                        // 0.5.1 — extend the hit-test region to the full
+                        // row so clicking anywhere in the channel row
+                        // (text, status dot, trailing whitespace)
+                        // selects the channel. `List(selection:)`
+                        // honors `.contentShape(.rect)` for selection
+                        // hit-testing on macOS sidebars.
+                        .contentShape(.rect)
                         .tag(SidebarSelection.channel(deviceID: entry.id, channel: channel.channel))
                 }
             } label: {
-                DeviceRowLabel(entry: entry, session: session, channelCount: channels.count)
-                    .tag(SidebarSelection.device(entry.id))
-                    .contextMenu { contextMenuContent(hasSession: session != nil) }
+                deviceLabel(session: session, channelCount: channels.count)
             }
         } else {
-            DeviceRowLabel(entry: entry, session: session, channelCount: channels.count)
-                .tag(SidebarSelection.device(entry.id))
-                .contextMenu { contextMenuContent(hasSession: session != nil) }
+            deviceLabel(session: session, channelCount: channels.count)
+        }
+    }
+
+    /// 0.5.1 — Drag-and-drop is gated on `isReordering` so the
+    /// modifier doesn't intercept ordinary clicks. Sequence of fixes:
+    /// 1. Drag/drop used to wrap the whole `DeviceSidebarRow` (which
+    ///    includes the DisclosureGroup children); moved inside so it
+    ///    only covered the hub label.
+    /// 2. Even then, `.draggable` on the device label was eating
+    ///    clicks (interpreted as drag-starts) for users who clicked
+    ///    with even slight mouse movement — the user-reported "Home
+    ///    Hub click is difficult". Now the modifier only applies in
+    ///    reorder mode, entered explicitly from the toolbar's
+    ///    "Rearrange Devices" menu item. `.dropDestination` stays
+    ///    always-on because it's inert outside an active drag, so
+    ///    a hub can still accept a dragged sibling regardless of
+    ///    whether *this* row is also a drag source.
+    /// The 0.7 s long-press shortcut into reorder mode is gone —
+    /// it was redundant with the toolbar menu and added gesture
+    /// latency to every click on the device label.
+    @ViewBuilder
+    private func deviceLabel(session: CameraSession?, channelCount: Int) -> some View {
+        let label = DeviceRowLabel(entry: entry, session: session, channelCount: channelCount)
+            .contentShape(.rect)
+            .tag(SidebarSelection.device(entry.id))
+            .contextMenu { contextMenuContent(hasSession: session != nil) }
+            .dropDestination(for: DeviceDragPayload.self) { payload, _ in
+                guard let source = payload.first, source.deviceID != entry.id else { return false }
+                return store.reorderCamera(source: source.deviceID, before: entry.id)
+            }
+        if isReordering {
+            label.draggable(DeviceDragPayload(deviceID: entry.id)) {
+                HStack(spacing: 6) {
+                    Image(systemName: "video.fill")
+                        .foregroundStyle(.white)
+                    Text(entry.displayName)
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.black.opacity(0.85), in: .rect(cornerRadius: 6))
+                .onAppear { draggingDevice = entry.id }
+                .onDisappear { draggingDevice = nil }
+            }
+        } else {
+            label
         }
     }
 
@@ -144,14 +189,13 @@ struct DeviceSidebarRow: View {
         }
     }
 
-    /// Expanded state is per-device, persisted in-memory only.
+    /// Per-device expand/collapse state. 0.5.1 — hubs auto-expand on
+    /// first sight; collapse state syncs across the user's devices via
+    /// `HubExpansionStore` (NSUbiquitousKeyValueStore-backed).
     private func bindingForExpansion(deviceID: UUID) -> Binding<Bool> {
         Binding(
-            get: { store.expandedDevices.contains(deviceID) },
-            set: { isOpen in
-                if isOpen { store.expandedDevices.insert(deviceID) }
-                else { store.expandedDevices.remove(deviceID) }
-            }
+            get: { store.hubExpansion.isExpanded(deviceID: deviceID) },
+            set: { store.hubExpansion.setExpanded($0, for: deviceID) }
         )
     }
 }
@@ -249,24 +293,15 @@ struct ChannelSidebarRow: View {
         .contextMenu {
             OpenInNewWindowButton(scene: .camera(id: deviceID, channel: channel.channel))
         }
-        // Make the sidebar row a drag source carrying the same
-        // `ChannelDragPayload` the grid tiles use. Dropping it onto any
-        // grid tile reorders the persisted `channelOrder` via the
-        // existing `reorder(deviceID:source:before:allChannels:)` helper,
-        // so the dragged camera lands at the target slot. Works for any
-        // layout (Adaptive / Spotlight / fixed) without per-layout glue.
-        .draggable(ChannelDragPayload(channel: channel.channel)) {
-            HStack(spacing: 6) {
-                Image(systemName: "video.fill")
-                    .foregroundStyle(.white)
-                Text(channel.name ?? "Channel \(channel.channel + 1)")
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(.black.opacity(0.85), in: .rect(cornerRadius: 6))
-        }
+        // 0.5.1: `.draggable` was previously on this row so users
+        // could drag a sidebar channel onto a grid tile to reorder
+        // the grid. Removed because — combined with macOS auto-
+        // expanded hubs — it flakily intercepted clicks as the
+        // start of a drag, leaving some channels unselectable on
+        // routine taps. Drag-to-reorder still works from the grid
+        // tiles themselves (`ChannelDragPayload` is emitted by
+        // `LiveCameraTile`); the sidebar shortcut is a niche
+        // power-user affordance not worth breaking selection over.
     }
 }
 

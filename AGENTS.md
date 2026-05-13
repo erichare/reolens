@@ -14,14 +14,15 @@ Any user-visible feature shipped on one Apple platform must work on the others. 
 
 When you add a feature, ship it everywhere or open a tracking issue for the missing platform in the same PR.
 
-**Documented carve-outs (0.5.0):**
+**Documented carve-outs (current as of 0.5.1):**
 
 - Sparkle auto-update — macOS only (iOS uses TestFlight / App Store).
 - Picture-in-Picture — iOS / iPadOS only (no macOS analog).
 - Menu-bar mode + Launch at Login — macOS only.
 - Local-network Bonjour discovery sheet — historical iOS-only, gained macOS parity in 0.5.0.
-- **iOS Live Activities + Dynamic Island** — iOS / iPadOS only (ActivityKit has no macOS equivalent; macOS users see the menu-bar mode + desktop widget instead). Added in 0.5.0.
+- **iOS Live Activities + Dynamic Island** — iOS / iPadOS only (ActivityKit has no macOS equivalent; macOS users see the menu-bar mode + desktop widget instead). Added in 0.5.0; 0.5.1 widens to hub-grouped semantics + APNs push-token registration (`pushType: .token`).
 - **Widgets** — ship on both platforms (Home Screen / Lock Screen / Control Center on iOS, desktop widgets on macOS). No carve-out needed for widgets themselves.
+- **FoundationModels on-device inference (0.5.1)** — ships on both platforms (iOS 26 / macOS 26 SDK floor) but availability is device-dependent (Apple Intelligence-eligible hardware only). `EventSummarizer` falls back to a deterministic count-based summary when `SystemLanguageModel.default.availability` is not `.available`. The fallback is a documented behavior, not a carve-out — both code paths ship on both platforms.
 
 ## 2. Native libraries on each platform
 
@@ -35,7 +36,7 @@ See `Sources/ReolinkStreaming/Player/LiveVideoView.swift` for the canonical exam
 
 **Cross-platform image bridging (0.5.0):** the `ScrubberView` thumbnail rail uses a `PlatformImage` typealias (`NSImage` on macOS, `UIImage` on iOS) with a small `jpegData(quality:)` extension in `Sources/AppShared/ScrubberView.swift`. Reach for the same typealias pattern before adding a fresh `#if`.
 
-**Liquid Glass tokens (0.5.0):** every glass-surface adoption goes through `Sources/AppShared/ReolensGlass.swift` — `reolensGlassBadge`, `reolensGlassCard`, `reolensGlassToolbar`, `reolensGlassToast`, `reolensGlassChip`, `reolensGlassPanel`. New surfaces use one of those rather than calling `.glassEffect(...)` directly, so a future design tweak is a one-file change.
+**Liquid Glass tokens (0.5.0):** every glass-surface adoption goes through `Sources/AppShared/ReolensGlass.swift` — `reolensGlassBadge`, `reolensGlassCard`, `reolensGlassToolbar`, `reolensGlassToast`, `reolensGlassChip`, `reolensGlassPanel`. New surfaces use one of those rather than calling `.glassEffect(...)` directly, so a future design tweak is a one-file change. **0.5.1 update:** `reolensGlassChip` now applies the interactive variant (`.glassEffect(.regular.interactive())`) on iOS 26 / macOS 26 so pills morph on press — if you need a non-interactive chip variant later, fork a sibling token rather than adding a parameter to this one.
 
 **Multi-window scenes (0.5.0):** the `ReolensScene` enum + `WindowGroup(for: ReolensScene.self)` declared on both `ReolensApp` and `ReolensiOSApp` is the only path for opening a camera in its own window. Reuse `CameraSceneHost` (macOS) / `CameraSceneHostiOS` (iOS) for additional scene types rather than spinning up an ad-hoc `WindowGroup`.
 
@@ -70,6 +71,16 @@ Behavior:
 - **On:** writes set `kSecAttrSynchronizable: true`. The user's existing local-only passwords are migrated to the synced side via `Keychain.migrate(accounts:toSync:)` so the toggle isn't ambient — it takes effect immediately.
 
 Don't add a third state ("partial" / "per-camera"). The opt-in is one flag for the whole device.
+
+### Per-camera notification mute (added in 0.5.1)
+
+Per-camera notification on/off is a separate, much narrower opt-out from the iCloud Keychain Sync flag. The semantic is:
+
+- Default: every camera notifies.
+- The user can flip individual cameras off (e.g. an indoor camera during the day).
+- State syncs across the user's devices via `NSUbiquitousKeyValueStore` (the "mute set") so the choice is consistent — muting on Mac mutes on iPad.
+
+This is allowed to be per-camera because the data is non-credential and the user-experience requirement (silence one room without silencing everything) doesn't have a one-flag analog. `CameraNotificationPreferences` is the single source of truth; the `EventNotifier.notify(...)` dispatch path consults it off the main actor through `isNotificationsEnabledOffMainActor(for:)` so busy hubs don't hop the MainActor on every alarm event.
 
 ## 5. Privacy
 
@@ -113,6 +124,14 @@ When you bump the schema, write the migration in the PR description.
 - `MaskSettings` / `MaskArea` — privacy-zone wire model for `GetMask` / `SetMask`. Lives under `Sources/ReolinkAPI/Models/Mask.swift`; tied to Reolink firmware, not a versioned format on our side, but `Sources/AppShared/PrivacyZoneEditorModel.swift` stores the editor's working set in `UserDefaults` keyed by `com.reolens.privacyZones.<deviceID>.<channel>` — bump that key prefix on any breaking shape change.
 - `LatestSnapshots.plist` and `RecentMotionEvents.plist` (in the App Group) carry implicit schema versioning via the Codable types in `Sources/AppShared/SharedContainer.swift`. Add new optional fields freely; never rename or remove an existing field without bumping the file name.
 
+**0.5.1 introductions:**
+
+- `live-activity-tokens_v1.json` — APNs push tokens per in-flight Live Activity. Stored in the iCloud Drive ubiquity container (`Documents/live-activity-tokens/`). Schema is a `[String: Token]` dict keyed by `Activity.id`; bump the suffix on any breaking shape change. The future server-driven Live Activity sender (or a peer Apple device acting as relay) consumes this; the local Baichuan-event-driven path keeps running regardless.
+- `com.reolens.collapsedHubs` (`NSUbiquitousKeyValueStore` key) — `[String]` of UUIDs for currently-collapsed sidebar hub groups. Empty set is the default "every hub expanded" state. UserDefaults mirror for offline / no-iCloud devices.
+- `com.reolens.mutedCameraNotifications` (`NSUbiquitousKeyValueStore` key) — `[String]` of UUIDs for cameras the user has silenced. Default empty = every camera notifies.
+- `com.reolens.bookmarkDL.allowCellular` (`UserDefaults` key) — bool, default false. **Device-local only** (no iCloud sync) — cellular plans differ device-to-device, so per-device is the safer default.
+- `com.reolens.showCameraNameOnFeed` (`UserDefaults` key) — bool, default false (badges hidden). Per-channel `CameraEntry.hiddenAppBadgeChannels` (in synced `cameras.json`) overrides per-channel; the global is device-local because the feature reads as a display preference.
+
 Bump the suffix on any breaking field change in a future minor release; never overload an existing `_v1` field's semantics.
 
 ## 8. Swift 6 concurrency
@@ -151,7 +170,7 @@ Bump the suffix on any breaking field change in a future minor release; never ov
 ## 12. Testing
 
 - Use Swift Testing (`import Testing`, `@Test`, `#expect`). New tests should not be XCTest.
-- 80% coverage **target** on `AppShared`, `ReolinkAPI`, `ReolinkStreaming`, and `ReolinkBaichuan`. The 0.5.0 release introduced `Scripts/coverage-gate.sh` and wired it into CI to surface the numbers on every PR; it runs as `continue-on-error: true` today because the same release expanded `AppShared` with substantial SwiftUI view code (ScrubberView, DigestDetailView, PrivacyZoneEditorView, ReolensGlass, ChannelSettingsView, …) that isn't unit-testable in isolation, dragging the measured floor below 80%. Flipping the gate to **enforced** is a one-line workflow change (`continue-on-error: false`) once the AppShared view surface has matching test coverage and the protocol libraries climb above the floor. Treat the report as a hard pre-merge signal in spirit even though CI doesn't block on it yet — every new test added is expected to move the needle.
+- 80% coverage **target** on `AppShared`, `ReolinkAPI`, `ReolinkStreaming`, and `ReolinkBaichuan`. The 0.5.0 release introduced `Scripts/coverage-gate.sh` and wired it into CI to surface the numbers on every PR; it runs as `continue-on-error: true` today because the same release expanded `AppShared` with substantial SwiftUI view code (ScrubberView, DigestDetailView, PrivacyZoneEditorView, ReolensGlass, ChannelSettingsView, AllRecordingsView, TodayDigestRow, PerCameraNotificationsSection, …) that isn't unit-testable in isolation, dragging the measured floor below 80%. Flipping the gate to **enforced** is a one-line workflow change (`continue-on-error: false`) once the AppShared view surface has matching test coverage and the protocol libraries climb above the floor. Treat the report as a hard pre-merge signal in spirit even though CI doesn't block on it yet — every new test added is expected to move the needle. 0.5.1 baseline is **183 tests across 49 suites**.
 - No real network in tests. Use fixture servers (`URLProtocol` stubs, in-process HTTP servers) or protocol-injected fakes.
 - Each test gets a fresh instance — `init`/`deinit`, no shared mutable state.
 - Tests must be deterministic. If a test depends on timing, it's wrong.
@@ -198,11 +217,12 @@ The WidgetKit and ActivityKit extensions are special-purpose bundles with signif
 - No CloudKit. No camera traffic. No Reolink RTSP / CGI. If the extension needs data, the main app pre-publishes it.
 - No `print()` or `os_log` of host names, IPs, or credentials — same logging rules as the main app (§11), enforced by review.
 
-**Live Activity lifecycle:**
+**Live Activity lifecycle (updated in 0.5.1):**
 
-- One activity per camera. A fresh fire on the same camera ends the previous activity and starts a new one — activities never stack.
-- 4-hour auto-dismiss is the ActivityKit cap, also the trigger-frame purge window. `SharedContainer.purgeStaleActivityAssets()` runs on every activity start to keep the container bounded.
-- Replace-on-event semantics, not append. A burst of events on one camera collapses into one activity with a `coalescedCount`, not five activities.
+- One activity **per hub** (not per camera). A fresh fire on the **same hub** *merges* into the existing activity — dedup `aiTags`, bump `coalescedCount`, refresh `lastUpdatedAt`. Activities never stack; previous-per-camera replacement semantics from 0.5.0 are gone.
+- 8-hour stale-date window (was 4h in 0.5.0). `SharedContainer.purgeStaleActivityAssets()` still runs on every activity start to keep the trigger-frame directory bounded.
+- `Activity.request(... pushType: .token)` opts the activity in to APNs push updates; iOS hands us a token via `for await tokenData in activity.pushTokenUpdates`, which `MotionEventActivityController` forwards to `LiveActivityPushTokenRegistry`. The registry persists tokens to iCloud Drive (`live-activity-tokens_v1.json`) for a future server-driven sender to consume. Until that sender exists, the local Baichuan-event-driven `update(...)` path is still the only updater — push wiring is purely additive.
+- `relevanceScore` is recency-decayed (linear over the stale window) so Dynamic Island prefers the currently-active hub when multiple activities are running.
 
 **Why this matters:** widgets and Live Activities run in user-visible OS-managed surfaces (Home Screen, Lock Screen, Dynamic Island). A leaked URL or credential here is visible system-wide. The constraints above are deliberate and non-negotiable. AGENTS.md §3, §5, §11 all apply double in this directory.
 

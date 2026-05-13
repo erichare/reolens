@@ -39,7 +39,7 @@ public struct HubEventEnvelope: Decodable, Sendable {
 }
 
 package extension HubEvent {
-    package init?(json: AnyJSON) {
+    init?(json: AnyJSON) {
         guard let dict = json.dictionary else { return nil }
         // Try to extract start/end timestamps under any of several names.
         let startCandidates = ["StartTime", "startTime", "start", "BeginTime"]

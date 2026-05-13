@@ -240,6 +240,13 @@ public final class EventNotifier {
     ) async {
         let (title, body, throttleKey) = format(event: event, cameraName: cameraName)
         guard !title.isEmpty else { return }
+        // 0.5.1 — per-camera notification toggle (defaults to ON,
+        // synced across devices via NSUbiquitousKeyValueStore). The
+        // off-main-actor read avoids hopping the MainActor for every
+        // alarm event on a busy hub.
+        guard CameraNotificationPreferences.isNotificationsEnabledOffMainActor(for: cameraID) else {
+            return
+        }
 
         let relayAllowed: Bool
         #if os(macOS)

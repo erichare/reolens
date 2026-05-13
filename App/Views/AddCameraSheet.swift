@@ -133,7 +133,10 @@ private struct AutoDetectPane: View {
         progress = 0
         selectedDevice = nil
         devices = []
-        subnetLabel = await CameraDiscovery.primarySubnetPrefix() ?? ""
+        // `primarySubnetPrefix()` is synchronous — calling it through
+        // `await` was a holdover from when it was actor-isolated.
+        // Drop the redundant await to silence the compiler warning.
+        subnetLabel = CameraDiscovery.primarySubnetPrefix() ?? ""
         let found = await CameraDiscovery.shared.scan(progress: { p in
             Task { @MainActor in self.progress = p }
         })

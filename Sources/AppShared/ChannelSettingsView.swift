@@ -1,6 +1,11 @@
 import SwiftUI
 import ReolinkAPI
 import ReolinkBaichuan
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
 /// Per-channel settings — currently OSD (on-screen display) toggles for the
 /// camera-name and time overlays the camera bakes into the video stream,
@@ -25,6 +30,14 @@ public struct ChannelSettingsView: View {
     /// the camera through the existing `SetOsd` privacy-mask param.
     @State private var privacyZones = PrivacyZoneEditorModel()
     @State private var privacyZonesDirty = false
+    /// 0.5.1 — backdrop image rendered behind the privacy-zone
+    /// editor so the user is drawing on top of the actual camera
+    /// frame rather than a black rectangle. Loaded from
+    /// `CameraPreviewService`'s snapshot cache; if nothing is cached
+    /// we fetch a fresh `cmd=Snap` (waking the camera first when
+    /// it's battery-powered, mirroring `CameraPreviewImage.refresh`).
+    @State private var privacyBackground: PrivacyZoneBackgroundImage?
+    @State private var isLoadingPrivacyBackground = false
 
     public init(session: CameraSession, channel: ChannelStatus) {
         self.session = session
@@ -93,14 +106,33 @@ public struct ChannelSettingsView: View {
                 Text("Drag on the preview to mask regions from motion detection. Drag a zone to move it; tap the × to remove. Up to \(PrivacyZoneEditorModel.maxZones) zones per camera.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                PrivacyZoneEditorView(
-                    model: Binding(get: { privacyZones }, set: { newValue in
-                        privacyZones = newValue
-                        privacyZonesDirty = true
-                    }),
-                    backgroundImage: nil
-                )
-                .frame(maxWidth: .infinity)
+                ZStack(alignment: .topTrailing) {
+                    PrivacyZoneEditorView(
+                        model: Binding(get: { privacyZones }, set: { newValue in
+                            privacyZones = newValue
+                            privacyZonesDirty = true
+                        }),
+                        backgroundImage: privacyBackground
+                    )
+                    .frame(maxWidth: .infinity)
+                    if isLoadingPrivacyBackground, privacyBackground == nil {
+                        // Brief progress overlay while we fetch a
+                        // fresh `cmd=Snap` because the cache is
+                        // empty (first-launch / never-viewed
+                        // channel). Auto-clears the moment the
+                        // image arrives or the load fails.
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Fetching preview…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(.thinMaterial, in: .capsule)
+                        .padding(8)
+                    }
+                }
                 HStack {
                     Button("Reset zones") {
                         privacyZones = PrivacyZoneEditorModel()
@@ -131,9 +163,16 @@ public struct ChannelSettingsView: View {
                         store.setAppBadgeHidden(!shown, deviceID: session.entry.id, channel: channel.channel)
                     }
                 ))
-                Text("Reolens normally shows the camera name and a motion / AI indicator over each live tile. Turn off if you want the cleanest possible image, or if the camera's own date / time / name overlay (configured in the OSD section above) is fighting for the same corner. New in 0.4.1.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                .disabled(!store.showCameraNameOnFeed)
+                if store.showCameraNameOnFeed {
+                    Text("Reolens can show the camera name and a motion / AI indicator over this tile. Turn off for the cleanest possible image, or if the camera's own date / time / name overlay (configured in the OSD section above) is fighting for the same corner.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("App badges over video are globally hidden (new default in 0.5.1). Enable them under Settings → Display first, then this per-channel toggle takes effect.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
             if let info = session.deviceInfo {
                 Section("Device") {
@@ -157,11 +196,70 @@ public struct ChannelSettingsView: View {
             supportedAITypes = []
             privacyZones = PrivacyZoneEditorModel()
             privacyZonesDirty = false
+            privacyBackground = nil
             loadPrivacyZones()                       // local cache
+            // Kick the snapshot load in parallel with the OSD / AI
+            // fetches; it's an independent network call so there's
+            // no reason to serialize. Detached so the OSD fetch
+            // below doesn't have to wait on a slow `cmd=Snap`.
+            let backgroundLoad = Task { await loadPrivacyBackground() }
             await loadOsd()
             await loadSupportedAITypes()
             await loadPrivacyZonesFromCamera()       // camera truth (if supported)
+            _ = await backgroundLoad.value
         }
+    }
+
+    /// 0.5.1 — Provide the privacy-zone editor with a real backdrop
+    /// to draw on top of. Fast path reads from the
+    /// `CameraPreviewService` JPEG cache (populated by the live
+    /// player, the periodic prefetcher, or a previous render of
+    /// `CameraPreviewImage`). Slow path falls back to a fresh
+    /// `cmd=Snap` fetch, waking battery cameras first so the JPEG
+    /// endpoint actually has a live camera to respond from.
+    private func loadPrivacyBackground() async {
+        if let cached = CameraPreviewService.shared.cachedData(
+            cameraID: session.entry.id,
+            channel: channel.channel
+        ), let image = Self.makeBackground(from: cached) {
+            privacyBackground = image
+            return
+        }
+        isLoadingPrivacyBackground = true
+        defer { isLoadingPrivacyBackground = false }
+        // Wake battery / asleep cameras before hitting cmd=Snap.
+        // Mirrors the prepare-for-fetch path that
+        // `CameraPreviewImage` uses; without it the snap endpoint
+        // returns nothing or a long-stale frame.
+        if session.isBatteryPoweredOrAsleep(channel: channel.channel),
+           let baichuan = session.baichuanClient {
+            _ = try? await baichuan.wakeBatteryCamera(channelID: UInt8(channel.channel))
+        }
+        guard let url = await session.snapshotURL(channel: channel.channel) else { return }
+        let bytes = await CameraPreviewService.shared.refresh(
+            snapshotURL: url,
+            cameraID: session.entry.id,
+            channel: channel.channel
+        )
+        guard let bytes, let image = Self.makeBackground(from: bytes) else { return }
+        privacyBackground = image
+    }
+
+    /// Decode raw JPEG bytes into the cross-platform
+    /// `PrivacyZoneBackgroundImage` wrapper. The wrapper is a thin
+    /// `NSImage` / `UIImage` shim — there is no SwiftUI `Image`
+    /// initializer that accepts raw `Data`, so we go through the
+    /// platform image type before re-wrapping.
+    nonisolated private static func makeBackground(from data: Data) -> PrivacyZoneBackgroundImage? {
+        #if canImport(UIKit)
+        guard let img = UIImage(data: data) else { return nil }
+        return PrivacyZoneBackgroundImage(uiImage: img)
+        #elseif canImport(AppKit)
+        guard let img = NSImage(data: data) else { return nil }
+        return PrivacyZoneBackgroundImage(nsImage: img)
+        #else
+        return nil
+        #endif
     }
 
     /// Composite identity used by `.task(id:)` so switching cameras

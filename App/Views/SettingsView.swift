@@ -26,9 +26,16 @@ struct SettingsView: View {
     }
 
     private var generalTab: some View {
-        Form {
+        @Bindable var store = store
+        return Form {
             LabeledContent("Cameras configured") {
                 Text("\(store.cameras.count)")
+            }
+            Section("Display") {
+                Toggle("Show camera name on live feed", isOn: $store.showCameraNameOnFeed)
+                Text("New in 0.5.1. Reolink cameras burn their own date / time / name overlay into the top of the frame, so by default Reolens hides its own camera-name badge to avoid covering it. Turn this on if your cameras have OSD off and you want the label back.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Section("Grid previews") {
                 Toggle("Live previews in grid", isOn: $liveGridEnabled)
@@ -36,6 +43,7 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            BackgroundDownloadsSection()
             Section("Run in the menu bar") {
                 Toggle("Run in the menu bar when closed", isOn: $menuBarMode)
                     .onChange(of: menuBarMode) { _, newValue in
@@ -96,6 +104,7 @@ struct SettingsView: View {
             }
             .disabled(!notifier.enabled)
             NotificationCategoriesSection(notifier: notifier)
+            PerCameraNotificationsSection()
             OvernightDigestSection()
             Section("System permission") {
                 permissionRow

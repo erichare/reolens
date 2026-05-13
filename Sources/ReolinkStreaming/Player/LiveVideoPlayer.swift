@@ -348,19 +348,28 @@ public final class LiveVideoPlayer {
             didSetTimebase = true
         }
 
-        if displayLayer.status == .failed {
-            log.error("DisplayLayer failed before enqueue: \(self.displayLayer.error?.localizedDescription ?? "nil", privacy: .public). Flushing.")
-            displayLayer.flush()
+        // 0.5.1 — migrated from the direct
+        // `AVSampleBufferDisplayLayer.{status, error, flush(),
+        // isReadyForMoreMediaData, enqueue(_:)}` accessors that
+        // Apple deprecated in macOS 15 / iOS 17 to the
+        // `sampleBufferRenderer` shim. Same runtime behavior; same
+        // compositor; just the supported surface. Our deployment
+        // floor is macOS 26 / iOS 26 so the new accessor is
+        // unconditionally available.
+        let renderer = displayLayer.sampleBufferRenderer
+        if renderer.status == .failed {
+            log.error("DisplayLayer failed before enqueue: \(renderer.error?.localizedDescription ?? "nil", privacy: .public). Flushing.")
+            renderer.flush()
             didSetTimebase = false
         }
-        guard displayLayer.isReadyForMoreMediaData else {
+        guard renderer.isReadyForMoreMediaData else {
             droppedSampleCount += 1
             if droppedSampleCount == 1 || droppedSampleCount % 60 == 0 {
                 log.error("DisplayLayer not ready; dropped \(self.droppedSampleCount) sample(s)")
             }
             return
         }
-        displayLayer.enqueue(sample)
+        renderer.enqueue(sample)
         enqueuedSampleCount += 1
         // Feed the same sample to a parallel VT session so we have a
         // decoded CVPixelBuffer available for snapshot. See the
@@ -377,7 +386,7 @@ public final class LiveVideoPlayer {
         // Log first sample + every 60 thereafter so we can see continuous
         // forward progress in the log stream.
         if enqueuedSampleCount == 1 || enqueuedSampleCount % 60 == 0 {
-            log.info("Enqueued \(self.enqueuedSampleCount) samples. status=\(self.displayLayer.status.rawValue) error=\(self.displayLayer.error?.localizedDescription ?? "nil", privacy: .public)")
+            log.info("Enqueued \(self.enqueuedSampleCount) samples. status=\(renderer.status.rawValue) error=\(renderer.error?.localizedDescription ?? "nil", privacy: .public)")
         }
     }
 

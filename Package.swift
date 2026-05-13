@@ -67,7 +67,12 @@ let package = Package(
             // notifications, downloads, Keychain. Anything that does NOT
             // require AppKit/UIKit lives here.
             name: "AppShared",
-            dependencies: ["ReolinkAPI", "ReolinkBaichuan"],
+            // 0.5.1 — `AllRecordingsView` and the recording-row
+            // helpers import `ReolinkStreaming` for `StreamURLs`.
+            // Declared explicitly here so a clean build resolves
+            // cleanly and the iOS Xcode build's dependency-scan
+            // warning stops firing.
+            dependencies: ["ReolinkAPI", "ReolinkStreaming", "ReolinkBaichuan"],
             path: "Sources/AppShared",
             swiftSettings: [
                 .enableUpcomingFeature("ExistentialAny")
@@ -88,7 +93,7 @@ let package = Package(
             // the main Reolens target keeps `swift build` clean and
             // prevents the @main collision between
             // `ReolensApp` and `ReolensWidgetsBundle`.
-            exclude: ["Info.plist", "Reolens.entitlements", "Widgets"],
+            exclude: ["Info.plist", "Reolens.entitlements", "Reolens.dev.entitlements", "Widgets"],
             swiftSettings: [
                 // StrictConcurrency is implicit at swift-tools-version 6.0;
                 // enabling it explicitly is rejected by the toolchain.

@@ -92,21 +92,21 @@ public enum ClipExporter {
         guard let exporter = AVAssetExportSession(asset: composition, presetName: preset) else {
             throw ExportError.exportSessionUnavailable
         }
-        exporter.outputURL = outputURL
-        exporter.outputFileType = .mp4
         exporter.shouldOptimizeForNetworkUse = true
 
-        await exporter.export()
-        switch exporter.status {
-        case .completed:
+        // 0.5.1 — migrated from the deprecated callback-based
+        // `export()` + `status` / `error` polling to the iOS 18 /
+        // macOS 15 `export(to:as:)` async-throws API. Failure now
+        // surfaces as a thrown Error rather than a sentinel state
+        // we have to read after the fact. Same on-disk result;
+        // cleaner control flow.
+        do {
+            try await exporter.export(to: outputURL, as: .mp4)
             return ExportResult(outputURL: outputURL, durationSeconds: totalDuration)
-        case .failed:
-            let detail = exporter.error?.localizedDescription ?? "unknown export failure"
-            throw ExportError.exportFailed(detail)
-        case .cancelled:
-            throw ExportError.exportFailed("cancelled")
-        default:
-            throw ExportError.exportFailed("status=\(exporter.status.rawValue)")
+        } catch let error as CancellationError {
+            throw ExportError.exportFailed("cancelled (\(error))")
+        } catch {
+            throw ExportError.exportFailed(error.localizedDescription)
         }
     }
 }

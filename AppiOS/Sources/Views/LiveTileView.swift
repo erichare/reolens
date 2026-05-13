@@ -41,6 +41,14 @@ struct LiveTileView: View {
     /// strip in a 16:9 cell. Adaptive grid gives dual-lens cells their
     /// own 32:9 aspect, so it leaves this false.
     var centerCropPreview: Bool = false
+    /// 0.5.1 — When true, always render the camera-name glass badge
+    /// regardless of the user's "Show camera name on live feed"
+    /// setting. Set by multi-channel grid call sites so users can
+    /// tell tiles apart at a glance; single-camera detail views pass
+    /// false because the camera name is already in the toolbar / nav
+    /// title and the badge would just collide with the camera's
+    /// own OSD timestamp.
+    var forcesNameBadge: Bool = false
 
     @Environment(CameraStore.self) private var store
     @State private var player: LiveVideoPlayer?
@@ -48,6 +56,11 @@ struct LiveTileView: View {
     @State private var isVisible = false
     /// Brief HUD shown after a snapshot completes. nil = no HUD.
     @State private var snapshotHUD: SnapshotHUDState?
+    /// 0.5.1 — drives the visual feedback while a one-tap battery-camera
+    /// wake is in flight. The Baichuan wake call lands a few seconds
+    /// before `player.state` flips off `.connecting`, and without an
+    /// explicit indicator users double-tap thinking nothing happened.
+    @State private var isWaking = false
 
     var body: some View {
         let userRotation = store.rotation(for: session.entry.id, channel: channel.channel, stream: stream)
@@ -113,14 +126,32 @@ struct LiveTileView: View {
             } else {
                 manualStartOverlay
             }
-            if !store.isAppBadgeHidden(deviceID: session.entry.id, channel: channel.channel) {
+            // 0.5.1 — grid call sites force the badge for tile
+            // legibility; single-camera detail views respect the
+            // global "Show camera name on live feed" setting.
+            if forcesNameBadge || !store.isAppBadgeHidden(deviceID: session.entry.id, channel: channel.channel) {
                 badgeRow
             }
         }
         .clipShape(.rect(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.white.opacity(0.08)))
         .contentShape(.rect)
-        .onTapGesture { onTap?() }
+        .onTapGesture {
+            // 0.5.1 tap routing:
+            // - **Grid tiles** (`onTap` set by the grid) — always
+            //   call through so a tap opens the single-camera
+            //   detail. SingleChannelView's own LiveTileView (with
+            //   no `onTap`) takes care of waking the battery camera
+            //   once it appears.
+            // - **Single-camera tile** (no `onTap`) — wake in place.
+            //   The user is already on the camera; there's nowhere
+            //   else to navigate.
+            if let onTap {
+                onTap()
+            } else if isBatteryIdle, !isWaking {
+                Task { await wakeAndStart() }
+            }
+        }
         .contextMenu {
             Button {
                 store.rotateClockwise(deviceID: session.entry.id, channel: channel.channel, stream: stream)
@@ -298,22 +329,30 @@ struct LiveTileView: View {
 
     private var sleepingOverlay: some View {
         let isBattery = session.isBatteryPowered(channel: channel.channel)
+        // 0.5.1 — hint text reflects what the tap actually does in
+        // this context. Grid tiles (with `onTap`) open the single-
+        // camera view; the single-camera tile wakes in place.
+        let hint: String = {
+            if onTap != nil {
+                return isBattery ? "Tap to open & wake." : "Tap to open."
+            }
+            return isBattery ? "Tap to wake & connect." : "Tap to connect."
+        }()
         return VStack(spacing: 10) {
-            Image(systemName: isBattery ? "battery.50" : "moon.zzz.fill").font(.title2)
-            Text(isBattery ? "Battery camera" : "Sleeping")
-                .font(.caption.weight(.medium))
-            if isBattery {
-                Text("Not auto-streamed to save battery.")
+            if isWaking {
+                ProgressView().tint(.white)
+                Text("Waking…")
+                    .font(.caption.weight(.medium))
+            } else {
+                Image(systemName: isBattery ? "battery.50" : "moon.zzz.fill").font(.title2)
+                Text(isBattery ? "Battery camera" : "Sleeping")
+                    .font(.caption.weight(.medium))
+                Text(hint)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 12)
             }
-            Button("Connect") { Task { await startPlayer() } }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .tint(.white.opacity(0.2))
-                .foregroundStyle(.white)
         }
         .foregroundStyle(.secondary)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -367,6 +406,17 @@ struct LiveTileView: View {
         }
         .foregroundStyle(tint)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// One-tap wake helper for battery / sleeping cameras (0.5.1).
+    /// Wraps `startPlayer()` with an `isWaking` flag so the overlay
+    /// can show "Waking…" while the Baichuan wake call is in flight
+    /// and duplicate taps are debounced.
+    private func wakeAndStart() async {
+        guard !isWaking else { return }
+        isWaking = true
+        await startPlayer()
+        isWaking = false
     }
 
     private func startPlayer() async {

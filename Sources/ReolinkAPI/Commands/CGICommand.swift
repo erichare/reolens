@@ -39,6 +39,11 @@ public struct CGIError: Decodable, Sendable, Error, CustomStringConvertible {
     public let rspCode: Int
     public let detail: String?
 
+    public init(rspCode: Int, detail: String? = nil) {
+        self.rspCode = rspCode
+        self.detail = detail
+    }
+
     public var description: String {
         let known = CGIErrorCode(rawValue: rspCode)?.description ?? "Unknown error"
         return "Reolink error \(rspCode): \(known)\(detail.map { " — \($0)" } ?? "")"

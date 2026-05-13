@@ -33,6 +33,13 @@ struct ReolensApp: App {
                     // fires at the configured hour without needing
                     // any background mode.
                     Task { await DigestScheduler.shared.reconcileSchedule() }
+                    // 0.5.1 — proactively fetch a snapshot for every
+                    // non-battery camera in the background so first-
+                    // open tiles aren't stuck on "No preview yet".
+                    // Battery cameras stay opt-in (waking them
+                    // periodically just for a still would drain
+                    // battery for low value).
+                    CameraPreviewPrefetcher.shared.start(store: store)
                 }
                 .onContinueUserActivity(CameraContinuity.cameraDetailActivityType) { activity in
                     if CameraContinuity.handle(activity: activity) {
@@ -41,6 +48,11 @@ struct ReolensApp: App {
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                     store.applyPendingIntentFocus()
+                    // 0.5.1 — re-sweep on activation so a user
+                    // returning to the app after a while sees fresh
+                    // tiles rather than waiting for the next 15-min
+                    // periodic cycle.
+                    Task { await CameraPreviewPrefetcher.shared.sweepNow() }
                 }
                 // Drain when a focus request is written AFTER the
                 // scene's launch `.task` ran — typically the

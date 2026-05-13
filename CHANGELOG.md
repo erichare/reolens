@@ -7,7 +7,270 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.5.0] — 2026-XX-XX
+## [0.5.1] — 2026-05-13
+
+A "big minor" on top of 0.5.0. Five storylines:
+
+1. **UX polish — the punch list.** Click targets, iPad layout, hub
+   auto-expand, battery-camera taps, the camera-name badge that
+   collided with Reolink's burned-in OSD. Every one of these was a
+   small daily friction; collectively they make the app feel
+   noticeably more cared-for.
+2. **All Recordings.** A single hub-scoped (and cross-hub) recordings
+   feed lands above the existing per-camera Recordings tab. AI filter
+   pill + new Camera filter pill stack, fan-out across every channel
+   in the hub (and across hubs when multiple are configured) is
+   bounded so large NVRs don't slam the network.
+3. **Per-camera notification toggles.** Default ON for every camera;
+   silence individual cameras (indoor while you're home, contractor
+   in the back yard for the afternoon) and the state syncs across
+   your Apple devices via `NSUbiquitousKeyValueStore`.
+4. **Pre-view bookmarks + background download.** Bookmark a recording
+   without playing it (long-press / right-click / trailing-swipe on
+   iOS) and the clip downloads in the background so it's available
+   offline. Wi-Fi only by default; the cellular toggle is in Settings.
+5. **iOS 26 / macOS 26 deepening.** FoundationModels-powered "Today"
+   digest at the top of All Recordings (deterministic count-based
+   fallback on devices without Apple Intelligence). Two new App
+   Intents — Show Today's Events, Mute Camera Notifications — join
+   Open Camera. Live Activities expand to hub-grouped semantics
+   with an 8-hour stale window, relevance score, and push-token
+   registration via `pushType: .token` (tokens persisted to iCloud
+   Drive next to bookmarks so a future server-driven sender can pick
+   them up). Filter chips adopt `glassEffect(.regular.interactive())`.
+
+### Added
+
+- **Hub-scoped + cross-hub All Recordings view.** New
+  [`Sources/AppShared/AllRecordingsView.swift`](Sources/AppShared/AllRecordingsView.swift)
+  with `AllRecordingsLoader` fanning out parallel `Commands.search`
+  calls across every (hub, channel) pair via `TaskGroup`. Bounded to
+  6-way concurrent globally so multi-hub setups stay polite to the
+  network. Reachable from the macOS hub-detail toolbar ("All
+  Recordings" button) and from the iPad sidebar's Recordings section.
+  **Streaming + cache (0.5.1):** rows paint progressively as each
+  (session, channel) `Search` resolves — no more waiting on the
+  slowest channel before the first row appears — and the result
+  caches in a new
+  [`RecordingsCache`](Sources/AppShared/RecordingsCache.swift)
+  actor so subsequent opens of the sheet for the same day paint
+  instantly (30 s TTL on today, 1 h TTL on past days). A "Refreshing…"
+  indicator surfaces while the stream fills in fresh data over the
+  cache hit. The Refresh button (⌘R) bypasses the cache.
+- **Bookmarks inline in All Recordings.** All Recordings shows
+  **every bookmark across every camera, every day** alongside the
+  selected day's recordings, in one chronological feed. The toggle
+  in the header controls visibility and shows the bookmark count
+  (`bookmark.fill 12`). Bookmark rows tagged with a yellow
+  `bookmark.fill` glyph + a `★ Bookmarked` pill; bookmarks from
+  other days carry a date prefix (`Jan 5 · 12:34:56 PM`) so the
+  cross-day mix stays readable when browsing a specific day's
+  recordings. Rows show a green check when the clip is downloaded
+  (per `BookmarkAutoDownloader.hasLocalClip(for:)`), play from the
+  local file when present, and surface a "Bookmark still
+  downloading…" toast when not yet on disk. Long-press / right-
+  click → Delete bookmark for cleanup.
+- **Close button on the All Recordings sheet.** The controls bar
+  always carries an explicit Close button (`.keyboardShortcut(.cancelAction)`),
+  matching the existing `Done` button on the rich viewer, bookmarks,
+  digest detail, and recording-preview sheets. On iPad / iPhone
+  (where the view is pushed in a NavigationStack) the same button
+  pops the stack. Audit confirmed every overlay sheet in the app
+  has a clearly-labeled close affordance.
+- **Background snapshot prefetcher.** New
+  [`Sources/AppShared/CameraPreviewPrefetcher.swift`](Sources/AppShared/CameraPreviewPrefetcher.swift)
+  proactively sweeps every connected non-battery channel and
+  refreshes its cached snapshot on a 15-minute cycle (plus once on
+  every `.active` scene transition). Tiles for cameras the user has
+  never opened now show a real frame instead of the "No preview
+  yet" placeholder. Battery / sleeping cameras are deliberately
+  skipped — periodic wake to refresh a still would drain battery
+  for low value; they still snapshot on demand via the existing
+  `prepareForFetch` wake path. Bounded to 3 concurrent HTTP calls
+  globally so multi-hub setups don't stampede the network.
+  Snapshots also publish to the shared App-Group container so the
+  widgets see the same fresh frames.
+- **Camera filter pill.** New
+  [`Sources/AppShared/CameraFilterBar.swift`](Sources/AppShared/CameraFilterBar.swift)
+  mirrors the AI event filter pill; sits below it in the All
+  Recordings header. Empty selection = all cameras; chips compose
+  with AI filters (AND semantics).
+- **Hub auto-expand + iCloud collapse memory.**
+  [`Sources/AppShared/HubExpansionStore.swift`](Sources/AppShared/HubExpansionStore.swift)
+  inverts the previous expanded-set semantic to a collapsed-set so
+  every hub is open by default. Collapse a hub on the Mac and the
+  iPad / iPhone sidebar reflects within ~30 s via
+  `NSUbiquitousKeyValueStore`. Local `UserDefaults` mirror for
+  iCloud-signed-out devices.
+- **Per-camera notification toggles.**
+  [`Sources/AppShared/CameraNotificationPreferences.swift`](Sources/AppShared/CameraNotificationPreferences.swift)
+  + [`PerCameraNotificationsSection`](Sources/AppShared/PerCameraNotificationsSection.swift)
+  add a Settings → Notifications row per camera. Default ON. State
+  syncs across devices via `NSUbiquitousKeyValueStore`.
+  `EventNotifier.notify(...)` reads it off the main actor through a
+  nonisolated `isNotificationsEnabledOffMainActor(for:)` to avoid
+  per-event MainActor hops on busy hubs.
+- **Pre-view bookmarking on iOS.** Recording rows on iOS gain a
+  "Bookmark this clip" entry in the long-press context menu plus a
+  trailing-swipe action. Neither requires playing the clip first.
+  Both flows route through `bookmarkAndDownload(file:)` which
+  persists the bookmark via `RecordingBookmarkStore.add(_:)` and
+  enqueues the clip with `BookmarkAutoDownloader`.
+- **Background URLSession auto-download.**
+  [`Sources/AppShared/BookmarkAutoDownloader.swift`](Sources/AppShared/BookmarkAutoDownloader.swift)
+  manages a `URLSessionConfiguration.background(withIdentifier:)`
+  session. Bookmark creation enqueues the clip; iOS keeps the
+  download going across app suspensions, force-quits, and relaunches.
+  Final files land in
+  `~/Library/Application Support/Reolens/bookmarks/<bookmarkID>.mp4`
+  so they survive cache eviction. New
+  [`BookmarkAutoDownloadDelegate`](Sources/AppShared/BookmarkAutoDownloader.swift)
+  handles `didFinishDownloadingTo` by synchronously moving the file
+  to its permanent destination before the OS purges the temp file.
+- **Cellular background download toggle.** New
+  [`Sources/AppShared/BackgroundDownloadPreferences.swift`](Sources/AppShared/BackgroundDownloadPreferences.swift)
+  + [`BackgroundDownloadsSection`](Sources/AppShared/BackgroundDownloadsSection.swift)
+  surface a "Allow downloads on cellular" toggle (default OFF) in
+  Settings. Background URLSessions ignore per-task
+  `allowsCellularAccess` overrides, so the downloader listens for a
+  `preferencesDidChange` notification, calls
+  `finishTasksAndInvalidate()` on the in-flight session, and
+  recreates it with the new config — toggle takes effect on the
+  next enqueue without an app restart.
+- **FoundationModels "Today" event digest.** New
+  [`Sources/AppShared/EventSummarizer.swift`](Sources/AppShared/EventSummarizer.swift)
+  produces a 1-line headline + 1–3 bullet points summarizing the
+  day's recordings across every camera on the hub. On-device
+  inference via Apple's `FoundationModels` framework when
+  Apple Intelligence is available; deterministic count-based
+  fallback otherwise ("12 clips today: 5 pet, 4 person, 3 vehicle.").
+  Surfaces inline at the top of All Recordings when the date is
+  today; cached per `(day, cameraIDs, totalClips)` so repeated
+  re-loads short-circuit.
+- **Camera-name badge toggle.** New Settings → Display section
+  exposes "Show camera name on live feed" (default OFF). 0.5.1
+  inverts the previous semantic: badges are hidden by default so
+  Reolink's own date / time / name OSD (top-left of every frame)
+  isn't covered. Per-channel hide overrides preserved in
+  `ChannelSettingsView`.
+- **Battery camera one-tap auto-wake.** Tapping the sleeping tile
+  (macOS [`LiveCameraTile`](App/Views/LiveCameraTile.swift) +
+  iOS [`LiveTileView`](AppiOS/Sources/Views/LiveTileView.swift))
+  now triggers the Baichuan wake call directly and shows a "Waking…"
+  indicator while the RTSP probe lands — no separate Connect button.
+  Duplicate taps debounced via a per-channel `isWaking` flag.
+- **Two new App Intents.**
+  [`ShowTodayEventsIntent`](Sources/AppShared/AppIntents/CameraIntents.swift)
+  jumps to today's events (optionally filtered to a specific camera)
+  and [`MuteCameraNotificationsIntent`](Sources/AppShared/AppIntents/CameraIntents.swift)
+  flips the per-camera notification preference. Both join the
+  existing `OpenCameraIntent` in `ReolensShortcuts` so "Hey Siri,
+  show today's events" and "Hey Siri, mute the Driveway camera"
+  work from any Apple platform.
+- **Hub-grouped Live Activities.**
+  [`MotionEventActivityController`](AppiOS/Sources/LiveActivities/MotionEventActivityController.swift)
+  keys activities by hub (`cameraID`) and *merges* follow-up fires
+  on the same hub into the existing activity (dedup tags, bump
+  `coalescedCount`) rather than replacing it. Dynamic Island stays
+  readable on multi-channel NVRs that emit several events in quick
+  succession.
+- **Live Activity push token registry.** New
+  [`Sources/AppShared/LiveActivityPushTokenRegistry.swift`](Sources/AppShared/LiveActivityPushTokenRegistry.swift)
+  is an actor that persists per-activity APNs tokens to iCloud Drive
+  next to bookmarks (`live-activity-tokens_v1.json`). The controller
+  now requests activities with `pushType: .token` and forwards every
+  issued token via `for await tokenData in activity.pushTokenUpdates`.
+  Lays the foundation for a future server-driven sender (or a peer
+  Apple device acting as relay) to push updates remotely. The local
+  Baichuan-event-driven update path remains the primary driver; push
+  is purely additive.
+
+### Changed
+
+- **iPad layout — stale-detail-pane fix.**
+  [`iPadSplitShell`](AppiOS/Sources/Views/iPadSplitShell.swift)
+  collapsed from a three-column `NavigationSplitView` (where the
+  third "Select a camera" column never updated) to a two-column
+  one. Detail column wraps `sectionContent` in a `NavigationStack`
+  keyed off `selectedSection` so any sidebar tap hard-resets the
+  navigation stack — fixes the user-reported "panel on the right
+  stays all the time."
+- **Whole-row click targets.**
+  [`DeviceSidebarRow`](App/Views/CameraListView.swift) and
+  [`ChannelSidebarRow`](App/Views/CameraListView.swift) on macOS
+  and [`iPadSplitShell`](AppiOS/Sources/Views/iPadSplitShell.swift)
+  on iPadOS now apply `.contentShape(.rect)` so clicking anywhere
+  in the row (text, status dot, trailing whitespace) selects the
+  camera. Channel sub-rows under hubs / NVRs get the same treatment.
+- **macOS detail-pane identity.**
+  [`ContentView`](App/Views/ContentView.swift) now applies
+  `.id(store.selection)` so SwiftUI rebuilds
+  `ChannelDetailContent` when the sidebar selection changes —
+  no more carrying the previous channel's `@State tab` across
+  camera switches.
+- **Hub-grouped Live Activity stale window widened** from 4h to
+  8h. A slow-burn evening of events no longer expires mid-watch.
+- **Live Activity relevance scoring.** When multiple hubs have
+  active LAs, the most-recently-active one scores higher (linear
+  decay over the 8 h stale window) so Dynamic Island prefers it.
+- **Filter pills are now interactive Liquid Glass.** The
+  [`reolensGlassChip`](Sources/AppShared/ReolensGlass.swift)
+  modifier adopts `.glassEffect(.regular.interactive())` on iOS 26
+  / macOS 26 so chips morph subtly on press — matches the system
+  pill behavior elsewhere in the OS. Material fallback on lower OSes
+  unchanged.
+- **iPad Recordings tab.**
+  [`RecordingsPlaceholderView`](AppiOS/Sources/Views/Placeholders.swift)
+  now lands directly in the cross-hub All Recordings view (was: a
+  per-camera picker that funneled into the per-channel
+  RecordingsView).
+- **macOS multi-channel grid.**
+  [`MultiChannelGridView`](App/Views/CameraDetailView.swift)
+  gains an "All Recordings" toolbar button that opens the cross-hub
+  feed in a sheet.
+- **`CameraStore.expandedDevices`** replaced by
+  `CameraStore.hubExpansion: HubExpansionStore` — the in-memory
+  set is gone in favor of the iCloud-synced collapsed set. Internal
+  API change; binding helpers in the three sidebar views updated.
+
+### Tests
+
+- New `Tests/AppSharedTests/HubExpansionStoreTests.swift` — default-on
+  expansion, collapse round-trip, forget-on-remove.
+- New `Tests/AppSharedTests/CameraNotificationPreferencesTests.swift` —
+  default-on, mute round-trip, off-main-actor reader sees the
+  UserDefaults mirror synchronously.
+- New `Tests/AppSharedTests/EventSummarizerTests.swift` — pinned
+  to the deterministic fallback path (empty input, total + top
+  triggers in headline, busiest-camera bullets, quiet cameras
+  omitted).
+- New `Tests/AppSharedTests/LiveActivityPushTokenRegistryTests.swift` —
+  register + snapshot round-trip, forget removes, re-register
+  overwrites.
+- New `Tests/AppSharedTests/BackgroundDownloadPreferencesTests.swift` —
+  default false, UserDefaults round-trip.
+- New `Tests/AppSharedTests/RecordingsCacheTests.swift` —
+  set/get round-trip, past-day-fresh TTL boundary, key includes
+  session ID set, single-entry + all-entries invalidation,
+  startOfDay normalization.
+- Final test count: **183 tests across 49 suites** (was 158 in 43
+  suites at 0.5.0).
+
+### Migration / breaking changes
+
+- `CameraStore.expandedDevices: Set<UUID>` is gone — replaced by
+  `CameraStore.hubExpansion: HubExpansionStore`. Internal-only; no
+  out-of-tree consumers affected. Existing in-memory expansion state
+  was already ephemeral, so there's nothing to migrate.
+- `AllRecordingsView` initializer changed to take
+  `sessions: [CameraSession]` rather than a single session. The
+  single-session convenience `init(session:)` is preserved so
+  existing call sites compile without changes.
+- Camera-name badge default flipped to hidden. Users who relied on
+  the badge will see it disappear on first launch of 0.5.1; the
+  Settings → Display toggle restores it.
+
+## [0.5.0] — 2026-05-12
 
 The biggest release Reolens has shipped. Three storylines:
 

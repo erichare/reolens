@@ -70,6 +70,35 @@ In scope:
   `MotionEventRecordID` shape, that bypasses the per-camera rate
   limit, or that publishes after the multi-account guard has fired
   is in scope.
+- **Live Activity push token leakage (0.5.1).**
+  `LiveActivityPushTokenRegistry` persists per-activity APNs tokens
+  to the iCloud Drive ubiquity container
+  (`live-activity-tokens_v1.json`). Tokens are tied to specific
+  Activity IDs and rotate when iOS tears down and rebuilds the
+  activity. Any path that (a) logs the raw token at any level,
+  (b) writes the token outside this designated file, or (c)
+  serializes anything beyond `activityID + cameraID + pushTokenHex
+  + issuedAt` is in scope. Token storage outside iCloud Drive
+  (e.g. into `cameras.json`, `UserDefaults`, or the App Group) is
+  a regression.
+- **Background bookmark-download payload widening (0.5.1).** The
+  background URLSession at identifier `com.reolens.bookmarkDL`
+  downloads recording clips to
+  `Application Support/Reolens/bookmarks/<bookmarkID>.mp4`. The
+  source URL embeds the user's CGI token; if the
+  `task.taskDescription` (used to bind a task back to a bookmark
+  on relaunch) ever carries anything other than the bookmark UUID,
+  or if downloaded files land outside the designated directory, or
+  if cellular access is allowed without the explicit
+  `BackgroundDownloadPreferences.allowCellular` opt-in being true,
+  that's in scope.
+- **Per-camera notification-mute state.**
+  `com.reolens.mutedCameraNotifications` is a synced `[UUID-string]`
+  set. Any path that carries additional fields (e.g. timestamps,
+  hostnames) or that publishes anything beyond a UUID list is in
+  scope. The `NSUbiquitousKeyValueStore` value is plaintext-readable
+  by anyone signed into the same Apple ID — by design — but it must
+  never carry credentials or hostnames.
 
 Out of scope:
 
@@ -106,6 +135,19 @@ report alleging any of them is broken is automatically in scope:
    `group.com.reolens.Reolens` App Group container, which is
    device-local and never CloudKit-synced. AGENTS.md §16 codifies
    the full constraint set.
+6. **On-device-only AI (0.5.1).** The Today digest uses Apple's
+   `FoundationModels` framework, which runs **on-device**. No
+   recording metadata, AI tags, camera names, or any other data
+   crosses the device boundary. The `FoundationModels` framework
+   itself enforces this contract; we never proxy the inference to a
+   cloud model.
+7. **Live Activity push channel is opt-in-by-OS.**
+   `pushType: .token` tells iOS to issue a push token for the
+   activity; the OS decides whether to honor it. Reolens does not
+   send pushes today (no server infrastructure); the registry
+   merely persists tokens for a future sender. Until that sender
+   exists, the local Baichuan-event-driven update path is the only
+   updater.
 
 See [`AGENTS.md`](AGENTS.md) for the full engineering principles.
 

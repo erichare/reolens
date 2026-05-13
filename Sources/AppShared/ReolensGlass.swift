@@ -109,14 +109,25 @@ public extension View {
     /// Apply Liquid Glass to a capsule-shaped chip — used by AI
     /// event filter chips, AI-capability badges in Channel Settings,
     /// and the bookmark-tag pills on recording rows.
+    ///
+    /// 0.5.1: chips now adopt the interactive Liquid Glass variant on
+    /// iOS 26 / macOS 26 so they morph subtly on press, matching
+    /// system pill behavior elsewhere in the OS.
     @ViewBuilder
     func reolensGlassChip(selected: Bool = false, tint: Color = .accentColor) -> some View {
         if #available(iOS 26.0, macOS 26.0, *) {
-            self
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .glassEffect(selected ? .regular.tint(tint.opacity(0.55)) : .regular,
-                             in: .capsule)
+            if selected {
+                self
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .glassEffect(.regular.tint(tint.opacity(0.55)).interactive(),
+                                 in: .capsule)
+            } else {
+                self
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .glassEffect(.regular.interactive(), in: .capsule)
+            }
         } else {
             self
                 .padding(.horizontal, 10)

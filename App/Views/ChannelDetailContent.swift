@@ -134,6 +134,7 @@ struct ChannelDetailContent: View {
             PTZControlBar(session: session, channel: channel.channel)
             Spacer()
             TalkbackButton(session: session, channelID: UInt8(channel.channel))
+            Spacer()
             rotationControls
             fullscreenToggle
         }

@@ -15,7 +15,15 @@ struct ContentView: View {
             CameraListView(showingAddCamera: $showingAddCamera)
                 .navigationSplitViewColumnWidth(min: 220, ideal: 280)
         } detail: {
+            // 0.5.1 — force the detail pane to rebuild whenever the
+            // sidebar selection changes. Without an explicit identity,
+            // SwiftUI reuses `ChannelDetailContent.@State tab` across
+            // (Camera A → Camera B) switches, so the user would see the
+            // previous channel's tab + still-streaming player while the
+            // new channel was selected. The user's explicit ask is for
+            // the detail to land on Live every time a row is clicked.
             detailContent
+                .id(store.selection)
         }
         .sheet(isPresented: $showingAddCamera) {
             AddCameraSheet { entry, password in

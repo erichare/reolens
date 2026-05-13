@@ -3,6 +3,7 @@ import AVKit
 import OSLog
 import ReolinkAPI
 import ReolinkBaichuan
+import ReolinkStreaming
 import AppShared
 
 private let log = Logger(subsystem: "com.reolens.app", category: "ios-recordings")
@@ -209,7 +210,55 @@ struct RecordingsView: View {
             } label: {
                 Label("Play (High Quality)", systemImage: "play.circle.fill")
             }
+            Divider()
+            Button {
+                Task { await bookmarkAndDownload(file: file) }
+            } label: {
+                Label("Bookmark this clip", systemImage: "bookmark")
+            }
         }
+        // 0.5.1 — trailing swipe surfaces Bookmark so users can
+        // archive a recording without first playing it. Pairs with
+        // the auto background-download in `bookmarkAndDownload`.
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button {
+                Task { await bookmarkAndDownload(file: file) }
+            } label: {
+                Label("Bookmark", systemImage: "bookmark.fill")
+            }
+            .tint(.accentColor)
+        }
+    }
+
+    /// 0.5.1 — Bookmark + auto background-download in one action.
+    /// Bookmark metadata persists via `RecordingBookmarkStore`
+    /// (iCloud-synced JSON); the clip itself downloads through the
+    /// `BookmarkAutoDownloader` background URLSession so the user can
+    /// background the app and still get the file.
+    private func bookmarkAndDownload(file: SearchFile) async {
+        let bookmark = RecordingBookmark(
+            cameraID: session.entry.id,
+            channel: channel.channel,
+            startEpoch: file.startDate?.timeIntervalSince1970 ?? Date().timeIntervalSince1970,
+            endEpoch: file.endDate?.timeIntervalSince1970 ?? Date().timeIntervalSince1970,
+            note: nil,
+            aiTagsAtMark: file.triggers.map(\.rawValue)
+        )
+        do {
+            try RecordingBookmarkStore.add(bookmark)
+        } catch {
+            // Surfacing a sheet on every bookmark feels heavy; the
+            // alert path can come later if users hit this in the wild.
+            return
+        }
+        let token = await session.client.currentToken?.name
+        let creds = await session.client.credentials
+        let url = StreamURLs(credentials: creds).recordingDownload(
+            source: file.name,
+            output: file.name,
+            token: token
+        )
+        await BookmarkAutoDownloader.shared.enqueue(bookmark: bookmark, sourceURL: url)
     }
 
     private func load() async {

@@ -237,13 +237,53 @@ public final class CameraSession {
         }
     }
 
-    /// Heuristic for "stop retrying" failure cases. CGIClient surfaces
-    /// auth errors with a specific message; anything else is treated
-    /// as transient. False positives just mean we retry an
-    /// unrecoverable error a few times before giving up — acceptable.
-    private static func isAuthFailure(_ error: any Error) -> Bool {
-        let text = "\(error)".lowercased()
-        return text.contains("login") || text.contains("auth") || text.contains("unauthorized") || text.contains("invalid password") || text.contains("password")
+    /// "Stop retrying" classifier. 0.5.1: rewritten to inspect the
+    /// **typed** error rather than substring-match
+    /// `"\(error)".lowercased()` — the previous version misclassified
+    /// transient Reolink response codes as auth failures because
+    /// their descriptions all contain the word "login":
+    ///
+    ///   -10 loginRequired   → token expired, retry with fresh login
+    ///   -11 loginError      → ambiguous, often transient on cold start
+    ///   -15 loginAlready    → another session is mid-login, retry
+    ///   -16 lockedByOthers  → temporary lock, retry
+    ///   -20 loginFailed     → ambiguous, sometimes hub-busy on boot
+    ///
+    /// Users saw "Authentication failed" on startup and a subsequent
+    /// "Try Again" tap succeeded because the original was just a
+    /// boot-race that should have been retried. We now treat only
+    /// the codes that *unambiguously* mean "wrong credentials" as
+    /// fatal:
+    ///
+    ///   -14 invalidUser     → username genuinely doesn't exist
+    ///   HTTP 401 / 403      → server explicitly rejected the auth
+    ///
+    /// Everything else — including ambiguous Reolink error codes
+    /// and any URL transport error — is treated as transient and
+    /// goes through the normal retry path. Worst case (genuinely
+    /// wrong password producing `-11` / `-20`): we burn through
+    /// `maxAttempts` retries before surfacing the error, which the
+    /// user-facing UI already labels with the actual error string.
+    // `internal` so the regression test can lock the precise mapping
+    // from typed errors to "stop retrying" decisions. `nonisolated`
+    // because the implementation is a pure function over the error
+    // payload — no MainActor state involved.
+    nonisolated static func isAuthFailure(_ error: any Error) -> Bool {
+        // Typed Reolink wrap with an inner CGI error code.
+        if let reolinkErr = error as? ReolinkClientError {
+            switch reolinkErr {
+            case .loginFailed(let cgiError):
+                guard let cgiError else { return false }
+                return cgiError.rspCode == CGIErrorCode.invalidUser.rawValue
+            case .commandFailed(_, let cgiError):
+                return cgiError.rspCode == CGIErrorCode.invalidUser.rawValue
+            case .http(let status, _):
+                return status == 401 || status == 403
+            default:
+                return false
+            }
+        }
+        return false
     }
 
     public func disconnect() async {

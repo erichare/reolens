@@ -36,6 +36,8 @@ struct SettingsView: View {
 
             NotificationCategoriesSection(notifier: notifier)
 
+            PerCameraNotificationsSection()
+
             OvernightDigestSection()
 
             Section("System permission") {
@@ -54,6 +56,15 @@ struct SettingsView: View {
             Section("Grid previews") {
                 Toggle("Live previews in grid", isOn: $liveGridEnabled)
                 Text("New in 0.4.0. By default, the camera grid shows the last snapshot from each camera and only streams live when you open a single camera — friendlier on battery and cellular. Turn this on to stream every grid tile live (uses more battery and data).")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            BackgroundDownloadsSection()
+
+            Section("Display") {
+                Toggle("Show camera name on live feed", isOn: bindable.showCameraNameOnFeed)
+                Text("New in 0.5.1. Reolink cameras burn their own date / time / name overlay into the top of the frame, so by default Reolens hides its own camera-name badge to avoid covering it. Turn this on if your cameras have OSD off and you want the label back.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

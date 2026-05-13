@@ -146,9 +146,15 @@ struct RecordingsView: View {
             RecordingPlayerSheet(recording: recording)
         }
         .sheet(isPresented: $showingBookmarks) {
+            // 0.5.1 — scope to this channel so a multi-channel hub
+            // doesn't pile every channel's bookmarks into the per-
+            // camera Recordings tab. The Bookmarks button on
+            // `ChannelDetailContent` (camera view) uses the same
+            // channel-scoped sheet.
             BookmarksSheet(
                 cameraID: session.entry.id,
-                cameraName: session.entry.displayName,
+                cameraName: cameraScopedName,
+                channel: channel.channel,
                 bookmarks: $bookmarks,
                 onPlay: { bookmark in
                     showingBookmarks = false
@@ -159,6 +165,25 @@ struct RecordingsView: View {
                 }
             )
         }
+    }
+
+    /// Camera-scoped display name for the bookmarks sheet header:
+    /// "Driveway" rather than "Home Hub" when viewing a specific
+    /// channel under a hub. Falls back to the device name when the
+    /// channel doesn't carry one.
+    private var cameraScopedName: String {
+        let channelName = (channel.name?.trimmingCharacters(in: .whitespaces)).flatMap {
+            $0.isEmpty ? nil : $0
+        }
+        if let channelName {
+            // Include the hub name as context when it differs from
+            // the channel name, since "Driveway" alone may not be
+            // enough on a multi-hub install.
+            return session.entry.displayName == channelName
+                ? channelName
+                : "\(channelName) · \(session.entry.displayName)"
+        }
+        return session.entry.displayName
     }
 
     /// 0.5.0 Theme C1 — export a bookmarked clip to MP4. Re-uses the
@@ -315,10 +340,16 @@ struct RecordingsView: View {
             }
             // 0.5.0 — Bookmarks button. Shows a count badge when any
             // exist; opens the bookmarks sheet.
+            // 0.5.1 — count is now scoped to THIS channel, matching
+            // the sheet itself (which uses `channel: channel.channel`).
+            // The previous device-level total was misleading on
+            // multi-channel hubs — the user reported the badge looked
+            // global even though the sheet only shows one channel.
             Button {
                 showingBookmarks = true
             } label: {
-                Label("Bookmarks (\(bookmarks.count))", systemImage: "bookmark")
+                let scopedCount = bookmarks.filter { $0.channel == channel.channel }.count
+                Label("Bookmarks (\(scopedCount))", systemImage: "bookmark")
             }
             .help("Show this camera's saved clip bookmarks.")
             Button {

@@ -188,7 +188,12 @@ public final class CameraStore {
     public var cameras: [CameraEntry] = []
     public var selection: SidebarSelection?
     public var sessions: [CameraEntry.ID: CameraSession] = [:]
-    public var expandedDevices: Set<UUID> = []
+    /// 0.5.1 — hub expand/collapse state lives in `HubExpansionStore`
+    /// so it persists locally AND syncs across devices via
+    /// `NSUbiquitousKeyValueStore`. The default is "everything
+    /// expanded" (empty `collapsedHubs` set) so newly-paired hubs
+    /// surface their channels without an extra click.
+    public let hubExpansion = HubExpansionStore.shared
     /// Per-device preferred order for the top-level camera list.
     /// **Not synced via iCloud** — different platforms (sidebar / tab /
     /// single column) have different optimal orderings, and avoiding a
@@ -219,10 +224,26 @@ public final class CameraStore {
     static let developerModeKey = "com.reolens.developerMode"
     private static let cameraOrderKey = "com.reolens.cameraOrder"
 
+    /// 0.5.1 — global "Show camera name on feed" preference. Default OFF
+    /// because Reolink cameras typically burn their own OSD (date / time
+    /// / name) into the top-left of the frame, so our app badge collides
+    /// with it and the user has to chase the timestamp around. Users who
+    /// want our label back can flip this on in Settings → Display.
+    /// Per-channel `hiddenAppBadgeChannels` still acts as an override:
+    /// when the global is ON, individual channels can still be hidden.
+    public var showCameraNameOnFeed: Bool {
+        didSet { UserDefaults.standard.set(showCameraNameOnFeed, forKey: Self.showCameraNameKey) }
+    }
+    static let showCameraNameKey = "com.reolens.showCameraNameOnFeed"
+
     public init() {
         let storage = ICloudCameraStorage.shared
         storage.migrateLegacyLocalIfNeeded()
         self.developerMode = UserDefaults.standard.bool(forKey: Self.developerModeKey)
+        // 0.5.1 — default OFF (hidden) on first launch. `bool(forKey:)`
+        // returns false when the key is missing, which is exactly what
+        // we want as the new default.
+        self.showCameraNameOnFeed = UserDefaults.standard.bool(forKey: Self.showCameraNameKey)
         // Restore the device-local sidebar order (UUID strings). Filter to
         // valid UUIDs defensively in case anything was corrupted.
         if let raw = UserDefaults.standard.array(forKey: Self.cameraOrderKey) as? [String] {
@@ -368,6 +389,13 @@ public final class CameraStore {
         if selection?.deviceID == id {
             selection = cameras.first.map { .device($0.id) }
         }
+        // 0.5.1 — prune the cross-device collapse state for the
+        // removed hub so the iCloud KV index stays bounded.
+        hubExpansion.forget(deviceID: id)
+        // 0.5.1 — prune the per-camera notification mute set so a
+        // re-added camera with the same UUID doesn't inherit a
+        // stranger's mute state.
+        CameraNotificationPreferences.shared.forget(deviceID: id)
         save()
     }
 
@@ -512,12 +540,18 @@ public final class CameraStore {
         "\(channel):\(stream.rawValue)"
     }
 
-    /// Whether the user has hidden Reolens' in-tile badges (camera
-    /// name, motion / AI dots) for this channel. Per-channel so
-    /// users with mixed-OSD setups (some channels with OSD on, some
-    /// off) can hide badges only on the ones that clash. New in 0.4.1.
+    /// Whether the camera-name badge over a live tile should be hidden.
+    ///
+    /// 0.5.1: the global default flipped to "hidden" because Reolink's
+    /// own OSD already shows the camera name + timestamp in the same
+    /// corner. The legacy per-channel `hiddenAppBadgeChannels` set still
+    /// acts as an override: when the global is ON, channels listed in
+    /// the set stay hidden. So the badge is shown only when the user
+    /// has explicitly opted in globally AND not opted out on this
+    /// channel.
     public func isAppBadgeHidden(deviceID: UUID, channel: Int) -> Bool {
-        cameras.first(where: { $0.id == deviceID })?.hiddenAppBadgeChannels.contains(channel) ?? false
+        if !showCameraNameOnFeed { return true }
+        return cameras.first(where: { $0.id == deviceID })?.hiddenAppBadgeChannels.contains(channel) ?? false
     }
 
     public func setAppBadgeHidden(_ hidden: Bool, deviceID: UUID, channel: Int) {

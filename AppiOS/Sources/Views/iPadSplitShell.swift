@@ -32,17 +32,31 @@ struct iPadSplitShell: View {
     }
 
     var body: some View {
+        // 0.5.1 — collapsed from a three-column NavigationSplitView
+        // to a two-column one. The previous third column always
+        // showed "Select a camera" and never updated (no destination
+        // was wired up), which manifested as the user's "panel on the
+        // right that stays all the time" complaint. The new layout
+        // shows the sidebar + a detail column that swaps with
+        // `selectedSection`. The NavigationStack inside the detail
+        // column is keyed off `selectedSection` so any sidebar tap
+        // hard-resets navigation state — matching the user's request
+        // that selecting a row always lands on a fresh Live view.
         NavigationSplitView {
             List(selection: $selectedSection) {
                 Section("Reolens") {
                     Label("Live", systemImage: "play.rectangle.fill")
                         .tag(SidebarSection.live)
+                        .contentShape(.rect)
                     Label("Recordings", systemImage: "clock.arrow.circlepath")
                         .tag(SidebarSection.recordings)
+                        .contentShape(.rect)
                     Label("Devices", systemImage: "video.fill")
                         .tag(SidebarSection.devices)
+                        .contentShape(.rect)
                     Label("Settings", systemImage: "gear")
                         .tag(SidebarSection.settings)
+                        .contentShape(.rect)
                 }
                 if !store.cameras.isEmpty {
                     Section("Cameras") {
@@ -83,11 +97,36 @@ struct iPadSplitShell: View {
                     }
                 }
             }
-        } content: {
-            sectionContent
         } detail: {
-            Text("Select a camera")
-                .foregroundStyle(.secondary)
+            NavigationStack {
+                sectionContent
+                    .navigationDestination(for: CameraEntry.self) { entry in
+                        if let session = store.session(for: entry.id) {
+                            CameraDetailView(session: session)
+                        } else {
+                            ContentUnavailableView {
+                                Label("No password on this device", systemImage: "key.slash")
+                            } description: {
+                                Text("\(entry.displayName) was added on another device. Enter the password to stream from it.")
+                            }
+                        }
+                    }
+                    .navigationDestination(for: CameraChannelTarget.self) { target in
+                        if let session = store.session(for: target.deviceID),
+                           let channel = session.channels.first(where: { $0.channel == target.channel }) {
+                            SingleChannelView(session: session, channel: channel)
+                                .id(target)
+                        } else if let session = store.session(for: target.deviceID) {
+                            CameraDetailView(session: session, focusedChannel: target.channel)
+                        } else {
+                            ContentUnavailableView("Camera not found", systemImage: "video.slash")
+                        }
+                    }
+            }
+            // Re-key the entire NavigationStack on any sidebar change
+            // so the user lands on the section's root view every time
+            // — no stale push state from a previous section.
+            .id(selectedSection)
         }
         .sheet(isPresented: $showingAdd) {
             AddCameraView()
@@ -128,34 +167,39 @@ struct iPadSplitShell: View {
         let channels = (session?.channels ?? []).filter { ch in
             (ch.name?.isEmpty == false) || (ch.typeInfo?.isEmpty == false)
         }
-        let deviceLabel = Label(entry.displayName, systemImage: "video.fill")
+        // 0.5.1 — drag-to-reorder is gated on `isReorderingCameras`
+        // so the modifier doesn't intercept ordinary taps. Reorder
+        // mode is entered from the toolbar's "Rearrange Cameras"
+        // menu; the previous long-press shortcut added gesture
+        // latency to every tap on a hub label. `.dropDestination`
+        // stays always-on (inert outside an active drag).
+        let baseLabel = Label(entry.displayName, systemImage: "video.fill")
             .opacity(draggingDevice == entry.id ? 0.35 : 1.0)
             .jiggle(isActive: isReorderingCameras)
-            .onLongPressGesture(minimumDuration: 0.7) {
-                if !isReorderingCameras {
-                    withAnimation(.easeIn(duration: 0.2)) {
-                        isReorderingCameras = true
-                    }
-                }
-            }
-            .draggable(DeviceDragPayload(deviceID: entry.id)) {
-                HStack(spacing: 6) {
-                    Image(systemName: "video.fill")
-                        .foregroundStyle(.white)
-                    Text(entry.displayName)
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(.black.opacity(0.85), in: .rect(cornerRadius: 6))
-                .onAppear { draggingDevice = entry.id }
-                .onDisappear { draggingDevice = nil }
-            }
             .dropDestination(for: DeviceDragPayload.self) { payload, _ in
                 guard let source = payload.first, source.deviceID != entry.id else { return false }
                 return store.reorderCamera(source: source.deviceID, before: entry.id)
             }
+        let deviceLabel = Group {
+            if isReorderingCameras {
+                baseLabel.draggable(DeviceDragPayload(deviceID: entry.id)) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "video.fill")
+                            .foregroundStyle(.white)
+                        Text(entry.displayName)
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(.black.opacity(0.85), in: .rect(cornerRadius: 6))
+                    .onAppear { draggingDevice = entry.id }
+                    .onDisappear { draggingDevice = nil }
+                }
+            } else {
+                baseLabel
+            }
+        }
 
         if channels.count > 1 {
             DisclosureGroup(isExpanded: bindingForExpansion(deviceID: entry.id)) {
@@ -202,18 +246,12 @@ struct iPadSplitShell: View {
         }
     }
 
-    /// Per-device expanded state, persisted in `CameraStore` so it
-    /// survives sidebar re-renders (e.g. iCloud-sync callbacks).
+    /// 0.5.1 — hubs auto-expand by default; collapse state syncs
+    /// across devices through `HubExpansionStore` (iCloud KV).
     private func bindingForExpansion(deviceID: UUID) -> Binding<Bool> {
         Binding(
-            get: { store.expandedDevices.contains(deviceID) },
-            set: { isOpen in
-                if isOpen {
-                    store.expandedDevices.insert(deviceID)
-                } else {
-                    store.expandedDevices.remove(deviceID)
-                }
-            }
+            get: { store.hubExpansion.isExpanded(deviceID: deviceID) },
+            set: { store.hubExpansion.setExpanded($0, for: deviceID) }
         )
     }
 

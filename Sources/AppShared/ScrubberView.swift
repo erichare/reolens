@@ -186,8 +186,16 @@ public struct ScrubberView: View {
         if timeObserverToken == nil {
             let interval = CMTime(seconds: 0.5, preferredTimescale: 600)
             timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
-                if !isDragging {
-                    currentSeconds = CMTimeGetSeconds(time)
+                // `queue: .main` guarantees this callback already
+                // runs on the MainActor's queue. Swift 6 strict
+                // concurrency can't see that through `@Sendable`, so
+                // assume the isolation explicitly to access the
+                // MainActor-isolated `isDragging` / `currentSeconds`
+                // without hopping through a separate Task.
+                MainActor.assumeIsolated {
+                    if !isDragging {
+                        currentSeconds = CMTimeGetSeconds(time)
+                    }
                 }
             }
         }

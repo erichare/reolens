@@ -21,8 +21,9 @@ Tooling:
 
 - Xcode 26 (both platforms). 0.5.0 raised the deployment floor to
   macOS 26 / iOS 26 to adopt Liquid Glass + ActivityKit + WidgetKit
-  desktop widgets. The macOS app builds through SwiftPM; iOS uses an
-  xcodegen-managed Xcode project.
+  desktop widgets; 0.5.1 leans on the same floor for
+  `FoundationModels`. The macOS app builds through SwiftPM; iOS
+  uses an xcodegen-managed Xcode project.
 - Swift 6.2 (strict concurrency on by default).
 - An Apple Developer account for code signing iOS builds locally;
   unsigned macOS dev builds run fine via `./Scripts/build-app.sh run`.
@@ -31,7 +32,7 @@ Build & test:
 
 ```sh
 swift build                 # libs + macOS app
-swift test                  # 158 tests across 43 suites (AppShared, RTSP, Baichuan, …)
+swift test                  # 183 tests across 49 suites (AppShared, RTSP, Baichuan, …)
 ./Scripts/build-app.sh run  # bundled .app with Local Network entitlement
 ```
 
@@ -61,7 +62,7 @@ the diagram. The short version:
 | RTSP / VideoToolbox / sample buffer / H.264 + H.265 decode | `Sources/ReolinkStreaming/` |
 | CGI commands, Codable models, URL building, `MaskSettings` | `Sources/ReolinkAPI/` |
 | Baichuan (port 9000, talkback, push, `findAlarmVideo`, XML helpers) | `Sources/ReolinkBaichuan/` |
-| State, persistence, iCloud, Keychain, App Intents, EventNotifier, SharedContainer, DigestScheduler, ThumbnailCache, ClipExporter, RecordingBookmarkStore, PrivacyZoneEditor*, ReolensGlass, ScrubberView, MotionEventActivityAttributes, ReolensScene | `Sources/AppShared/` |
+| State, persistence, iCloud, Keychain, App Intents, EventNotifier, SharedContainer, DigestScheduler, ThumbnailCache, ClipExporter, RecordingBookmarkStore, PrivacyZoneEditor*, ReolensGlass, ScrubberView, MotionEventActivityAttributes, ReolensScene, AllRecordingsView, AllRecordingsLoader, RecordingsCache, CameraFilterBar, HubExpansionStore, CameraNotificationPreferences, PerCameraNotificationsSection, BookmarkAutoDownloader, BackgroundDownloadPreferences, EventSummarizer, LiveActivityPushTokenRegistry | `Sources/AppShared/` |
 | macOS SwiftUI views | `App/Views/` |
 | macOS menu-bar item + Recent-events popover | `App/MenuBar/` |
 | macOS desktop widgets (extension target) | `App/Widgets/` |

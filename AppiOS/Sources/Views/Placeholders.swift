@@ -116,19 +116,12 @@ struct LivePlaceholderView: View {
         }
     }
 
-    /// Per-device expanded state, persisted on the store so
-    /// re-renders (iCloud sync callbacks, scenePhase transitions)
-    /// don't collapse the group out from under the user.
+    /// 0.5.1 — hubs auto-expand by default; collapse state syncs
+    /// across devices through `HubExpansionStore` (iCloud KV).
     private func bindingForExpansion(deviceID: UUID) -> Binding<Bool> {
         Binding(
-            get: { store.expandedDevices.contains(deviceID) },
-            set: { isOpen in
-                if isOpen {
-                    store.expandedDevices.insert(deviceID)
-                } else {
-                    store.expandedDevices.remove(deviceID)
-                }
-            }
+            get: { store.hubExpansion.isExpanded(deviceID: deviceID) },
+            set: { store.hubExpansion.setExpanded($0, for: deviceID) }
         )
     }
 }
@@ -244,59 +237,13 @@ struct RecordingsPlaceholderView: View {
                 description: Text("Add a camera to browse recordings. The camera list syncs from your Mac and other devices via iCloud.")
             )
         } else {
-            List(store.orderedCameras()) { entry in
-                if let session = store.session(for: entry.id) {
-                    NavigationLink {
-                        RecordingsCameraPicker(session: session)
-                    } label: {
-                        CameraListRow(entry: entry)
-                    }
-                } else {
-                    HStack {
-                        CameraListRow(entry: entry)
-                        Spacer()
-                        Image(systemName: "key.slash")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Step between the Recordings tab's camera picker and the per-channel
-/// recordings list. NVR/Hub devices expose many channels; single
-/// cameras get auto-forwarded.
-private struct RecordingsCameraPicker: View {
-    let session: CameraSession
-
-    var body: some View {
-        Group {
-            if session.channels.isEmpty {
-                ProgressView("Connecting…")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if session.channels.count == 1, let only = session.channels.first {
-                RecordingsView(session: session, channel: only)
-            } else {
-                List(session.liveChannels, id: \.channel) { channel in
-                    NavigationLink {
-                        RecordingsView(session: session, channel: channel)
-                    } label: {
-                        Label(
-                            channel.name ?? "Channel \(channel.channel + 1)",
-                            systemImage: "video.fill"
-                        )
-                    }
-                }
-                .navigationTitle(session.entry.displayName)
-            }
-        }
-        // Key the task off the session instance, not the camera UUID,
-        // so Reconnect (which gives us a new session for the same
-        // camera) actually re-fires the connect. AGENTS.md §8: avoid
-        // stale shared state across instances.
-        .task(id: ObjectIdentifier(session)) {
-            await session.connect()
+            // 0.5.1 — Recordings tab lands directly in the cross-hub
+            // All Recordings view. Fan-out is bounded server-side by
+            // `AllRecordingsLoader.maxConcurrentChannels`, so even
+            // multi-hub setups stay polite to the network.
+            let sessions = store.orderedCameras().compactMap { store.session(for: $0.id) }
+            AllRecordingsView(sessions: sessions)
+                .navigationTitle(sessions.count > 1 ? "All Recordings" : "All Recordings")
         }
     }
 }
