@@ -48,7 +48,7 @@ concurrency:
 jobs:
   release:
     name: Build, notarize, publish
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 60
     env:
       SIGNING_IDENTITY: ${{ vars.SIGNING_IDENTITY }}
@@ -264,7 +264,7 @@ jobs:
   # See docs/IOS_RELEASE.md for the full walkthrough.
   ios-testflight:
     name: iOS TestFlight upload
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 30
     env:
       AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}

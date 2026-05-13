@@ -24,7 +24,7 @@ jobs:
   # job — the others are best-effort signals layered on top.
   build-test:
     name: Build & test (Swift Package)
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 30
 
     steps:
@@ -131,7 +131,7 @@ jobs:
   # developer runs locally so "works on my machine" stays honest.
   app-build:
     name: Assemble .app bundle
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 20
     needs: build-test
 
@@ -222,7 +222,7 @@ jobs:
   # Signing/TestFlight upload lives in release.yml on tag push.
   ios-build:
     name: Build iOS app (Simulator)
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 20
     needs: build-test
 
@@ -287,7 +287,7 @@ jobs:
   # in the PR check list — they just don't fail the whole pipeline.
   lint:
     name: SwiftLint
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 10
 
     steps:
