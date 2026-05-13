@@ -286,7 +286,14 @@ else
     SIGN_BUILD_SETTINGS=("CODE_SIGN_IDENTITY=Apple Distribution")
 fi
 
-xcodebuild \
+# Invoke via `xcrun xcodebuild` rather than bare `xcodebuild` so the
+# call resolves through DEVELOPER_DIR / xcode-select instead of PATH.
+# On macos-26 CI runners the bare-PATH lookup keeps resolving to
+# Xcode_26.5_beta_2.app's xcodebuild (PATH preset that wins over
+# $GITHUB_PATH additions), and the beta toolchain doesn't ship the
+# iOS device platform — `generic/platform=iOS` fails with "iOS 26.5
+# is not installed". `xcrun` honors DEVELOPER_DIR regardless.
+xcrun xcodebuild \
     -project "${PROJECT}" \
     -scheme "${SCHEME}" \
     -configuration Release \
@@ -341,7 +348,8 @@ cat > "${EXPORT_OPTIONS}" <<PLIST
 PLIST
 
 echo "==> Exporting .ipa"
-xcodebuild \
+# Same DEVELOPER_DIR-vs-PATH rationale as the archive call above.
+xcrun xcodebuild \
     -exportArchive \
     -archivePath "${ARCHIVE_PATH}" \
     -exportPath "${EXPORT_DIR}" \
