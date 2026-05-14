@@ -14,6 +14,18 @@ public struct BaichuanAlarmVideoFile: Sendable, Hashable, Identifiable {
     /// `"md, people"` or `"md, vehicle, dog_cat"`.
     public let alarmType: String
 
+    public init(
+        fileName: String,
+        startTime: ReolinkTime,
+        endTime: ReolinkTime,
+        alarmType: String
+    ) {
+        self.fileName = fileName
+        self.startTime = startTime
+        self.endTime = endTime
+        self.alarmType = alarmType
+    }
+
     public var id: String { fileName }
 
     public var startDate: Date? { startTime.date() }

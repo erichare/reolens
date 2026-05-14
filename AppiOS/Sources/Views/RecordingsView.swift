@@ -28,28 +28,42 @@ struct RecordingsView: View {
     /// jump to the day, find the closest file, auto-play.
     var scrollTarget: Date? = nil
 
-    @State private var selectedDate: Date = Date()
+    /// 0.6.0 — All network state (files, subFiles, alarmVideoEntries,
+    /// monthStatuses, isLoading, errorMessage) lives on the loader.
+    /// The view owns the date binding, the AI-filter pill state, and
+    /// presentation-only state (sheet, scroll targets).
+    @State private var loader: RecordingsLoader
     @State private var pendingScrollTarget: Date?
     @State private var playedScrollTarget: Bool = false
-    @State private var files: [SearchFile] = []
-    @State private var subFiles: [SearchFile] = []
-    /// Baichuan `findAlarmVideo` results for the same day. Cross-
-    /// referenced by time-range overlap to populate AI detection
-    /// badges on rows whose CGI `Search` trigger bitfield is empty
-    /// (the common case on Home Hub Pro firmware). Mirrors the
-    /// macOS app's pipeline.
-    @State private var alarmVideoEntries: [BaichuanAlarmVideoFile] = []
-    @State private var isLoading = false
-    @State private var errorMessage: String?
     @State private var nowPlaying: PlayableRecording?
     @State private var aiFilter: Set<DetectionType> = []
-    @State private var monthStatuses: [SearchStatus] = []
+
+    init(session: CameraSession, channel: ChannelStatus, scrollTarget: Date? = nil) {
+        self.session = session
+        self.channel = channel
+        self.scrollTarget = scrollTarget
+        let initial = RecordingsLoader(
+            source: session,
+            channel: channel.channel,
+            channelUID: channel.uid,
+            captureRawResponses: false,
+            initialDate: Date()
+        )
+        self._loader = State(wrappedValue: initial)
+    }
+
+    private var dateBinding: Binding<Date> {
+        Binding(
+            get: { self.loader.selectedDate },
+            set: { self.loader.selectedDate = $0 }
+        )
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             DatePicker(
                 "Day",
-                selection: $selectedDate,
+                selection: dateBinding,
                 in: ...Date(),
                 displayedComponents: .date
             )
@@ -60,16 +74,16 @@ struct RecordingsView: View {
             // toolbar over the day / timeline / filter stack.
             .reolensGlassToolbar()
 
-            MonthRecordingDensity(selectedDate: $selectedDate, monthStatuses: monthStatuses)
+            MonthRecordingDensity(selectedDate: dateBinding, monthStatuses: loader.monthStatuses)
                 .reolensGlassToolbar()
 
             if !filteredFiles.isEmpty {
                 DayTimelineStrip(
-                    day: selectedDate,
+                    day: loader.selectedDate,
                     files: filteredFiles,
                     events: dayEvents,
                     onTapSegment: { file in
-                        let sub = subFileMatch(for: file)
+                        let sub = loader.subFileMatch(for: file)
                         playEntry(file: file, sub: sub, preferSub: true)
                     }
                 )
@@ -84,8 +98,8 @@ struct RecordingsView: View {
         }
         .navigationTitle("Recordings")
         .navigationBarTitleDisplayMode(.inline)
-        .task(id: selectedDate) {
-            await load()
+        .task(id: loader.selectedDate) {
+            await loader.reload()
             if let target = pendingScrollTarget, !playedScrollTarget {
                 playedScrollTarget = true
                 pendingScrollTarget = nil
@@ -96,8 +110,8 @@ struct RecordingsView: View {
             if let target = scrollTarget, !playedScrollTarget {
                 pendingScrollTarget = target
                 let day = Calendar.current.startOfDay(for: target)
-                if Calendar.current.startOfDay(for: selectedDate) != day {
-                    selectedDate = target
+                if Calendar.current.startOfDay(for: loader.selectedDate) != day {
+                    loader.selectedDate = target
                 } else {
                     Task {
                         playedScrollTarget = true
@@ -120,7 +134,7 @@ struct RecordingsView: View {
             guard let start = file.startDate, let end = file.endDate else { return false }
             return start <= target && target <= end
         }) {
-            let sub = subFileMatch(for: containing)
+            let sub = loader.subFileMatch(for: containing)
             playEntry(file: containing, sub: sub, preferSub: true)
             return
         }
@@ -129,27 +143,27 @@ struct RecordingsView: View {
             return (file, abs(start.timeIntervalSince(target)))
         }
         if let (closest, _) = withDistance.min(by: { $0.1 < $1.1 }) {
-            let sub = subFileMatch(for: closest)
+            let sub = loader.subFileMatch(for: closest)
             playEntry(file: closest, sub: sub, preferSub: true)
         }
     }
 
     @ViewBuilder
     private var content: some View {
-        if isLoading {
+        if loader.isLoading {
             ProgressView("Loading recordings…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let errorMessage {
+        } else if let errorMessage = loader.errorMessage {
             ContentUnavailableView(
                 "Couldn't load recordings",
                 systemImage: "exclamationmark.triangle",
                 description: Text(errorMessage)
             )
-        } else if files.isEmpty {
+        } else if loader.files.isEmpty {
             ContentUnavailableView(
                 "No recordings",
                 systemImage: "moon.zzz",
-                description: Text("Nothing recorded on \(selectedDate.formatted(date: .abbreviated, time: .omitted)).")
+                description: Text("Nothing recorded on \(loader.selectedDate.formatted(date: .abbreviated, time: .omitted)).")
             )
         } else if filteredFiles.isEmpty {
             ContentUnavailableView(
@@ -166,16 +180,16 @@ struct RecordingsView: View {
     }
 
     private var filteredFiles: [SearchFile] {
-        guard !aiFilter.isEmpty else { return files }
-        return files.filter { file in
-            let detections = Set(effectiveDetections(for: file))
+        guard !aiFilter.isEmpty else { return loader.files }
+        return loader.files.filter { file in
+            let detections = Set(loader.effectiveDetections(for: file))
             return !detections.isDisjoint(with: aiFilter)
         }
     }
 
     private var dayEvents: [TimestampedAIEvent] {
         let cal = Calendar.current
-        let startOfDay = cal.startOfDay(for: selectedDate)
+        let startOfDay = cal.startOfDay(for: loader.selectedDate)
         let endOfDay = cal.date(byAdding: .day, value: 1, to: startOfDay) ?? startOfDay
         return session.aiEventLog.filter { ev in
             ev.channelID == channel.channel
@@ -186,8 +200,8 @@ struct RecordingsView: View {
 
     @ViewBuilder
     private func row(for file: SearchFile) -> some View {
-        let sub = subFileMatch(for: file)
-        let detections = effectiveDetections(for: file)
+        let sub = loader.subFileMatch(for: file)
+        let detections = loader.effectiveDetections(for: file)
         Button {
             // Tap default: play the sub stream when available — much
             // smaller and faster to download than the main stream.
@@ -261,225 +275,6 @@ struct RecordingsView: View {
         await BookmarkAutoDownloader.shared.enqueue(bookmark: bookmark, sourceURL: url)
     }
 
-    private func load() async {
-        isLoading = true
-        errorMessage = nil
-        files = []
-        subFiles = []
-        alarmVideoEntries = []
-
-        if session.channels.isEmpty {
-            await session.connect()
-        }
-        guard session.status == .connected else {
-            isLoading = false
-            errorMessage = connectionUnavailableMessage()
-            return
-        }
-
-        guard let (start, end) = searchWindow(for: selectedDate) else {
-            isLoading = false
-            files = []
-            return
-        }
-
-        // Run main → sub SERIALLY. Reolink Home Hub Pro returns
-        // `rcv failed` (rspCode=-17) when two Search commands hit it
-        // concurrently on the same channel, which makes both calls
-        // return an empty file list — user sees "No recordings" even
-        // when there are plenty. The macOS app learned this the hard
-        // way too; same serialization comment lives in
-        // App/Views/RecordingsView.swift.
-        let mainResult = await session.withBackgroundPollingPaused {
-            await fetchSearch(streamType: "main", start: start, end: end)
-        }
-        switch mainResult {
-        case .success(let mainList, let statuses):
-            var seen = Set<String>()
-            let unique = mainList.filter { seen.insert($0.name).inserted }
-            files = unique.sorted { ($0.startDate ?? .distantPast) > ($1.startDate ?? .distantPast) }
-            if !statuses.isEmpty {
-                monthStatuses = statuses
-            }
-        case .failure(let message):
-            errorMessage = message
-            isLoading = false
-            return
-        }
-
-        // The user-visible list only needs the main-stream Search.
-        // Show it immediately, then enrich rows with the sub-stream
-        // match and Baichuan AI tags in the background. This mirrors
-        // the macOS flow and keeps a slow tag lookup from feeling like
-        // "recordings are still loading."
-        isLoading = false
-
-        Task { @MainActor in
-            // Sub-stream failure is non-fatal — battery cameras and some
-            // firmware don't produce a sub-stream recording. We just skip
-            // the SD size pill and quality picker for those rows.
-            let subResult = await session.withBackgroundPollingPaused {
-                await fetchSearch(streamType: "sub", start: start, end: end)
-            }
-            if case .success(let subList, _) = subResult {
-                var seen = Set<String>()
-                subFiles = subList.filter { seen.insert($0.name).inserted }
-            } else if case .failure(let message) = subResult {
-                log.info("Sub-stream Search unavailable on channel \(channel.channel): \(message, privacy: .public)")
-            }
-        }
-
-        // Cross-reference Baichuan's alarm-video list to pick up AI
-        // detection tags that CGI Search's trigger bitfield doesn't
-        // populate on Home Hub Pro firmware. Failure is non-fatal —
-        // rows just fall back to whatever the Search bitfield carries
-        // (often empty for hub-paired cameras, but never wrong).
-        Task { @MainActor in
-            if let baichuan = session.baichuanClient {
-                let uid: String
-                if let cgiUID = channel.uid, !cgiUID.isEmpty {
-                    uid = cgiUID
-                } else {
-                    uid = await baichuan.fetchUID(channelID: UInt8(channel.channel))
-                }
-                do {
-                    let entries = try await baichuan.findAlarmVideos(
-                        channel: UInt8(channel.channel),
-                        start: start,
-                        end: end,
-                        streamType: "main",
-                        uid: uid
-                    )
-                    alarmVideoEntries = entries
-                } catch {
-                    log.info("findAlarmVideos for channel \(channel.channel) failed: \(error.localizedDescription, privacy: .public)")
-                }
-            }
-        }
-    }
-
-    private func searchWindow(for day: Date) -> (start: Date, end: Date)? {
-        let calendar = Calendar.current
-        let start = calendar.startOfDay(for: day)
-        // Match the macOS app's end: 23:59:59 of the SAME day (one
-        // second before midnight of day+1) rather than 00:00:00 of
-        // the next day. Reolink's Search treats both as inclusive,
-        // and using the end-of-same-day form avoids ambiguity.
-        guard let endOfDay = calendar.date(byAdding: .day, value: 1, to: start)?.addingTimeInterval(-1) else {
-            return nil
-        }
-        let now = Date()
-        guard start <= now else { return nil }
-        return (start, min(endOfDay, now))
-    }
-
-    private func connectionUnavailableMessage() -> String {
-        if case .failed(let reason) = session.connectionStage {
-            return reason
-        }
-        if case .error(let message) = session.status {
-            return message
-        }
-        return "Camera isn't connected yet."
-    }
-
-    private enum SearchOutcome {
-        case success([SearchFile], statuses: [SearchStatus])
-        case failure(String)
-    }
-
-    private func fetchSearch(streamType: String, start: Date, end: Date) async -> SearchOutcome {
-        let startedAt = Date()
-        let command = Commands.search(
-            channel: channel.channel,
-            onlyStatus: false,
-            streamType: streamType,
-            start: start,
-            end: end
-        )
-        do {
-            let raw = try await session.client.sendCapturingRaw(command)
-            let envelopes = try JSONDecoder().decode([CGIResponse<SearchEnvelope>].self, from: raw)
-            let result = envelopes.first?.value?.SearchResult
-            let files = result?.File ?? []
-            let statuses = result?.Status ?? []
-            log.info("Search completed channel=\(channel.channel) stream=\(streamType, privacy: .public) files=\(files.count) statuses=\(statuses.count) elapsed=\(Date().timeIntervalSince(startedAt), privacy: .public)s")
-            return .success(files, statuses: statuses)
-        } catch {
-            return .failure(error.localizedDescription)
-        }
-    }
-
-    /// Find the sub-stream file that best matches `file`'s main-stream
-    /// time range. The two stream chunkers can emit slightly offset
-    /// segment boundaries, so "longest temporal overlap wins" is more
-    /// reliable than equality matching.
-    private func subFileMatch(for file: SearchFile) -> SearchFile? {
-        guard let mainStart = file.startDate, let mainEnd = file.endDate else { return nil }
-        var best: (sub: SearchFile, overlap: TimeInterval)? = nil
-        for sub in subFiles {
-            guard let subStart = sub.startDate, let subEnd = sub.endDate else { continue }
-            let lo = max(mainStart, subStart)
-            let hi = min(mainEnd, subEnd)
-            let overlap = hi.timeIntervalSince(lo)
-            guard overlap > 0 else { continue }
-            if best == nil || overlap > best!.overlap {
-                best = (sub, overlap)
-            }
-        }
-        return best?.sub
-    }
-
-    /// Detection-trigger pipeline mirroring the macOS app:
-    ///   1. CGI `Search` response's `Trigger` bitfield, when populated.
-    ///   2. Baichuan `findAlarmVideo` entries whose time range
-    ///      overlaps this CGI file's range. Most reliable source on
-    ///      Home Hub Pro firmware.
-    ///   3. Live Baichuan `aiEventLog` events received this session,
-    ///      matched to the file's time range by channel + timestamp.
-    private func effectiveDetections(for file: SearchFile) -> [DetectionType] {
-        if !file.triggers.isEmpty { return file.triggers }
-
-        var matches: [DetectionType] = []
-        var seen = Set<DetectionType>()
-
-        for av in alarmVideosOverlapping(file: file) {
-            for d in av.detections where seen.insert(d).inserted {
-                matches.append(d)
-            }
-        }
-        if !matches.isEmpty { return matches }
-
-        guard let start = file.startDate, let end = file.endDate else { return [] }
-        for event in session.aiEventLog
-            where event.channelID == channel.channel
-                && event.timestamp >= start
-                && event.timestamp <= end {
-            if let d = event.detectionType, seen.insert(d).inserted {
-                matches.append(d)
-            }
-        }
-        return matches
-    }
-
-    /// Find every Baichuan alarm-video entry whose time range overlaps
-    /// the given CGI Search file's. Half-open semantics — an entry
-    /// that ends exactly at the file's start belongs to the previous
-    /// file, not this one. Mirrors the macOS app's helper of the
-    /// same name.
-    private func alarmVideosOverlapping(file: SearchFile) -> [BaichuanAlarmVideoFile] {
-        guard let fileStart = file.startDate, let fileEnd = file.endDate else {
-            // Fall back to exact-filename match when timestamps are
-            // missing (shouldn't happen on healthy firmware).
-            return alarmVideoEntries.filter { $0.fileName == file.name }
-        }
-        return alarmVideoEntries.filter { av in
-            if av.fileName == file.name { return true }
-            guard let avStart = av.startDate, let avEnd = av.endDate else { return false }
-            return avStart < fileEnd && avEnd > fileStart
-        }
-    }
-
     private func playEntry(file: SearchFile, sub: SearchFile?, preferSub: Bool) {
         let target = (preferSub ? sub : file) ?? file
         Task {
@@ -492,7 +287,7 @@ struct RecordingsView: View {
                     id: target.name,
                     url: url,
                     displayName: target.name,
-                    detections: effectiveDetections(for: file),
+                    detections: loader.effectiveDetections(for: file),
                     startDate: target.startDate
                 )
             }

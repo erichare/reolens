@@ -21,41 +21,21 @@ struct RecordingsView: View {
     var scrollTarget: Date? = nil
 
     @Environment(CameraStore.self) private var store
-    @State private var selectedDate: Date = Date()
+    /// 0.6.0 — All network state (files, subFiles, alarmVideoEntries,
+    /// monthStatuses, eventLog, eventsUnsupported, alarmVideoLoading,
+    /// rawResponse, isLoading, errorMessage) lives on the loader. The
+    /// view owns the date, the AI-filter pill state, and presentation-
+    /// only state (sheets, scroll targets, bookmark UI).
+    @State private var loader: RecordingsLoader
     @State private var pendingScrollTarget: Date?
     @State private var playedScrollTarget: Bool = false
-    /// Canonical list shown to the user. Sourced from a Search of the **main**
-    /// stream — that's the high-quality recording the hub actually stores.
-    @State private var files: [SearchFile] = []
-    /// Sub-stream Search results. Matched against main rows by time-range
-    /// overlap because Reolink doesn't synchronize the two streams to the
-    /// second — observed offsets of ±2-6s and occasionally more, so we can't
-    /// use an exact `startTime` fingerprint.
-    @State private var subFiles: [SearchFile] = []
-    @State private var isLoading = false
-    @State private var errorMessage: String?
     @State private var nowPlaying: PlayableRecording?
-    @State private var rawResponse: String?
     @State private var showRawResponse = false
-    @State private var eventLog: [HubEvent] = []
-    @State private var eventsUnsupported = false
-    /// Baichuan-delivered alarm-tagged recording info from `findAlarmVideo` on
-    /// the hub. Stored as a flat list because the hub emits ONE block per
-    /// alarm tag — the same recording can produce e.g. two blocks
-    /// (`alarmType=md`, then `alarmType=people`) sharing the same `fileName`
-    /// and time range. Aggregation across all blocks happens in
-    /// `effectiveDetections`.
-    @State private var alarmVideoEntries: [BaichuanAlarmVideoFile] = []
-    @State private var alarmVideoLoading = false
     /// AI-event filter chips. Empty set means "no filter — show
     /// everything". Persists across view rebuilds via parent
     /// re-creation only; deliberately not synced because filter
     /// preferences are typically session-scoped.
     @State private var aiFilter: Set<DetectionType> = []
-    /// Per-month recording-status bitfields harvested from the latest
-    /// `Search` response. Feeds the day-density calendar above the
-    /// list. New in 0.4.0.
-    @State private var monthStatuses: [SearchStatus] = []
     /// 0.5.0 Theme C1 — bookmarks for this camera. Loaded lazily on
     /// first appear so the recording list itself never blocks on
     /// iCloud Drive lookup. Surfaces in the toolbar "Bookmarks" button
@@ -63,6 +43,29 @@ struct RecordingsView: View {
     @State private var bookmarks: [RecordingBookmark] = []
     @State private var showingBookmarks = false
     @State private var bookmarkExportStatus: String?
+
+    init(session: CameraSession, channel: ChannelStatus, scrollTarget: Date? = nil) {
+        self.session = session
+        self.channel = channel
+        self.scrollTarget = scrollTarget
+        let initial = RecordingsLoader(
+            source: session,
+            channel: channel.channel,
+            channelUID: channel.uid,
+            captureRawResponses: true,
+            initialDate: Date()
+        )
+        self._loader = State(wrappedValue: initial)
+    }
+
+    /// Binding for the DatePicker. Values are stored on the loader so
+    /// the view itself owns no date state.
+    private var dateBinding: Binding<Date> {
+        Binding(
+            get: { self.loader.selectedDate },
+            set: { self.loader.selectedDate = $0 }
+        )
+    }
 
     private let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -77,11 +80,11 @@ struct RecordingsView: View {
             // bar all use the same glass toolbar surface so the
             // recordings header reads as one continuous hovering
             // chrome strip.
-            MonthRecordingDensity(selectedDate: $selectedDate, monthStatuses: monthStatuses)
+            MonthRecordingDensity(selectedDate: dateBinding, monthStatuses: loader.monthStatuses)
                 .reolensGlassToolbar()
             if !filteredFiles.isEmpty {
                 DayTimelineStrip(
-                    day: selectedDate,
+                    day: loader.selectedDate,
                     files: filteredFiles,
                     events: dayEvents,
                     onTapSegment: { preview($0) }
@@ -92,25 +95,25 @@ struct RecordingsView: View {
                 .reolensGlassToolbar()
             Divider()
             content
-            if !files.isEmpty {
-                let totalDetections = files.reduce(0) { $0 + effectiveDetections(for: $1).count }
+            if !loader.files.isEmpty {
+                let totalDetections = loader.files.reduce(0) { $0 + loader.effectiveDetections(for: $1).count }
                 if totalDetections == 0
-                    && eventsUnsupported
-                    && files.allSatisfy({ $0.triggers.isEmpty })
+                    && loader.eventsUnsupported
+                    && loader.files.allSatisfy({ $0.triggers.isEmpty })
                     && session.aiEventLog.isEmpty
-                    && alarmVideoEntries.isEmpty
-                    && !alarmVideoLoading {
+                    && loader.alarmVideoEntries.isEmpty
+                    && !loader.alarmVideoLoading {
                     Divider()
                     aiUnavailableFooter
-                } else if !alarmVideoEntries.isEmpty || !session.aiEventLog.isEmpty {
+                } else if !loader.alarmVideoEntries.isEmpty || !session.aiEventLog.isEmpty {
                     Divider()
                     baichuanActiveFooter
                 }
             }
         }
-        .task(id: selectedDate) {
+        .task(id: loader.selectedDate) {
             loadBookmarks()
-            await reload()
+            await loader.reload()
             // After the day's files load, if the user got here via a
             // notification tap with a target time, auto-play the
             // closest matching clip. Guarded so it fires exactly once
@@ -124,13 +127,14 @@ struct RecordingsView: View {
         }
         .onAppear {
             // Seed `pendingScrollTarget` from the prop on first
-            // appear. Setting `selectedDate` here makes the existing
-            // `.task(id: selectedDate)` fire a reload for that day.
+            // appear. Setting `loader.selectedDate` here makes the
+            // existing `.task(id: loader.selectedDate)` fire a reload
+            // for that day.
             if let target = scrollTarget, !playedScrollTarget {
                 pendingScrollTarget = target
                 let day = Calendar.current.startOfDay(for: target)
-                if Calendar.current.startOfDay(for: selectedDate) != day {
-                    selectedDate = target
+                if Calendar.current.startOfDay(for: loader.selectedDate) != day {
+                    loader.selectedDate = target
                 } else {
                     // Same day — reload already done; trigger the
                     // auto-play directly.
@@ -193,10 +197,10 @@ struct RecordingsView: View {
     /// step (`ClipExporter`) runs after the download completes and
     /// writes the trimmed MP4 to the user's chosen destination.
     private func exportBookmark(_ bookmark: RecordingBookmark) {
-        guard let source = files.first(where: {
+        guard let source = loader.files.first(where: {
             guard let s = $0.startDate, let e = $0.endDate else { return false }
             return s <= bookmark.startDate && bookmark.startDate <= e
-        }) ?? files.first(where: {
+        }) ?? loader.files.first(where: {
             guard let s = $0.startDate else { return false }
             return abs(s.timeIntervalSince(bookmark.startDate)) < 90
         }) else {
@@ -228,7 +232,7 @@ struct RecordingsView: View {
             startEpoch: start.timeIntervalSince1970,
             endEpoch: end.timeIntervalSince1970,
             note: nil,
-            aiTagsAtMark: effectiveDetections(for: file).map { $0.label }
+            aiTagsAtMark: loader.effectiveDetections(for: file).map { $0.label }
         )
         do {
             try RecordingBookmarkStore.add(bookmark)
@@ -246,10 +250,10 @@ struct RecordingsView: View {
     /// contains the bookmark's start. Reuses the existing preview
     /// path so playback feels identical to a row tap.
     private func playBookmark(_ bookmark: RecordingBookmark) {
-        guard let match = files.first(where: {
+        guard let match = loader.files.first(where: {
             guard let s = $0.startDate, let e = $0.endDate else { return false }
             return s <= bookmark.startDate && bookmark.startDate <= e
-        }) ?? files.first(where: {
+        }) ?? loader.files.first(where: {
             guard let s = $0.startDate else { return false }
             return abs(s.timeIntervalSince(bookmark.startDate)) < 90
         }) else { return }
@@ -305,7 +309,7 @@ struct RecordingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
-            if alarmVideoLoading {
+            if loader.alarmVideoLoading {
                 ProgressView().controlSize(.small)
             }
         }
@@ -319,15 +323,15 @@ struct RecordingsView: View {
         HStack(spacing: 12) {
             // `.field` style with an explicit minWidth keeps the long date
             // string (e.g. "Wednesday, May 11, 2026") from getting cropped.
-            DatePicker("", selection: $selectedDate, displayedComponents: [.date])
+            DatePicker("", selection: dateBinding, displayedComponents: [.date])
                 .labelsHidden()
                 .datePickerStyle(.field)
                 .frame(minWidth: 170, idealWidth: 200)
             Spacer()
-            if isLoading {
+            if loader.isLoading {
                 ProgressView().controlSize(.small)
             }
-            if store.developerMode, rawResponse != nil {
+            if store.developerMode, loader.lastRawResponse != nil {
                 Button {
                     showRawResponse = true
                 } label: {
@@ -335,7 +339,7 @@ struct RecordingsView: View {
                 }
                 .help("Show the raw JSON response from the camera. Useful for diagnosing why detection icons don't match.")
                 .popover(isPresented: $showRawResponse) {
-                    RawResponseView(text: rawResponse ?? "")
+                    RawResponseView(text: loader.lastRawResponse ?? "")
                 }
             }
             // 0.5.0 — Bookmarks button. Shows a count badge when any
@@ -353,7 +357,7 @@ struct RecordingsView: View {
             }
             .help("Show this camera's saved clip bookmarks.")
             Button {
-                Task { await reload() }
+                Task { await loader.reload() }
             } label: {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
@@ -366,21 +370,21 @@ struct RecordingsView: View {
 
     @ViewBuilder
     private var content: some View {
-        if let errorMessage {
+        if let errorMessage = loader.errorMessage {
             ContentUnavailableView {
                 Label("Couldn't load recordings", systemImage: "exclamationmark.triangle")
             } description: {
                 Text(errorMessage).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
             } actions: {
-                Button("Retry") { Task { await reload() } }
+                Button("Retry") { Task { await loader.reload() } }
             }
-        } else if files.isEmpty && !isLoading {
+        } else if loader.files.isEmpty && !loader.isLoading {
             ContentUnavailableView(
                 "No recordings",
                 systemImage: "tray",
-                description: Text("No recordings on this channel for \(selectedDate, format: .dateTime.day().month().year()).")
+                description: Text("No recordings on this channel for \(loader.selectedDate, format: .dateTime.day().month().year()).")
             )
-        } else if filteredFiles.isEmpty && !isLoading {
+        } else if filteredFiles.isEmpty && !loader.isLoading {
             ContentUnavailableView(
                 "No matching recordings",
                 systemImage: "line.3.horizontal.decrease.circle",
@@ -403,7 +407,7 @@ struct RecordingsView: View {
                         } label: {
                             Label("Download Low Quality…", systemImage: "arrow.down.circle")
                         }
-                        .disabled(subFileMatch(for: file) == nil)
+                        .disabled(loader.subFileMatch(for: file) == nil)
                         Button {
                             saveToDisk(file, quality: .high)
                         } label: {
@@ -446,7 +450,7 @@ struct RecordingsView: View {
     @ViewBuilder
     private func sizeColumn(for file: SearchFile) -> some View {
         let mainMB = file.sizeMB
-        let subMB = subFileMatch(for: file)?.sizeMB
+        let subMB = loader.subFileMatch(for: file)?.sizeMB
         VStack(alignment: .trailing, spacing: 2) {
             if let m = mainMB {
                 HStack(spacing: 4) {
@@ -498,7 +502,7 @@ struct RecordingsView: View {
     /// quality choices for both preview and download.
     @ViewBuilder
     private func rowActions(_ file: SearchFile) -> some View {
-        let hasSub = subFileMatch(for: file) != nil
+        let hasSub = loader.subFileMatch(for: file) != nil
         HStack(spacing: 4) {
             Button {
                 preview(file)
@@ -543,7 +547,7 @@ struct RecordingsView: View {
     ///   3. If both are empty, render nothing (we don't fake data).
     @ViewBuilder
     private func detectionTags(for file: SearchFile) -> some View {
-        let detections = effectiveDetections(for: file)
+        let detections = loader.effectiveDetections(for: file)
         if !detections.isEmpty {
             HStack(spacing: 6) {
                 ForEach(detections, id: \.self) { d in
@@ -568,9 +572,9 @@ struct RecordingsView: View {
     /// in the selected set (OR semantics — pick "people" OR "vehicle"
     /// for a "stuff worth watching" view).
     private var filteredFiles: [SearchFile] {
-        guard !aiFilter.isEmpty else { return files }
-        return files.filter { file in
-            let detections = Set(effectiveDetections(for: file))
+        guard !aiFilter.isEmpty else { return loader.files }
+        return loader.files.filter { file in
+            let detections = Set(loader.effectiveDetections(for: file))
             return !detections.isDisjoint(with: aiFilter)
         }
     }
@@ -579,7 +583,7 @@ struct RecordingsView: View {
     /// day. Feeds the timeline strip's event-tick overlay.
     private var dayEvents: [TimestampedAIEvent] {
         let cal = Calendar.current
-        let startOfDay = cal.startOfDay(for: selectedDate)
+        let startOfDay = cal.startOfDay(for: loader.selectedDate)
         let endOfDay = cal.date(byAdding: .day, value: 1, to: startOfDay) ?? startOfDay
         return session.aiEventLog.filter { ev in
             ev.channelID == channel.channel
@@ -588,64 +592,8 @@ struct RecordingsView: View {
         }
     }
 
-    private func effectiveDetections(for file: SearchFile) -> [DetectionType] {
-        if !file.triggers.isEmpty { return file.triggers }
-
-        var matches: [DetectionType] = []
-        var seen = Set<DetectionType>()
-
-        // 1. Best source: Baichuan's findAlarmVideo response, matched by
-        //    TIME-RANGE OVERLAP. The CGI `Search` and Baichuan `findAlarmVideo`
-        //    APIs use different file-name encodings, but both report
-        //    start/end timestamps in the camera's local time, so an
-        //    overlapping range is a reliable correspondence.
-        for av in alarmVideosOverlapping(file: file) {
-            for d in av.detections where seen.insert(d).inserted {
-                matches.append(d)
-            }
-        }
-        if !matches.isEmpty { return matches }
-
-        if let start = file.startDate, let end = file.endDate {
-            // 2. Live Baichuan AlarmEventList pushes received this session.
-            for event in session.aiEventLog
-                where event.channelID == channel.channel
-                && event.timestamp >= start
-                && event.timestamp <= end {
-                if let d = event.detectionType, seen.insert(d).inserted {
-                    matches.append(d)
-                }
-            }
-            // 3. Speculative GetEvents probe response (rare).
-            for entry in eventLog where entry.overlaps(start: start, end: end) {
-                for d in entry.detectionTypes where seen.insert(d).inserted {
-                    matches.append(d)
-                }
-            }
-        }
-        return matches
-    }
-
-    /// Find every `BaichuanAlarmVideoFile` whose time range overlaps with the
-    /// given CGI `SearchFile`. Two ranges overlap iff `avStart < fileEnd`
-    /// and `avEnd > fileStart`. We use half-open semantics so a Baichuan
-    /// entry that ends exactly at the file's start is treated as the previous
-    /// event, not this one.
-    private func alarmVideosOverlapping(file: SearchFile) -> [BaichuanAlarmVideoFile] {
-        guard let fileStart = file.startDate, let fileEnd = file.endDate else {
-            return alarmVideoEntries.filter { $0.fileName == file.name }
-        }
-        return alarmVideoEntries.filter { av in
-            if av.fileName == file.name { return true }
-            guard let avStart = av.startDate, let avEnd = av.endDate else { return false }
-            return avStart < fileEnd && avEnd > fileStart
-        }
-    }
-
-    /// Distinct alarm-tagged recordings — multiple `<alarmVideo>` blocks with
-    /// the same fileName count as one. Used for the footer label.
     private var distinctTaggedRecordingCount: Int {
-        Set(alarmVideoEntries.map(\.fileName)).count
+        Set(loader.alarmVideoEntries.map(\.fileName)).count
     }
 
     private func tint(for detection: DetectionType) -> Color {
@@ -680,230 +628,11 @@ struct RecordingsView: View {
         return parts.joined(separator: " · ")
     }
 
-    private func reload() async {
-        isLoading = true
-        errorMessage = nil
-
-        // 0.5.0: short pre-flight wait for the camera session to be
-        // connected before firing the Search. Previously, a fast
-        // pivot to "Recordings" while the session was still logging
-        // in surfaced a generic "Empty response" error and stranded
-        // the list. The wait is short (1.5 s) so a genuinely-broken
-        // session doesn't trap the user in a long spinner.
-        if session.status != .connected {
-            let deadline = Date().addingTimeInterval(1.5)
-            while session.status != .connected, Date() < deadline, !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(150))
-            }
-            if session.status != .connected {
-                isLoading = false
-                errorMessage = connectionUnavailableMessage()
-                files = []
-                return
-            }
-        }
-
-        guard let (start, end) = searchWindow(for: selectedDate) else {
-            isLoading = false
-            files = []
-            return
-        }
-
-        // ───────────────────────────────────────────────────────────
-        // 0.5.0 Theme E follow-up: the user-visible list only needs
-        // the main-stream Search to populate. The previous flow
-        // sequenced main → sub → GetEvents → findAlarmVideo before
-        // dropping the `isLoading` spinner, which made the list feel
-        // like it was loading for 4-6 seconds even when the main
-        // Search had already returned in < 500 ms.
-        //
-        // New flow:
-        //   1. Await main Search. Surface errors, populate `files`.
-        //   2. Drop `isLoading` immediately — the list is now visible.
-        //   3. Kick off sub Search, GetEvents, and findAlarmVideo as
-        //      detached tasks. They enrich rows (sub-stream preview,
-        //      AI tag chips) as they complete; the `alarmVideoLoading`
-        //      flag covers the Baichuan path's own progress spinner
-        //      so users still see "tags loading…" when relevant.
-        //
-        // Reolink Home Hub Pro returns `rcv failed` (rspCode=-17) when
-        // two Search commands hit it concurrently — we still wait for
-        // main to complete before launching sub for that reason, but
-        // sub no longer blocks the user-visible list.
-        // ───────────────────────────────────────────────────────────
-        let mainOutcome = await session.withBackgroundPollingPaused {
-            await fetchSearchResults(channel: channel.channel, streamType: "main", start: start, end: end, captureRaw: true)
-        }
-        switch mainOutcome {
-        case .success(let mainFiles, let raw, let statuses):
-            rawResponse = raw
-            files = mainFiles.sorted { ($0.startDate ?? .distantPast) > ($1.startDate ?? .distantPast) }
-            if !statuses.isEmpty {
-                monthStatuses = statuses
-            }
-        case .failure(let message):
-            errorMessage = message
-            files = []
-        }
-        // List renders now — drop the spinner. Background enrichment
-        // continues below; the small alarm-video spinner covers the
-        // remaining path.
-        isLoading = false
-
-        // Sub-stream Search — runs AFTER main to avoid Home Hub Pro's
-        // -17 concurrent-Search collision, but in a detached task so
-        // the user doesn't wait. Failure is non-fatal: not every
-        // camera produces sub-stream recordings (battery cams), so
-        // we just skip the low-quality preview path for those rows.
-        Task { @MainActor in
-            let subOutcome = await self.session.withBackgroundPollingPaused {
-                await self.fetchSearchResults(channel: self.channel.channel, streamType: "sub", start: start, end: end, captureRaw: false)
-            }
-            switch subOutcome {
-            case .success(let subResults, _, _):
-                self.subFiles = subResults.sorted { ($0.startDate ?? .distantPast) < ($1.startDate ?? .distantPast) }
-                log.info("Sub-stream Search returned \(subResults.count) files")
-            case .failure(let message):
-                log.info("Sub-stream Search unavailable on channel \(self.channel.channel): \(message, privacy: .public). Falling back to main-only.")
-                self.subFiles = []
-            }
-        }
-
-        // GetEvents probe — only fires once per session lifetime
-        // (eventsUnsupported sticks after the first firmware-doesn't-
-        // support reply). Detached task so it never gates the list.
-        if !eventsUnsupported {
-            Task { @MainActor in
-                await self.loadEvents(start: start, end: end)
-            }
-        }
-
-        // The real source of historical AI tags: Baichuan's
-        // findAlarmVideo (msg 272/273/274). Has its own
-        // `alarmVideoLoading` flag for the "AI tags loading" hint
-        // shown in the row metadata.
-        Task { @MainActor in
-            await self.loadAlarmVideos(start: start, end: end)
-        }
-    }
-
-    private func searchWindow(for day: Date) -> (start: Date, end: Date)? {
-        let cal = Calendar.current
-        let start = cal.startOfDay(for: day)
-        guard let endOfDay = cal.date(byAdding: .day, value: 1, to: start)?.addingTimeInterval(-1) else {
-            return nil
-        }
-        let now = Date()
-        guard start <= now else { return nil }
-        // For "today", don't ask the hub to scan into the future.
-        // Reolink's own app appears to cap the end time at now; using
-        // 23:59:59 for a partial day can make a tiny list feel slow.
-        return (start, min(endOfDay, now))
-    }
-
-    private func connectionUnavailableMessage() -> String {
-        if case .failed(let reason) = session.connectionStage {
-            return reason
-        }
-        if case .error(let message) = session.status {
-            return message
-        }
-        return "Camera isn't connected yet — try again once the live view is up."
-    }
-
-    private func loadAlarmVideos(start: Date, end: Date) async {
-        guard let client = session.baichuanClient else {
-            log.info("Baichuan client not yet ready; skipping findAlarmVideo")
-            return
-        }
-        alarmVideoLoading = true
-        defer { alarmVideoLoading = false }
-
-        // Reolink Home Hubs route findAlarmVideo to a paired camera by its
-        // PER-CAMERA UID, not the hub UID. The CGI `GetChannelstatus` response
-        // gives us that mapping (each ChannelStatus has a `uid` field).
-        // Baichuan msg 114 returns only the hub UID and is therefore wrong
-        // for this purpose — we keep it as a last-resort fallback in case
-        // `GetChannelstatus` didn't populate uid for some firmware.
-        let uid: String
-        if let cgiUID = channel.uid, !cgiUID.isEmpty {
-            uid = cgiUID
-            log.info("Using per-channel UID from GetChannelstatus for channel=\(self.channel.channel): \(cgiUID, privacy: .public)")
-        } else {
-            uid = await client.fetchUID(channelID: UInt8(channel.channel))
-            log.info("Fallback: Baichuan-fetched UID for channel=\(self.channel.channel): \(uid.isEmpty ? "<empty>" : uid, privacy: .public)")
-        }
-
-        do {
-            let files = try await client.findAlarmVideos(
-                channel: UInt8(channel.channel),
-                start: start,
-                end: end,
-                streamType: "main",
-                uid: uid
-            )
-            alarmVideoEntries = files
-            log.info("findAlarmVideo channel=\(self.channel.channel) entries=\(files.count) tags=\(files.flatMap { $0.detections }.map { $0.label }.joined(separator: ","), privacy: .public)")
-            // Dump per-entry detail so we can diagnose name/time mismatches
-            // against the CGI Search rows shown in the UI.
-            for f in files {
-                let startStr = f.startDate.map { ISO8601DateFormatter().string(from: $0) } ?? "?"
-                let endStr = f.endDate.map { ISO8601DateFormatter().string(from: $0) } ?? "?"
-                log.info("  baichuan-file: name=\(f.fileName, privacy: .public) start=\(startStr, privacy: .public) end=\(endStr, privacy: .public) alarmType=\(f.alarmType, privacy: .public)")
-            }
-        } catch {
-            log.error("findAlarmVideo failed: \(error.localizedDescription, privacy: .public)")
-        }
-    }
-
-    private func loadEvents(start: Date, end: Date) async {
-        let cmd = Commands.getEvents(channel: channel.channel, start: start, end: end)
-        do {
-            let raw = try await session.client.sendCapturingRaw(cmd)
-            // Raw GetEvents responses include hardware-fingerprint
-            // fields. Gate behind developer mode + .debug so they
-            // don't surface in sysdiagnose for ordinary users.
-            if CameraStore.developerModeIsOn {
-                log.debug("GetEvents raw response (channel=\(self.channel.channel)):\n\(String(data: raw, encoding: .utf8) ?? "<binary>", privacy: .private)")
-            }
-            let envelopes = (try? JSONDecoder().decode([CGIResponse<HubEventEnvelope>].self, from: raw)) ?? []
-            if let firstError = envelopes.first?.error,
-               firstError.rspCode == CGIErrorCode.notSupport.rawValue {
-                log.info("GetEvents not supported on this firmware; falling back to no AI metadata.")
-                eventsUnsupported = true
-                eventLog = []
-                return
-            }
-            // Home Hub Pro returns current alarm state under `value.ai`,
-            // `value.md`, `value.visitor` — NOT a historical event list.
-            // Our `HubEventEnvelope` decoder only finds events when one of its
-            // candidate top-level keys is present (EventList, Events, …).
-            // If no events came back, mark unsupported so the UI footer shows.
-            let decoded = envelopes.first?.value?.events ?? []
-            eventLog = decoded
-            if decoded.isEmpty {
-                log.info("GetEvents returned current-state only (not a historical event log). Marking unsupported.")
-                eventsUnsupported = true
-            }
-        } catch {
-            log.debug("GetEvents probe failed: \(error.localizedDescription, privacy: .public)")
-            eventsUnsupported = true
-        }
-    }
-
-    private func prettyPrint(_ data: Data) -> String? {
-        guard let obj = try? JSONSerialization.jsonObject(with: data, options: .allowFragments) else { return nil }
-        guard let pretty = try? JSONSerialization.data(
-            withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]
-        ) else { return nil }
-        return String(data: pretty, encoding: .utf8)
-    }
-
     /// In-app preview: stream the SUB version (small, fast). Falls back to
     /// main only if no sub-stream file matches by start time.
     private func preview(_ file: SearchFile) {
-        let target = subFileMatch(for: file) ?? file
-        let isSub = subFileMatch(for: file) != nil
+        let target = loader.subFileMatch(for: file) ?? file
+        let isSub = loader.subFileMatch(for: file) != nil
         Task {
             let token = await session.client.currentToken?.name
             let creds = await session.client.credentials
@@ -928,7 +657,7 @@ struct RecordingsView: View {
         let source: SearchFile
         switch quality {
         case .low:
-            guard let sub = subFileMatch(for: file) else {
+            guard let sub = loader.subFileMatch(for: file) else {
                 log.warning("No sub-stream file to download for \(file.name, privacy: .public); aborting low-quality save")
                 return
             }
@@ -979,121 +708,8 @@ struct RecordingsView: View {
         }
     }
 
-    /// Find the sub-stream file whose time range overlaps the given main
-    /// file. Reolink doesn't sync stream timestamps to the second (observed
-    /// offsets ±2-6s), so exact matching fails. Overlap is robust to these
-    /// offsets and to slightly different segment boundaries between the two
-    /// stream chunkers.
-    private func subFileMatch(for file: SearchFile) -> SearchFile? {
-        subFileMatchFromList(for: file, subs: subFiles)
-    }
-
-    private func subFileMatchFromList(for file: SearchFile, subs: [SearchFile]) -> SearchFile? {
-        guard let mainStart = file.startDate, let mainEnd = file.endDate else { return nil }
-        // Take the sub with the largest temporal intersection — protects
-        // against the rare case where a long main file overlaps several
-        // shorter sub segments (we want the one that most-likely contains
-        // the same content).
-        var best: (sub: SearchFile, overlap: TimeInterval)? = nil
-        for sub in subs {
-            guard let subStart = sub.startDate, let subEnd = sub.endDate else { continue }
-            let lo = max(mainStart, subStart)
-            let hi = min(mainEnd, subEnd)
-            let overlap = hi.timeIntervalSince(lo)
-            guard overlap > 0 else { continue }
-            if best == nil || overlap > best!.overlap {
-                best = (sub, overlap)
-            }
-        }
-        return best?.sub
-    }
-
     private enum DownloadQuality { case low, high
         var label: String { self == .low ? "Low Quality" : "High Quality" }
-    }
-
-    /// Per-stream Search result with raw JSON for diagnostics.
-    private enum SearchOutcome {
-        case success([SearchFile], rawPretty: String, statuses: [SearchStatus])
-        case failure(String)
-    }
-
-    private func fetchSearchResults(channel: Int, streamType: String, start: Date, end: Date, captureRaw: Bool) async -> SearchOutcome {
-        let startedAt = Date()
-        let command = Commands.search(
-            channel: channel,
-            onlyStatus: false,
-            streamType: streamType,
-            start: start,
-            end: end
-        )
-        do {
-            let raw = try await session.client.sendCapturingRaw(command)
-            let shouldCaptureRaw = captureRaw && store.developerMode
-            let pretty = shouldCaptureRaw ? (prettyPrint(raw) ?? String(data: raw, encoding: .utf8) ?? "<binary>") : ""
-            if shouldCaptureRaw {
-                log.debug("Search raw response (channel=\(channel) stream=\(streamType, privacy: .public)):\n\(pretty, privacy: .private)")
-            } else {
-                log.debug("Search returned \(raw.count) bytes for channel=\(channel) stream=\(streamType, privacy: .public)")
-            }
-            let envelopes = try JSONDecoder().decode([CGIResponse<SearchEnvelope>].self, from: raw)
-            // Distinguish "no envelope at all" (malformed bytes) from
-            // "envelope had an error" (camera said no). The previous
-            // copy "Empty response from camera" hit both paths and was
-            // unhelpful — 0.5.0 surfaces the actual Reolink error code
-            // when it's available.
-            guard let envelope = envelopes.first else {
-                return .failure("Camera returned no Search envelope. Try again — if it persists, reconnect the camera.")
-            }
-            if let cgiError = envelope.error {
-                let detail: String = {
-                    if cgiError.rspCode == -10 { return "Session expired. Reolens will retry on the next refresh." }
-                    if cgiError.rspCode == -17 { return "Camera is busy — retry in a moment." }
-                    return "Reolink error \(cgiError.rspCode): \(cgiError.detail ?? "no detail")"
-                }()
-                return .failure(detail)
-            }
-            guard let value = envelope.value else {
-                return .failure("Search response was missing data. Try Refresh.")
-            }
-            let result = value.SearchResult.File ?? []
-            let statuses = value.SearchResult.Status ?? []
-            log.info("Search completed channel=\(channel) stream=\(streamType, privacy: .public) files=\(result.count) statuses=\(statuses.count) elapsed=\(Date().timeIntervalSince(startedAt), privacy: .public)s")
-            return .success(result, rawPretty: pretty, statuses: statuses)
-        } catch let urlError as URLError {
-            return .failure(Self.friendlyTransportMessage(urlError))
-        } catch let decodingError as DecodingError {
-            return .failure("Couldn't read the camera's response (\(Self.shortDescription(of: decodingError))). The camera firmware may have changed — please report this.")
-        } catch {
-            return .failure(error.localizedDescription.isEmpty ? "\(error)" : error.localizedDescription)
-        }
-    }
-
-    private static func friendlyTransportMessage(_ urlError: URLError) -> String {
-        switch urlError.code {
-        case .timedOut:
-            return "Connection to the camera timed out. Check that you're on the same Wi-Fi."
-        case .cannotConnectToHost:
-            return "Couldn't reach the camera. Is it powered on?"
-        case .networkConnectionLost:
-            return "Wi-Fi dropped during the request. Try Refresh."
-        case .notConnectedToInternet:
-            return "Your device isn't on a network."
-        case .secureConnectionFailed:
-            return "HTTPS connection failed. The camera's certificate may have changed."
-        default:
-            return "Network error \(urlError.code.rawValue): \(urlError.localizedDescription)"
-        }
-    }
-
-    private static func shortDescription(of error: DecodingError) -> String {
-        switch error {
-        case .keyNotFound(let key, _): return "missing key \(key.stringValue)"
-        case .typeMismatch(_, let ctx): return ctx.debugDescription
-        case .valueNotFound(_, let ctx): return ctx.debugDescription
-        case .dataCorrupted(let ctx): return ctx.debugDescription
-        @unknown default: return "decode failure"
-        }
     }
 }
 
