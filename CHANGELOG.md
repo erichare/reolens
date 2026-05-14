@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-05-?? (pending journey sweep)
+
 A hardening release. No new storylines — every surface 0.6.0 shipped
-gets a careful second look. Lead with stability, then UI, then a few
-small features.
+got a careful second look. Settings is reorganized from the ground up,
+the half-wired NL Search UI is finished, the live-view time-to-first-
+frame is now measurable end-to-end, and a new local-only diagnostics
+layer surfaces errors the app used to swallow — without phoning home.
+Plus a tighter accessibility pass on the high-traffic surfaces and a
+handful of small features.
 
 ### Added
 
@@ -20,17 +26,87 @@ small features.
   500-record cap, atomic writes, never relayed to a server). Browse,
   filter by category, copy-to-clipboard for support threads. Preserves
   AGENTS.md §5 "zero telemetry" posture.
-- **`docs/ROADMAP.md`** — consolidates the scattered future-work notes
-  from AGENTS.md / SECURITY.md / CHANGELOG into one place.
+- **NL Search history** — last 10 successful queries surface as
+  "Recent" suggestions on the no-match state, with an inline Clear.
+  Device-local in `UserDefaults`; case-insensitive de-dup so re-typing
+  a query lifts the existing entry instead of stacking.
+- **macOS keyboard shortcuts** — new Camera menu wires ⌘R to "Refresh
+  Live Tiles" and ⌘1–⌘9 to jump to the first nine cameras. Wiring
+  rides Notification.Name so the menu stays decoupled from view state.
+- **TTFF signposter** — `LiveVideoPlayer` emits an `OSSignposter`
+  interval on `com.reolens.streaming` / category `TTFF`. Open
+  Instruments with the os_signpost instrument and the cold/warm time-
+  to-first-frame is directly measurable. See
+  [docs/perf-baselines/README.md](docs/perf-baselines/README.md).
+- **`docs/ROADMAP.md`** — consolidates the scattered future-work
+  notes from AGENTS.md / SECURITY.md / CHANGELOG into one place.
 
 ### Changed
 
+- **Settings reorganized into seven shared buckets** — Cameras,
+  Notifications & Events, Display, Background & Storage, Privacy &
+  Sync, Advanced, About. Both platforms compose from the same bucket
+  views (`SettingsBucketSections.swift`) so iOS Form and macOS TabView
+  can't drift apart again. Behind `AppPreferences.useReorganizedSettings`
+  (default on); legacy layout preserved as an emergency revert until
+  0.7.x.
+- **NL Search UI completed** — search-result rows are now tappable
+  (jump to the hit's day in the standard list). The no-match state
+  shows three concrete example prompts plus "Recent" history. A
+  privacy footer reinforces that the search runs on-device.
+- **Coverage baselines ratcheted** — AppShared 13.81% → 14.31%,
+  ReolinkAPI 56.47% → 58.82%, ReolinkStreaming 23.70% → 23.82%. Total
+  test count 354 (up from 340 in 0.6.0).
 - macOS `CFBundleVersion` 15 → 16, iOS 10 → 11.
 
 ### Fixed
 
-- (top-10 error-swallowing fixes pending in this release; see
-  [docs/audit-0.6.1-error-sites.md](docs/audit-0.6.1-error-sites.md))
+- **Battery camera wake failures now logged** — five sites
+  (`ChannelSettingsView`, `LiveCameraTile`, `LiveTileView`) used to
+  swallow `wakeBatteryCamera` errors silently, leaving snap endpoints
+  returning stale frames with no diagnostic trail. Failures now route
+  through `AppErrorRecorder` so a flapping battery camera is
+  discoverable from Diagnostics Center.
+- **`requestPermission` distinguishes denial from error** —
+  `EventNotifier.requestPermission` used to collapse a thrown
+  `requestAuthorization` error and a user-denied permission into the
+  same `granted = false`. They're now distinct; thrown errors record
+  to Diagnostics Center.
+- **Recording index decode failures surface** — `RecordingIndex` used
+  to log a warning on a corrupt `recording-index.v1.json` but the
+  user had no way to discover the index had reset. Failures now also
+  record to Diagnostics Center.
+- **Notification permission denied is no longer silently retried** —
+  the diagnostic capture means support threads can include the
+  specific failure mode.
+
+### Accessibility
+
+- **PTZ controls** — directional pad, zoom buttons, and focus buttons
+  now have VoiceOver labels ("Pan up", "Zoom in", "Focus near", …) via
+  a shared `PTZAccessibility.label(for:)` helper. Pad / zoom / focus
+  groups carry containing labels.
+- **WeeklyScheduleEditor cells** — each of the 168 cells announces
+  weekday + hour + on/off state via `accessibilityValue`. AGENTS.md §9
+  — no information conveyed by color alone.
+
+Full Dynamic Type sweep, reduced-motion guards, and tile-level labels
+defer to a follow-up — text styles already do most of that work, and
+the deeper sweep needs a real device.
+
+### Internal
+
+- New audits: `docs/audit-0.6.1.md` (documentation gaps),
+  `docs/audit-0.6.1-error-sites.md` (top-10 `try?` triage),
+  `docs/audit-0.6.1-journey.md` (pre-release click-through checklist).
+- New tests: `AppErrorRecorderTests` (10), `DiagnosticsBundleTests`
+  (4), `NLSearchHistoryTests` (7), three new `AppPreferences` cases.
+- Three RTSP `Task.sleep` `try?` sites annotated `// safe:` so future
+  audits skip them — the cancellation throw is intentional.
+- Three remaining 0.6.0 carve-out files (`AllRecordingsView`,
+  `RecordingsView` macOS + iOS) stay over the 800-LOC repo guideline.
+  The view split is timeboxed to 0.7.x because the snapshot-test
+  safety net would push beyond the 0.6.1 cycle.
 
 ## [0.6.0] — 2026-05-14
 
