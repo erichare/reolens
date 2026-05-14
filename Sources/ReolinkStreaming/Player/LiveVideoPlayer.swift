@@ -15,6 +15,18 @@ import UIKit
 
 private let log = Logger(subsystem: "com.reolens.streaming", category: "player")
 
+/// 0.6.1 — TTFF (time-to-first-frame) signposter. Begins on `start()`
+/// and ends on the first `enqueue(_:)`. Use `xcrun xctrace record
+/// --template Time\ Profiler` or open Instruments with the os_signpost
+/// instrument to capture the interval.
+///
+/// Subsystem / category match the `os.Logger` above so Console.app and
+/// Instruments group the signposts under the same source.
+private let ttffSignposter = OSSignposter(
+    subsystem: "com.reolens.streaming",
+    category: "TTFF"
+)
+
 public enum LivePlayerState: Sendable, Equatable {
     case idle
     case connecting
@@ -120,6 +132,16 @@ public final class LiveVideoPlayer {
         let urls = self.urls
         let user = self.username
         let pass = self.password
+
+        // 0.6.1 TTFF — begin an Instruments-visible interval. Ended in
+        // `enqueue(_:)` when the first sample lands on the display
+        // layer. Each `start()` gets a fresh signpost ID so concurrent
+        // players are individually measurable.
+        ttffSignpostID = ttffSignposter.makeSignpostID()
+        ttffSignpostState = ttffSignposter.beginInterval(
+            "TTFF",
+            id: ttffSignpostID!
+        )
 
         task = Task { [weak self] in
             await self?.runSession(urls: urls, username: user, password: pass)
@@ -325,6 +347,11 @@ public final class LiveVideoPlayer {
     private var droppedSampleCount = 0
     private(set) var enqueuedSampleCount = 0
 
+    /// 0.6.1 TTFF instrumentation. The state token is needed to call
+    /// `endInterval(_:)` on the matching signposter.
+    private var ttffSignpostID: OSSignpostID?
+    private var ttffSignpostState: OSSignpostIntervalState?
+
     private func enqueue(_ sample: CMSampleBuffer) {
         if !didSetTimebase {
             // Pin the layer's clock to the first sample's PTS so that the camera's
@@ -371,6 +398,16 @@ public final class LiveVideoPlayer {
         }
         renderer.enqueue(sample)
         enqueuedSampleCount += 1
+
+        // 0.6.1 TTFF — close the signpost on the first delivered
+        // sample. Subsequent samples are no-ops because we clear the
+        // state token after end.
+        if let state = ttffSignpostState, let id = ttffSignpostID {
+            ttffSignposter.endInterval("TTFF", state)
+            ttffSignpostState = nil
+            ttffSignpostID = nil
+            log.info("TTFF first-sample signpost closed (id=\(id.rawValue))")
+        }
         // Feed the same sample to a parallel VT session so we have a
         // decoded CVPixelBuffer available for snapshot. See the
         // `latestPixelBuffer` doc comment for why this is necessary —
