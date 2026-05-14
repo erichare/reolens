@@ -21,6 +21,8 @@ struct PTZControlBar: View {
                     pressButton(systemImage: "plus.magnifyingglass", op: .zoomIn)
                 }
             }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Zoom controls")
             VStack(spacing: 6) {
                 Text("Focus").font(.caption).foregroundStyle(.secondary)
                 HStack {
@@ -28,6 +30,8 @@ struct PTZControlBar: View {
                     pressButton(systemImage: "plus", op: .focusIn)
                 }
             }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Focus controls")
             Spacer()
         }
     }
@@ -46,6 +50,9 @@ struct PTZControlBar: View {
                         Task { await session.ptz(channel: channel, op: .stop) }
                     }
             )
+            .accessibilityLabel(PTZAccessibility.label(for: op))
+            .accessibilityHint("Press and hold to apply.")
+            .accessibilityAddTraits(.isButton)
     }
 }
 
@@ -63,6 +70,7 @@ struct DirectionalPad: View {
             GridRow {
                 padCell(systemImage: "arrow.left", op: .left)
                 Color.clear.frame(width: 32, height: 32)
+                    .accessibilityHidden(true)
                 padCell(systemImage: "arrow.right", op: .right)
             }
             GridRow {
@@ -71,6 +79,8 @@ struct DirectionalPad: View {
                 padCell(systemImage: "arrow.down.right", op: .rightDown)
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Pan and tilt directional pad")
     }
 
     private func padCell(systemImage: String, op: PtzOp) -> some View {
@@ -83,5 +93,33 @@ struct DirectionalPad: View {
                     .onChanged { _ in onPress(op) }
                     .onEnded { _ in onRelease() }
             )
+            .accessibilityLabel(PTZAccessibility.label(for: op))
+            .accessibilityHint("Press and hold to pan.")
+            .accessibilityAddTraits(.isButton)
+    }
+}
+
+/// 0.6.1 — Centralized VoiceOver labels for `PtzOp` so the PTZ bar
+/// and any future surfaces stay in lockstep. Keep these short and
+/// imperative — VoiceOver announces them on focus, so a tactile-sounding
+/// label ("pan up", "zoom in") beats a long sentence.
+enum PTZAccessibility {
+    static func label(for op: PtzOp) -> String {
+        switch op {
+        case .up: return "Pan up"
+        case .down: return "Pan down"
+        case .left: return "Pan left"
+        case .right: return "Pan right"
+        case .leftUp: return "Pan up and left"
+        case .rightUp: return "Pan up and right"
+        case .leftDown: return "Pan down and left"
+        case .rightDown: return "Pan down and right"
+        case .zoomIn: return "Zoom in"
+        case .zoomOut: return "Zoom out"
+        case .focusIn: return "Focus near"
+        case .focusOut: return "Focus far"
+        case .stop: return "Stop"
+        default: return "PTZ control"
+        }
     }
 }
