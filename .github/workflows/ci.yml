@@ -125,21 +125,18 @@ jobs:
             -ignore-filename-regex '\.build|Tests' | tee coverage-summary.txt
         continue-on-error: true
 
-      # AGENTS.md §12: line-coverage report on the four library
-      # targets that carry the project's correctness surface. The
-      # 0.5.0 release dramatically expanded `AppShared` with
-      # SwiftUI view code (ScrubberView, DigestDetailView,
-      # PrivacyZoneEditorView, ReolensGlass, ChannelSettingsView,
-      # …) that isn't unit-testable in isolation, pulling the
-      # measured line coverage below the 80% target the plan
-      # originally specified. Surfacing the numbers in CI as
-      # informational keeps the visibility without blocking the
-      # release; the gate climbs back to enforced once the
-      # AppShared view surface has matching XCTest / UITest
-      # coverage. Tracked in TODO comments on the script itself.
-      - name: Coverage report (informational)
+      # AGENTS.md §12: line-coverage regression gate on the four
+      # library targets that carry the project's correctness
+      # surface. Flipped from `continue-on-error: true` to enforced
+      # in 0.6.0 — the script now uses per-target baselines (see
+      # Scripts/coverage-baselines.txt) rather than a single 80%
+      # floor, so intentional regressions require explicitly
+      # ratcheting the baselines file via
+      # `COVERAGE_FORCE_UPDATE_BASELINE=1 ./Scripts/coverage-gate.sh`
+      # before commit. The 80% long-term goal is still tracked in
+      # the script's header.
+      - name: Coverage regression gate
         run: ./Scripts/coverage-gate.sh
-        continue-on-error: true
 
       - name: Upload coverage artifact
         if: success() || failure()
@@ -353,6 +350,37 @@ jobs:
             -derivedDataPath build-ios \
             CODE_SIGNING_ALLOWED=NO \
             build
+
+      # 0.6.0 plan §D — iOS simulator XCUITest job.
+      # Drives the high-risk navigation journeys (Cold launch →
+      # Settings → Notifications, Notification log push) against
+      # an iOS Simulator. Best-effort because runner image
+      # simulator runtime availability varies. The journey count
+      # is small (3 tests, ~30s total runtime); growing this is
+      # tracked in the release plan §D.
+      - name: Run iOS XCUITest journeys (best-effort)
+        continue-on-error: true
+        run: |
+          set -x
+          # Pick the first available iPhone simulator runtime so
+          # the job survives image rotation without a config
+          # change. `xcrun simctl list devices available` returns
+          # something like "iPhone 17 (UUID) (Shutdown)".
+          DEST=$(xcrun simctl list devices available 2>/dev/null \
+            | awk '/iPhone [0-9]+/ {print $0; exit}' \
+            | sed 's/^[[:space:]]*//' \
+            | awk -F' \\(' '{print $1}' || true)
+          if [ -z "$DEST" ]; then
+            echo "No iPhone simulator runtime available; skipping XCUITest job."
+            exit 0
+          fi
+          xcodebuild test \
+            -project AppiOS/ReolensiOS.xcodeproj \
+            -scheme ReolensiOS \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,name=$DEST" \
+            -only-testing:ReolensiOSUITests \
+            CODE_SIGNING_ALLOWED=NO
 
       - name: Validate iOS app icons (best-effort)
         continue-on-error: true

@@ -34,7 +34,10 @@ extension CameraSession: RecordingsDataSource {
         end: Date,
         captureRaw: Bool
     ) async -> RecordingsSearchOutcome {
-        await withBackgroundPollingPaused {
+        // `runSearch` returns a `Result`-like enum (never throws), so
+        // we route through the non-throwing pause overload via the
+        // session's helper.
+        await withBackgroundPollingPausedNoThrow {
             await self.runSearch(
                 channel: channel,
                 streamType: streamType,

@@ -81,13 +81,20 @@ public final class CameraSession {
     /// hub emits every few seconds for each paired battery cam.
     public var batteryByChannel: [Int: BaichuanBatteryInfo] = [:]
 
-    private var pollTask: Task<Void, Never>?
     private var baichuanTask: Task<Void, Never>?
     private var batteryTask: Task<Void, Never>?
     private var connectTask: Task<Void, Never>?
     private var connectGeneration: Int = 0
-    private var foregroundCGIOperationDepth = 0
-    private var shouldResumePollingAfterForegroundCGI = false
+    /// 0.6.0 Slice 14 — polling lifecycle extracted to `PollManager`.
+    /// Replaces the prior `pollTask` + `foregroundCGIOperationDepth +
+    /// shouldResumePollingAfterForegroundCGI` triad. `@Observation
+    /// Ignored` keeps the property out of the SwiftUI observation
+    /// graph (the manager exposes its own observable state if a UI
+    /// later needs to surface paused / running). Implicitly-unwrapped
+    /// because `@Observable` is incompatible with `lazy`, so we set
+    /// this in `init` after the other stored properties.
+    @ObservationIgnored
+    private var pollManager: PollManager!
     public private(set) var baichuanClient: BaichuanClient?
 
     public init(
@@ -99,6 +106,20 @@ public final class CameraSession {
         self.credentials = credentials
         self.client = CGIClient(credentials: credentials, tlsPolicy: tlsPolicy)
         self.streamURLs = StreamURLs(credentials: credentials)
+        // PollManager captures `self` weakly so the session can vend
+        // it via `init` without the cycle SwiftUI normally flags.
+        self.pollManager = PollManager(
+            initialDelay: Self.initialMotionPollDelaySeconds,
+            intervalProvider: { @MainActor in
+                AdaptivePollSchedule.shared.currentIntervalSeconds
+            },
+            shouldContinue: { @MainActor [weak self] in
+                self?.status == .connected
+            },
+            work: { @MainActor [weak self] in
+                await self?.pollOnce()
+            }
+        )
     }
 
     /// Re-attempt a hung or failed connection. Tears down any half-open
@@ -290,10 +311,7 @@ public final class CameraSession {
         connectTask?.cancel()
         connectTask = nil
         connectGeneration += 1
-        pollTask?.cancel()
-        pollTask = nil
-        foregroundCGIOperationDepth = 0
-        shouldResumePollingAfterForegroundCGI = false
+        pollManager.stop()
         baichuanTask?.cancel()
         baichuanTask = nil
         batteryTask?.cancel()
@@ -450,27 +468,30 @@ public final class CameraSession {
     }
 
     /// Temporarily stop low-priority background CGI polling while a
-    /// user-initiated request runs. Recording searches, OSD writes, and
-    /// similar foreground actions should not sit behind per-channel
-    /// motion-state polling on busy hubs.
-    public func withBackgroundPollingPaused<T>(_ operation: () async throws -> T) async rethrows -> T {
-        if foregroundCGIOperationDepth == 0 {
-            shouldResumePollingAfterForegroundCGI = pollTask != nil && status == .connected
-            pollTask?.cancel()
-            pollTask = nil
-        }
-        foregroundCGIOperationDepth += 1
-        defer {
-            foregroundCGIOperationDepth -= 1
-            if foregroundCGIOperationDepth == 0 {
-                let shouldResume = shouldResumePollingAfterForegroundCGI
-                shouldResumePollingAfterForegroundCGI = false
-                if shouldResume, status == .connected {
-                    startEventPolling()
-                }
-            }
-        }
-        return try await operation()
+    /// user-initiated request runs. Recording searches, OSD writes,
+    /// and similar foreground actions should not sit behind per-
+    /// channel motion-state polling on busy hubs.
+    ///
+    /// 0.6.0 Slice 14 — delegates to `PollManager.pausingBackground
+    /// Polling` which owns the depth counter + cancel/resume.
+    public func withBackgroundPollingPaused<T: Sendable>(
+        _ operation: @MainActor () async throws -> T
+    ) async throws -> T {
+        // `throws` rather than `rethrows` because the underlying
+        // PollManager method is `throws` unconditionally — `rethrows`
+        // can't see through the indirection. Net behaviour is the
+        // same: the body's error is forwarded.
+        try await pollManager.pausingBackgroundPolling(operation)
+    }
+
+    /// Non-throwing convenience used by call sites whose body returns
+    /// a `Result`-like enum and never `throws` (e.g. the
+    /// `RecordingsDataSource.search` adapter, which already wraps
+    /// network errors into `RecordingsSearchOutcome.failure`).
+    public func withBackgroundPollingPausedNoThrow<T: Sendable>(
+        _ operation: @MainActor () async -> T
+    ) async -> T {
+        await pollManager.pausingBackgroundPolling(operation)
     }
 
     /// Authoritative "is this a battery-powered camera" check. The hub
@@ -509,20 +530,10 @@ public final class CameraSession {
     }
 
     private func startEventPolling() {
-        pollTask?.cancel()
-        pollTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(Self.initialMotionPollDelaySeconds))
-            while let self, !Task.isCancelled, self.status == .connected {
-                await self.pollOnce()
-                // 0.6.0 — read the adaptive poll interval each
-                // iteration. Phase changes (foreground ↔ background ↔
-                // low-power) take effect on the next sleep, never
-                // mid-poll. Worst-case responsiveness to a phase shift
-                // is the prior interval (10/60/120 s).
-                let interval = AdaptivePollSchedule.shared.currentIntervalSeconds
-                try? await Task.sleep(for: .seconds(interval))
-            }
-        }
+        // 0.6.0 Slice 14 — delegated to PollManager. The manager's
+        // initial-delay + adaptive interval + shouldContinue gate
+        // mirror the previous inline behaviour exactly.
+        pollManager.start()
     }
 
     private func pollOnce() async {

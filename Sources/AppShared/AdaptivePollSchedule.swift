@@ -32,7 +32,7 @@ public final class AdaptivePollSchedule {
     public private(set) var intent: Intent = .foreground
     public private(set) var isLowPowerModeEnabled: Bool
 
-    private var lowPowerObserver: NSObjectProtocol?
+    private var lowPowerObserver: (any NSObjectProtocol)?
 
     private init() {
         self.isLowPowerModeEnabled = ProcessInfo.processInfo.isLowPowerModeEnabled

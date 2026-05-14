@@ -1,6 +1,9 @@
 # Reolens macOS Widgets
 
-0.5.0 Theme A1 (macOS twin) — desktop WidgetKit extension.
+macOS desktop WidgetKit extension. Three widget kinds (CameraSnapshot
+/ LastMotion / MotionDigest), all reading from the App-Group
+container. No network, no Keychain. Introduced in 0.5.0, unchanged in
+0.6.0 beyond the version bump.
 
 ## Contents
 

@@ -33,8 +33,8 @@ targets:
       path: Resources/Info.plist
       properties:
         CFBundleDisplayName: Reolens
-        CFBundleShortVersionString: "0.5.1"
-        CFBundleVersion: "9"
+        CFBundleShortVersionString: "0.6.0"
+        CFBundleVersion: "10"
         # iOS 11+ requires apps using asset-catalog icons to also
         # declare CFBundleIconName so the OS / App Store knows which
         # icon set to consult at runtime. Without this key, ASC's
@@ -73,6 +73,15 @@ targets:
         # (PHPhotoLibrary.requestAuthorization(for: .addOnly)) so Reolens
         # only ever inserts photos — never reads the user's library.
         NSPhotoLibraryAddUsageDescription: "Reolens saves snapshots of your camera feeds to Photos when you tap Save Snapshot."
+        # 0.6.0 Slice B2 — HomeKit usage description. iOS enforces TCC
+        # privacy checks at HMHomeManager init time regardless of
+        # whether the `com.apple.developer.homekit` entitlement is
+        # present, so this key is required for any build that
+        # constructs HomeKitBridge. With the key present + entitlement
+        # absent, HomeKitBridge surfaces `.entitlementMissing` and
+        # never actually touches HMHomeManager. With both present,
+        # the user sees the system permission prompt on first launch.
+        NSHomeKitUsageDescription: "Reolens can expose your Reolink cameras as HomeKit cameras so they appear alongside other HomeKit accessories in the Home app."
         UIBackgroundModes:
           - audio
           # remote-notification (0.4.1) — required so CloudKit silent
@@ -123,6 +132,13 @@ targets:
           # CloudKit database. Same container as the iCloud Drive
           # sync, different services within it.
           - CloudKit
+        # Identifier for `NSUbiquitousKeyValueStore` (hub-expansion
+        # state + per-camera notification preferences). Must match
+        # the macOS app's identifier so the two platforms read/write
+        # the same store. Without this key the OS logs
+        # "Unable to find entitlement for KVS store" and KVS calls
+        # silently no-op.
+        com.apple.developer.ubiquity-kvstore-identifier: "5M9UT7VQ8Q.com.reolens.Reolens"
         # APNS environment for receiving CloudKit silent pushes.
         # Production for App Store / TestFlight builds; xcodegen
         # automatically swaps in development for debug archives.
@@ -136,8 +152,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.reolens.Reolens.iOS
         PRODUCT_NAME: Reolens
-        MARKETING_VERSION: "0.5.1"
-        CURRENT_PROJECT_VERSION: "9"
+        MARKETING_VERSION: "0.6.0"
+        CURRENT_PROJECT_VERSION: "10"
         # Same Apple Developer team as the macOS app. Xcode's automatic
         # signing uses this to fetch / create the Apple Distribution
         # certificate and the App Store provisioning profile on first
@@ -187,8 +203,8 @@ targets:
       path: Widgets/Info.plist
       properties:
         CFBundleDisplayName: Reolens Widgets
-        CFBundleShortVersionString: "0.5.1"
-        CFBundleVersion: "9"
+        CFBundleShortVersionString: "0.6.0"
+        CFBundleVersion: "10"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     entitlements:
@@ -200,8 +216,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.reolens.Reolens.iOS.Widgets
         PRODUCT_NAME: ReolensiOSWidgets
-        MARKETING_VERSION: "0.5.1"
-        CURRENT_PROJECT_VERSION: "9"
+        MARKETING_VERSION: "0.6.0"
+        CURRENT_PROJECT_VERSION: "10"
         DEVELOPMENT_TEAM: 5M9UT7VQ8Q
         CODE_SIGN_STYLE: Automatic
         PROVISIONING_PROFILE_SPECIFIER: "$(REOLENS_IOS_WIDGETS_PROFILE_NAME)"
@@ -229,3 +245,33 @@ targets:
         - variable: _XCWidgetKind
           value: io.reolens.widget.cameraSnapshot
           isEnabled: true
+  # ------------------------------------------------------------------
+  # XCUITest target (0.6.0 plan §D).
+  #
+  # Drives the highest-risk surfaces end-to-end on the iOS Simulator:
+  # - Recordings: open, filter, empty-state copy.
+  # - Notifications: Settings → Notifications → Diagnostics renders.
+  # - Notification log: opens + empty-state.
+  #
+  # Without real Reolink hardware on a Simulator, the journeys
+  # exercise *reachability* and *empty-state correctness* rather
+  # than real recording playback. That's enough to catch SwiftUI
+  # structural regressions (missing nav links, broken section
+  # bindings, crashes on first appear).
+  # ------------------------------------------------------------------
+  ReolensiOSUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: UITests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.reolens.Reolens.iOS.UITests
+        PRODUCT_NAME: ReolensiOSUITests
+        DEVELOPMENT_TEAM: 5M9UT7VQ8Q
+        CODE_SIGN_STYLE: Automatic
+        TEST_TARGET_NAME: ReolensiOS
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: ReolensiOS

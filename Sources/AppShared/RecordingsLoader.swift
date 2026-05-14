@@ -79,6 +79,12 @@ public final class RecordingsLoader {
     private let channel: Int
     private let channelUID: String?
     private let captureRawResponses: Bool
+    /// 0.6.0 — Identity used by cross-day ingestion. Optional so
+    /// existing call sites can adopt the loader without simultaneously
+    /// turning on the index; when nil the loader skips index writes.
+    private let cameraID: UUID?
+    private let cameraName: String
+    private let index: RecordingIndex?
 
     // MARK: - Generation guard
 
@@ -105,12 +111,18 @@ public final class RecordingsLoader {
         channel: Int,
         channelUID: String? = nil,
         captureRawResponses: Bool = false,
-        initialDate: Date = Date()
+        initialDate: Date = Date(),
+        cameraID: UUID? = nil,
+        cameraName: String = "",
+        index: RecordingIndex? = nil
     ) {
         self.source = source
         self.channel = channel
         self.channelUID = channelUID
         self.captureRawResponses = captureRawResponses
+        self.cameraID = cameraID
+        self.cameraName = cameraName
+        self.index = index
         self.selectedDate = initialDate
     }
 
@@ -160,11 +172,12 @@ public final class RecordingsLoader {
 
         switch mainOutcome {
         case .success(let mainFiles, let raw, let statuses):
+            let sortedFiles = mainFiles.sorted {
+                ($0.startDate ?? .distantPast) > ($1.startDate ?? .distantPast)
+            }
             publish(generation: generation) {
                 self.lastRawResponse = raw
-                self.files = mainFiles.sorted {
-                    ($0.startDate ?? .distantPast) > ($1.startDate ?? .distantPast)
-                }
+                self.files = sortedFiles
                 if !statuses.isEmpty {
                     self.monthStatuses = statuses
                 }
@@ -179,6 +192,11 @@ public final class RecordingsLoader {
                 self.bumpDetectionFingerprint()
                 self.phase = .ready
             }
+            // 0.6.0 — Cross-day ingest. Fire-and-forget; the index is
+            // an actor so writes are serialized internally. Skips when
+            // `cameraID` wasn't supplied (call sites that haven't
+            // opted in yet).
+            ingestIntoIndex(sortedFiles, day: selectedDate)
         case .failure(let message):
             publishError(message, generation: generation)
             return
@@ -233,6 +251,34 @@ public final class RecordingsLoader {
         let computed = computeDetections(for: file)
         detectionCache[file.id] = computed
         return computed
+    }
+
+    /// 0.6.0 Slice 13b — `files` filtered by the supplied AI tag set.
+    /// Empty filter returns all files. Centralized here so iOS +
+    /// macOS shells stop duplicating the identical filter loop.
+    public func filtered(by aiFilter: Set<DetectionType>) -> [SearchFile] {
+        guard !aiFilter.isEmpty else { return files }
+        return files.filter { file in
+            let detections = Set(effectiveDetections(for: file))
+            return !detections.isDisjoint(with: aiFilter)
+        }
+    }
+
+    /// 0.6.0 Slice 13b — Live AI events from this session that fell
+    /// on `selectedDate` for the loader's channel. Feeds the
+    /// timeline strip's event-tick overlay. Reads through the data
+    /// source's `currentAIEventLog` (production: `CameraSession.ai
+    /// EventLog`; tests: a scripted array on the fake) so neither
+    /// platform view has to thread `session.aiEventLog` separately.
+    public func dayEvents() -> [TimestampedAIEvent] {
+        let cal = Calendar.current
+        let startOfDay = cal.startOfDay(for: selectedDate)
+        let endOfDay = cal.date(byAdding: .day, value: 1, to: startOfDay) ?? startOfDay
+        return source.currentAIEventLog.filter { ev in
+            ev.channelID == channel
+            && ev.timestamp >= startOfDay
+            && ev.timestamp < endOfDay
+        }
     }
 
     /// Returns every Baichuan alarm-video entry whose time range
@@ -356,8 +402,39 @@ public final class RecordingsLoader {
                 self.alarmVideoEntries = entries
                 self.bumpDetectionFingerprint()
             }
+            // 0.6.0 — Enrich the cross-day index with the AI tags we
+            // just got back.
+            mergeAlarmVideosIntoIndex(entries, day: selectedDate)
         } catch {
             log.info("findAlarmVideos for channel \(self.channel) failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func ingestIntoIndex(_ files: [SearchFile], day: Date) {
+        guard let index, let cameraID else { return }
+        let channel = channel
+        let cameraName = cameraName
+        Task {
+            await index.ingest(
+                files,
+                cameraID: cameraID,
+                cameraName: cameraName,
+                channel: channel,
+                day: day
+            )
+        }
+    }
+
+    private func mergeAlarmVideosIntoIndex(_ entries: [BaichuanAlarmVideoFile], day: Date) {
+        guard let index, let cameraID else { return }
+        let channel = channel
+        Task {
+            await index.mergeAlarmVideos(
+                entries,
+                cameraID: cameraID,
+                channel: channel,
+                day: day
+            )
         }
     }
 

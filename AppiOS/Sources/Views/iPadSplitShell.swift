@@ -17,6 +17,11 @@ struct iPadSplitShell: View {
     @State private var isReorderingCameras: Bool = false
     @State private var draggingDevice: UUID?
     @State private var health = CameraNotificationHealth.shared
+    /// 0.6.0 — gates the cold-launch "restore last camera"
+    /// selection so a SwiftUI re-render (every time `store.cameras`
+    /// updates) doesn't keep overriding the user's manual
+    /// navigation back to .live / .recordings / etc.
+    @State private var restoredLastCamera: Bool = false
 
     enum SidebarSection: Hashable {
         case live
@@ -131,6 +136,35 @@ struct iPadSplitShell: View {
         }
         .sheet(isPresented: $showingAdd) {
             AddCameraView()
+        }
+        .task {
+            // 0.6.0 — restore the most-recently-viewed camera on
+            // cold launch. App-Intent navigation wins over
+            // restoration. Guarded by `restoredLastCamera` so a
+            // SwiftUI re-render doesn't keep overriding the user's
+            // current selection.
+            guard !restoredLastCamera else { return }
+            restoredLastCamera = true
+            guard store.pendingIntentNavigation == nil,
+                  let lastID = store.preferences.lastViewedCameraID,
+                  store.cameras.contains(where: { $0.id == lastID }) else { return }
+            selectedSection = .device(lastID)
+        }
+        .onChange(of: selectedSection) { _, newValue in
+            // 0.6.0 — persist whenever the user navigates into a
+            // device or channel section so the next launch lands
+            // here. Non-camera sections (Live, Recordings, Devices,
+            // Settings) don't clear the memory — the user picking
+            // "Recordings" briefly shouldn't lose their last
+            // camera; only an explicit camera switch should.
+            switch newValue {
+            case .device(let id):
+                store.preferences.lastViewedCameraID = id
+            case .channel(let id, _):
+                store.preferences.lastViewedCameraID = id
+            case .live, .recordings, .devices, .settings, nil:
+                break
+            }
         }
         .onChange(of: store.pendingIntentNavigation) { _, target in
             guard let target else { return }

@@ -14,15 +14,16 @@ Any user-visible feature shipped on one Apple platform must work on the others. 
 
 When you add a feature, ship it everywhere or open a tracking issue for the missing platform in the same PR.
 
-**Documented carve-outs (current as of 0.5.1):**
+**Documented carve-outs (current as of 0.6.0):**
 
 - Sparkle auto-update — macOS only (iOS uses TestFlight / App Store).
 - Picture-in-Picture — iOS / iPadOS only (no macOS analog).
 - Menu-bar mode + Launch at Login — macOS only.
 - Local-network Bonjour discovery sheet — historical iOS-only, gained macOS parity in 0.5.0.
-- **iOS Live Activities + Dynamic Island** — iOS / iPadOS only (ActivityKit has no macOS equivalent; macOS users see the menu-bar mode + desktop widget instead). Added in 0.5.0; 0.5.1 widens to hub-grouped semantics + APNs push-token registration (`pushType: .token`).
+- **iOS Live Activities + Dynamic Island** — iOS / iPadOS only (ActivityKit has no macOS equivalent; macOS users see the menu-bar mode + desktop widget instead). Added in 0.5.0; 0.5.1 widened to hub-grouped semantics + APNs push-token registration (`pushType: .token`).
 - **Widgets** — ship on both platforms (Home Screen / Lock Screen / Control Center on iOS, desktop widgets on macOS). No carve-out needed for widgets themselves.
-- **FoundationModels on-device inference (0.5.1)** — ships on both platforms (iOS 26 / macOS 26 SDK floor) but availability is device-dependent (Apple Intelligence-eligible hardware only). `EventSummarizer` falls back to a deterministic count-based summary when `SystemLanguageModel.default.availability` is not `.available`. The fallback is a documented behavior, not a carve-out — both code paths ship on both platforms.
+- **FoundationModels on-device inference** — ships on both platforms (iOS 26 / macOS 26 SDK floor) but availability is device-dependent (Apple Intelligence-eligible hardware only). `EventSummarizer` and 0.6.0's new `RecordingNLSearcher.planWithModel(...)` both fall back to deterministic implementations when `SystemLanguageModel.default.availability` is not `.available`. The fallback is documented behaviour, not a carve-out — both code paths ship on both platforms.
+- **HomeKit bridge (added in 0.6.0)** — iOS / iPadOS only. Apple removed the public HomeKit framework from the macOS SDK; native macOS apps (not Mac Catalyst) can't `import HomeKit`. `HomeKitSection` returns `EmptyView()` on macOS so the macOS Privacy tab doesn't surface a misleading "framework not available" message. The per-camera `homeKitEnabled` flag still rides `cameras.json` through iCloud, so a user flipping it on iPhone propagates to the device that has the entitlement. The full HKSV recording-tier is **gated on Apple's MFi certification process** — the bridge ships scaffolding and a stubbed `registerAccessoryIfNeeded(for:)` rather than a working `HMCameraProfile` until that's resolved.
 
 ## 2. Native libraries on each platform
 
@@ -107,6 +108,19 @@ The `AppShared` library target holds all state management, persistence, networki
 
 If you find yourself about to write the same function twice (once in `App/`, once in `AppiOS/`), stop and put it in `AppShared` instead. The Sources/ libraries are the right shape — `ReolinkAPI`, `ReolinkStreaming`, `ReolinkBaichuan`, `AppShared` — extend them rather than duplicating.
 
+**0.6.0 actor / store split.** The 0.5.x release accumulated a 775-LOC `CameraStore` god object and a 1,430-LOC macOS `RecordingsView` whose 12+ `@State` variables were duplicated in the 789-LOC iOS twin. 0.6.0 split that into focused, single-responsibility components — when adding a new feature, look at the existing pieces before extending `CameraStore` or the per-platform views:
+
+- **`RecordingsLoader`** (`Sources/AppShared/RecordingsLoader.swift`) — `@MainActor @Observable` class that owns the per-camera Recordings tab's network state (files, sub-files, alarm-video entries, month statuses, event log). Has a generation-counter cancellation guard so rapid date flips never publish stale results, and three-tier memoized `effectiveDetections(for:)`. Both platform RecordingsView shells delegate to this rather than holding the state directly.
+- **`RecordingIndex`** (`Sources/AppShared/RecordingIndex.swift`) — cross-day actor for the NL-search window. Same shape as `NotificationHistory` (actor + lazy file-backed JSON + atomic write). Idempotent per-(camera, day) ingest; fed from `RecordingsLoader.reload()` as a side-effect so no new network traffic is required.
+- **`PollManager`** (`Sources/AppShared/PollManager.swift`) — depth-counted polling lifecycle that used to live inline in `CameraSession`. Use `pausingBackgroundPolling(_:)` (throwing or non-throwing) when a user-initiated CGI op must not race the motion-state poll.
+- **`AppPreferences`** (`Sources/AppShared/AppPreferences.swift`) — UserDefaults-backed prefs (`developerMode`, `showCameraNameOnFeed`, `lastViewedCameraID`) with injectable `UserDefaults` for test isolation. `CameraStore` embeds one and proxies the legacy property names so existing consumers don't change.
+- **`CameraKeychainStore`** (`Sources/AppShared/CameraKeychainStore.swift`) — Keychain reads/writes/deletes + iCloud sync toggle + sync-mode migration. Owns the observable `passwordSaveError`. Public `MigrationResult` type mirrors the package-private `Keychain.MigrationResult`.
+- **`CameraListPersistence`** (`Sources/AppShared/CameraListPersistence.swift`) — iCloud-backed JSON encode/decode boundary with an injectable `Backend` protocol for tests. `CameraStore`'s `load()` / `save()` / `reloadFromStorageIfChanged()` forward through it.
+- **`RecordingsScreenHeader`** (`Sources/AppShared/RecordingsScreenHeader.swift`) — shared 3-row glass toolbar stack (density / timeline / filter) consumed by both platform RecordingsView shells. The date picker stays in each platform shell because their toolbars differ; everything below the picker is shared.
+- **`BookmarkAutoDownloader.reconcile(across:)` / `enqueueIfMissing(...)` / `removeBookmark(_:)`** — the full bookmark lifecycle is centralized here. New deletion sites *must* route through `removeBookmark` so the URLSession-cancel + clip-file delete + JSON-store remove always happen together.
+
+If you're tempted to add a 13th `@State` variable to a RecordingsView shell, or a 14th setter to `CameraStore`, that's a signal the right move is to extend the relevant carve-out instead.
+
 ## 7. Backward-compatible sync schema
 
 `cameras.json` is read by every Reolens install signed in to the same iCloud account, including older versions that haven't updated yet. Schema changes must be:
@@ -131,6 +145,15 @@ When you bump the schema, write the migration in the PR description.
 - `com.reolens.mutedCameraNotifications` (`NSUbiquitousKeyValueStore` key) — `[String]` of UUIDs for cameras the user has silenced. Default empty = every camera notifies.
 - `com.reolens.bookmarkDL.allowCellular` (`UserDefaults` key) — bool, default false. **Device-local only** (no iCloud sync) — cellular plans differ device-to-device, so per-device is the safer default.
 - `com.reolens.showCameraNameOnFeed` (`UserDefaults` key) — bool, default false (badges hidden). Per-channel `CameraEntry.hiddenAppBadgeChannels` (in synced `cameras.json`) overrides per-channel; the global is device-local because the feature reads as a display preference.
+
+**0.6.0 introductions:**
+
+- `notifications.v1.json` — rolling 1,000-record notification log inside the App Group. Device-local only (`AGENTS.md §5`). Versioned by file name; bump the suffix on any breaking field change. `NotificationHistory` actor handles read/write with atomic side-path-then-rename.
+- `recording-index.v1.json` — cross-day metadata index for the 30-day NL-search window. Lives in the App Group container, device-local. The `RecordingIndex` actor follows the same versioned-codable + atomic-write pattern as `NotificationHistory`.
+- `RecordingBookmark.sourceFileName: String?` — new optional field on the existing `bookmarks_v1.json` schema. Forward-compat: legacy bookmark files without the field decode to `nil`. The launch-time `BookmarkAutoDownloader.reconcile(across:)` uses this to re-enqueue background downloads without needing a Search to find the source file; legacy bookmarks resolve themselves on next interaction.
+- `CameraEntry.homeKitEnabled: Bool` — additive field in synced `cameras.json`. Forward-compat decode-and-default-false. Encode only when true so the JSON payload stays clean.
+- `com.reolens.developerMode`, `com.reolens.showCameraNameOnFeed`, `com.reolens.lastViewedCameraID` (`UserDefaults` keys) — now read/written via the new `AppPreferences` carve-out from `CameraStore`. The key names stay the same so existing prefs migrate transparently. `lastViewedCameraID` is iOS/iPadOS-only (macOS has its own sidebar state restoration).
+- Reolink wire types `RecordingScheduleSettings` and `MotionScheduleSettings` decode **both** observed firmware shapes (`schedule.table` canonical + `scheduleTable.mainStream` legacy) and always emit the canonical shape on write. Adding a future variant means extending `CodingKeys` + the custom `init(from:)` fall-back chain — never break the existing two paths.
 
 Bump the suffix on any breaking field change in a future minor release; never overload an existing `_v1` field's semantics.
 
@@ -170,7 +193,8 @@ Bump the suffix on any breaking field change in a future minor release; never ov
 ## 12. Testing
 
 - Use Swift Testing (`import Testing`, `@Test`, `#expect`). New tests should not be XCTest.
-- 80% coverage **target** on `AppShared`, `ReolinkAPI`, `ReolinkStreaming`, and `ReolinkBaichuan`. The 0.5.0 release introduced `Scripts/coverage-gate.sh` and wired it into CI to surface the numbers on every PR; it runs as `continue-on-error: true` today because the same release expanded `AppShared` with substantial SwiftUI view code (ScrubberView, DigestDetailView, PrivacyZoneEditorView, ReolensGlass, ChannelSettingsView, AllRecordingsView, TodayDigestRow, PerCameraNotificationsSection, …) that isn't unit-testable in isolation, dragging the measured floor below 80%. Flipping the gate to **enforced** is a one-line workflow change (`continue-on-error: false`) once the AppShared view surface has matching test coverage and the protocol libraries climb above the floor. Treat the report as a hard pre-merge signal in spirit even though CI doesn't block on it yet — every new test added is expected to move the needle. 0.5.1 baseline is **183 tests across 49 suites**.
+- 80% coverage **long-term target** on `AppShared`, `ReolinkAPI`, `ReolinkStreaming`, and `ReolinkBaichuan`. The 0.5.0 release introduced `Scripts/coverage-gate.sh` and wired it into CI. **0.6.0 flipped the gate to enforced** with a different strategy: per-target *baselines* in `Scripts/coverage-baselines.txt` rather than a single global 80% floor. CI now blocks on coverage *regression* against the baseline (with a 1 pp slack); intentional regressions require running `COVERAGE_FORCE_UPDATE_BASELINE=1 ./Scripts/coverage-gate.sh` locally and committing the updated baselines file. The 80% goal is still tracked in the script header — baselines ratchet upward as new tests land. **0.6.0 baseline is ~340 tests across 68 suites** (AppShared 13.81%, ReolinkAPI 56.47%, ReolinkStreaming 23.70%, ReolinkBaichuan 32.70%). The bar moves on every new feature.
+- **XCUITest harness (added in 0.6.0)** — `AppiOS/UITests/ReolensiOSUITests.swift` covers the high-risk navigation journeys (cold-launch → primary navigation, Settings → Notifications, Notification log push). Wired into CI as a best-effort step that auto-selects the first available iPhone simulator. New journeys should land here when they cover regressions a unit test couldn't catch.
 - No real network in tests. Use fixture servers (`URLProtocol` stubs, in-process HTTP servers) or protocol-injected fakes.
 - Each test gets a fresh instance — `init`/`deinit`, no shared mutable state.
 - Tests must be deterministic. If a test depends on timing, it's wrong.

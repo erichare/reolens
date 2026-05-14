@@ -156,6 +156,28 @@ public struct ChannelSettingsView: View {
                     .disabled(!privacyZonesDirty)
                 }
             }
+            Section("Recording schedule") {
+                NavigationLink {
+                    RecordingScheduleView(session: session, channel: channel)
+                        .navigationTitle("Recording schedule")
+                } label: {
+                    Label("Edit weekly recording schedule", systemImage: "calendar")
+                }
+                Text("Set the hours when this camera writes recordings to the hub or SD card. Some firmware (battery-powered cameras paired through a Home Hub, older NVRs) reports the schedule as read-only — the editor reflects that.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Motion-detection schedule") {
+                NavigationLink {
+                    MotionScheduleView(session: session, channel: channel)
+                        .navigationTitle("Motion schedule")
+                } label: {
+                    Label("Edit weekly motion schedule", systemImage: "bell.badge")
+                }
+                Text("Set the hours when motion and AI events on this camera fire alarms. Per-tag overrides let you quiet a specific tag (e.g. ignore vehicles overnight while still alerting on people).")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
             Section("Overlay") {
                 Toggle("Show app badges over video", isOn: Binding(
                     get: { !store.isAppBadgeHidden(deviceID: session.entry.id, channel: channel.channel) },

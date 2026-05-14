@@ -43,6 +43,20 @@ public final class CameraPreviewPrefetcher {
 
     private var loop: Task<Void, Never>?
     private weak var store: CameraStore?
+    /// 0.6.0 TD-3b — `ProcessInfo` lookup is hoisted into a closure
+    /// so tests can inject a fixed answer. Production reads the live
+    /// system flag (Low Power Mode on iOS, the equivalent thermal
+    /// state on macOS). Returning true short-circuits each sweep —
+    /// the next `.active` transition is when the user expects fresh
+    /// tiles, so the periodic cycle is what we drop.
+    public var isLowPowerModeProbe: @MainActor () -> Bool = {
+        ProcessInfo.processInfo.isLowPowerModeEnabled
+    }
+    /// Sweep that was skipped because of low-power mode — recorded
+    /// so observers can surface "deferred until power returns" in
+    /// diagnostics. Counter rather than a bool because nested calls
+    /// during a long Low Power session add up.
+    public private(set) var skippedSweepCount: Int = 0
 
     public init() {}
 
@@ -76,6 +90,18 @@ public final class CameraPreviewPrefetcher {
     /// deduplicated by the underlying `CameraPreviewService` actor.
     public func sweepNow() async {
         guard let store else { return }
+        // 0.6.0 TD-3b — short-circuit when the device is in Low
+        // Power Mode. The user has explicitly asked iOS / macOS to
+        // minimize background work; firing CGI snapshot fetches on
+        // a 15-minute cadence violates that contract. We DO still
+        // refresh when the user actively opens a tile (the
+        // `CameraPreviewImage` on-appear refresh path is separate
+        // from this prefetcher).
+        if isLowPowerModeProbe() {
+            skippedSweepCount &+= 1
+            log.info("Prefetch sweep skipped — Low Power Mode (skip count: \(self.skippedSweepCount, privacy: .public))")
+            return
+        }
         let work = collectWork(store: store)
         guard !work.isEmpty else { return }
         log.info("Prefetch sweep: \(work.count, privacy: .public) channels")

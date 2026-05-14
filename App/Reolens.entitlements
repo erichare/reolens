@@ -44,6 +44,15 @@
              Reolens server. -->
         <string>CloudKit</string>
     </array>
+    <!-- Identifier for `NSUbiquitousKeyValueStore` (hub-expansion
+         state + per-camera notification preferences sync). Must
+         be team ID + the *shared* bundle ID used across macOS and
+         iOS so the two platforms see the same store. Without this
+         key the runtime logs "Unable to find entitlement for KVS
+         store" and `NSUbiquitousKeyValueStore.default.set/get`
+         silently no-op. -->
+    <key>com.apple.developer.ubiquity-kvstore-identifier</key>
+    <string>5M9UT7VQ8Q.com.reolens.Reolens</string>
     <!-- Allow loading the embedded Sparkle.framework. Hardened Runtime's
          Library Validation otherwise requires every loaded library to be
          signed by Apple or by the same Team ID as the main app. With ad-hoc
@@ -54,5 +63,17 @@
          third-party signed frameworks. -->
     <key>com.apple.security.cs.disable-library-validation</key>
     <true/>
+    <!-- 0.6.0 Slice B2: HomeKit bridge entitlement.
+         Uncomment when signing under a Team ID with HomeKit capability
+         enabled and the project has the HomeKit capability checked in
+         Xcode → Signing & Capabilities. Without this, `HomeKitBridge`
+         surfaces `.entitlementMissing` and the Settings → Privacy
+         section explains the gap. Full HomeKit Secure Video recording
+         tier also requires Apple's Made-for-HomeKit (MFi) certification
+         — see HomeKitBridge.swift comments. -->
+    <!--
+    <key>com.apple.developer.homekit</key>
+    <true/>
+    -->
 </dict>
 </plist>

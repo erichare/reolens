@@ -93,6 +93,19 @@ struct ReolensiOSApp: App {
                         // — see CameraPreviewPrefetcher header.
                         CameraPreviewPrefetcher.shared.start(store: store)
                         Task { await CameraPreviewPrefetcher.shared.sweepNow() }
+                        // 0.6.0 — reconcile bookmark downloads. Picks
+                        // up any bookmark whose background download
+                        // failed / was killed and re-enqueues it now
+                        // that we have working sessions. The
+                        // reconciler waits for each session to reach
+                        // `.connected` before reading its token, so
+                        // calling it on every `.active` is safe.
+                        Task {
+                            let sessions = await MainActor.run {
+                                store.cameras.compactMap { store.session(for: $0.id) }
+                            }
+                            await BookmarkAutoDownloader.shared.reconcile(across: sessions)
+                        }
                         // 0.6.0 — bump every CameraSession's poll
                         // cadence back to foreground (10 s). The next
                         // poll iteration picks up the shorter interval.

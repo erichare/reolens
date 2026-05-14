@@ -85,6 +85,12 @@ struct SettingsView: View {
             ICloudKeychainSyncSection()
             MotionRelayPublisherSection()
             RelayDiagnosticsSection()
+            // 0.6.0 Slice B2 — HomeKit section is iOS-only. Apple
+            // doesn't ship a public HomeKit framework on macOS for
+            // native apps (only Mac Catalyst), so there's no
+            // meaningful UI to render here. The per-camera
+            // homeKitEnabled flag still rides iCloud so flipping it
+            // on iPhone surfaces correctly across devices.
         }
         .formStyle(.grouped)
     }

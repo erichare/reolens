@@ -207,7 +207,22 @@ struct LiveTileView: View {
             isVisible = true
         }
         .task(id: channel.channel) {
-            guard !preferPreview, autoStart, !channel.isAsleep, !session.isBatteryPowered(channel: channel.channel), !didStart, !paused else { return }
+            guard !preferPreview, autoStart, !didStart, !paused else { return }
+            let needsWake = channel.isAsleep || session.isBatteryPowered(channel: channel.channel)
+            if needsWake {
+                // 0.6.0 — single-camera tiles (no `onTap`) auto-wake
+                // battery / sleeping cameras when the user navigates
+                // in. The tap-to-open-detail was already an explicit
+                // "I want to see this camera" signal; requiring a
+                // second tap on the sleeping-overlay was friction
+                // users surfaced. Grid tiles still skip the wake
+                // path (`onTap != nil`) because firing a Baichuan
+                // wake for every battery cam on grid render would
+                // burn battery for tiles the user never looked at.
+                guard onTap == nil else { return }
+                await wakeAndStart()
+                return
+            }
             await startPlayer()
         }
         .onChange(of: rotation) { _, newValue in

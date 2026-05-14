@@ -78,6 +78,14 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
     /// it on. Added in 0.4.1; forward-compatible decode-and-ignore.
     public var hiddenAppBadgeChannels: Set<Int> = []
 
+    /// 0.6.0 Slice B2 — per-camera opt-in to HomeKit exposure.
+    /// Stored on the entry so the choice round-trips through
+    /// `cameras.json` to other Apple devices. Default OFF so the
+    /// `HomeKitBridge` only attempts to register accessories the
+    /// user explicitly chose. Forward-compatible decode-and-ignore
+    /// when older Reolens builds read a newer cameras.json.
+    public var homeKitEnabled: Bool = false
+
     public init(
         id: UUID = UUID(),
         displayName: String,
@@ -91,7 +99,8 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
         gridPreset: GridPreset = .adaptive,
         channelOrder: [Int] = [],
         tlsFingerprint: String? = nil,
-        hiddenAppBadgeChannels: Set<Int> = []
+        hiddenAppBadgeChannels: Set<Int> = [],
+        homeKitEnabled: Bool = false
     ) {
         self.id = id
         self.displayName = displayName
@@ -106,6 +115,7 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
         self.channelOrder = channelOrder
         self.tlsFingerprint = tlsFingerprint
         self.hiddenAppBadgeChannels = hiddenAppBadgeChannels
+        self.homeKitEnabled = homeKitEnabled
     }
 
     /// Codable conformance: serialize the dict with String keys so JSON is round-trip clean.
@@ -117,7 +127,8 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
              gridPreset,
              channelOrder,
              tlsFingerprint,           // 0.4.1: TOFU TLS pinning
-             hiddenAppBadgeChannels    // 0.4.1: per-channel "hide app badges"
+             hiddenAppBadgeChannels,   // 0.4.1: per-channel "hide app badges"
+             homeKitEnabled            // 0.6.0 Slice B2: HomeKit exposure opt-in
     }
 
     public init(from decoder: any Decoder) throws {
@@ -159,6 +170,10 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
         self.tlsFingerprint = try? c.decodeIfPresent(String.self, forKey: .tlsFingerprint)
         let hiddenBadgesList = (try? c.decode([Int].self, forKey: .hiddenAppBadgeChannels)) ?? []
         self.hiddenAppBadgeChannels = Set(hiddenBadgesList)
+        // 0.6.0 Slice B2 — optional + default-OFF so older
+        // cameras.json without the field decodes cleanly. Per
+        // AGENTS.md §7's forward-compatible-decode rule.
+        self.homeKitEnabled = (try? c.decodeIfPresent(Bool.self, forKey: .homeKitEnabled)) ?? false
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -179,6 +194,13 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
         // explicit "all visible" stays distinguishable from "never
         // configured" in downstream tooling.
         try c.encode(Array(hiddenAppBadgeChannels).sorted(), forKey: .hiddenAppBadgeChannels)
+        // 0.6.0 Slice B2 — only emit when ON so the JSON payload
+        // doesn't gain a noisy `homeKitEnabled: false` field on
+        // every camera. Older Reolens builds reading a newer file
+        // tolerate the field's absence by defaulting to false.
+        if homeKitEnabled {
+            try c.encode(true, forKey: .homeKitEnabled)
+        }
     }
 }
 
@@ -205,12 +227,32 @@ public final class CameraStore {
     public var cameraOrder: [UUID] = [] {
         didSet { persistCameraOrder() }
     }
-    /// Developer mode. Surfaces diagnostic UI (Raw JSON popovers, verbose
-    /// log buttons, etc.) that would otherwise clutter the default view.
-    /// Toggle from Settings → Developer. Backed by `UserDefaults` so it
-    /// survives relaunch.
+    /// 0.6.0 Slice 15 — UserDefaults-backed prefs extracted into
+    /// `AppPreferences`. Held privately and proxied via the existing
+    /// `developerMode` / `showCameraNameOnFeed` properties below so
+    /// the public surface is unchanged. Marked `@ObservationIgnored`
+    /// because the embedded type is itself `@Observable` and surfaces
+    /// its own change tracking — we don't want double-notification.
+    @ObservationIgnored
+    public let preferences: AppPreferences
+
+    /// 0.6.0 Slice 15b — Keychain-side carve-out. Owns password
+    /// reads/writes/deletes and the iCloud Keychain sync toggle.
+    /// Surfaced publicly so the new `EnterPasswordSheet` / iCloud
+    /// sync section can call it directly when convenient, but
+    /// CameraStore still exposes the legacy proxy methods below
+    /// (`setPassword`, `passwordSaveError`, `iCloudKeychainSync
+    /// Enabled`, `migrateKeychainSync`) so existing consumers don't
+    /// have to change.
+    @ObservationIgnored
+    public let keychainStore: CameraKeychainStore
+
+    /// Developer mode. Surfaces diagnostic UI (Raw JSON popovers,
+    /// verbose log buttons, etc.). Now backed by `AppPreferences`;
+    /// keeps the existing CameraStore API so consumers don't change.
     public var developerMode: Bool {
-        didSet { UserDefaults.standard.set(developerMode, forKey: Self.developerModeKey) }
+        get { preferences.developerMode }
+        set { preferences.developerMode = newValue }
     }
 
     /// Non-isolated peek at the developer-mode flag for code that
@@ -219,9 +261,8 @@ public final class CameraStore {
     /// directly from `UserDefaults` so it doesn't need to hop the
     /// actor just to decide whether to emit a `.debug` log line.
     public static var developerModeIsOn: Bool {
-        UserDefaults.standard.bool(forKey: developerModeKey)
+        AppPreferences.developerModeIsOn
     }
-    static let developerModeKey = "com.reolens.developerMode"
     private static let cameraOrderKey = "com.reolens.cameraOrder"
 
     /// 0.5.1 — global "Show camera name on feed" preference. Default OFF
@@ -232,18 +273,15 @@ public final class CameraStore {
     /// Per-channel `hiddenAppBadgeChannels` still acts as an override:
     /// when the global is ON, individual channels can still be hidden.
     public var showCameraNameOnFeed: Bool {
-        didSet { UserDefaults.standard.set(showCameraNameOnFeed, forKey: Self.showCameraNameKey) }
+        get { preferences.showCameraNameOnFeed }
+        set { preferences.showCameraNameOnFeed = newValue }
     }
-    static let showCameraNameKey = "com.reolens.showCameraNameOnFeed"
 
     public init() {
         let storage = ICloudCameraStorage.shared
         storage.migrateLegacyLocalIfNeeded()
-        self.developerMode = UserDefaults.standard.bool(forKey: Self.developerModeKey)
-        // 0.5.1 — default OFF (hidden) on first launch. `bool(forKey:)`
-        // returns false when the key is missing, which is exactly what
-        // we want as the new default.
-        self.showCameraNameOnFeed = UserDefaults.standard.bool(forKey: Self.showCameraNameKey)
+        self.preferences = AppPreferences()
+        self.keychainStore = CameraKeychainStore()
         // Restore the device-local sidebar order (UUID strings). Filter to
         // valid UUIDs defensively in case anything was corrupted.
         if let raw = UserDefaults.standard.array(forKey: Self.cameraOrderKey) as? [String] {
@@ -374,7 +412,7 @@ public final class CameraStore {
 
     public func add(_ entry: CameraEntry, password: String) {
         cameras.append(entry)
-        Keychain.set(password: password, for: entry.id)
+        keychainStore.set(password: password, for: entry.id)
         selection = .device(entry.id)
         save()
     }
@@ -384,7 +422,7 @@ public final class CameraStore {
         if let session = sessions.removeValue(forKey: id) {
             Task { await session.disconnect() }
         }
-        Keychain.deletePassword(for: id)
+        keychainStore.deletePassword(for: id)
         Task { await CameraPreviewService.shared.purge(cameraID: id) }
         if selection?.deviceID == id {
             selection = cameras.first.map { .device($0.id) }
@@ -418,25 +456,10 @@ public final class CameraStore {
     @discardableResult
     public func setPassword(_ password: String, for id: CameraEntry.ID) -> Bool {
         guard cameras.contains(where: { $0.id == id }) else { return false }
-        let saved = Keychain.set(password: password, for: id)
-        if !saved {
-            // Surface the failure so the UI can show an error instead
-            // of silently going back to "No password on this Mac".
-            // `passwordSaveError` is observable; views present it via
-            // an alert.
-            let message: String
-            #if os(macOS)
-            message = """
-                The system Keychain rejected the password write.
-
-                If you're running a locally-built Reolens (./Scripts/build-app.sh) and you previously enabled iCloud Keychain Sync, that's the cause — ad-hoc-signed dev builds don't have the iCloud-Keychain entitlement. Turn off iCloud Keychain Sync in Settings → Privacy, or use the Developer-ID-signed release DMG.
-
-                Otherwise, run \u{0060}log show --predicate 'subsystem == "com.reolens.Reolens" AND category == "Keychain"' --info --last 5m\u{0060} in Terminal to see the exact OSStatus.
-                """
-            #else
-            message = "The iOS Keychain rejected the password write. If you've enabled iCloud Keychain Sync, try turning it off in Settings → iCloud Keychain Sync and entering the password again."
-            #endif
-            passwordSaveError = PasswordSaveError(deviceID: id, message: message)
+        guard keychainStore.set(password: password, for: id) else {
+            // Failure populated `keychainStore.passwordSaveError` —
+            // proxied through `passwordSaveError` below so UI alerts
+            // observe identically to pre-Slice-15b.
             return false
         }
         // Tear down the existing session (if any) so a stale one with the
@@ -455,7 +478,14 @@ public final class CameraStore {
     /// when Keychain reports the write succeeded but the read-back
     /// finds nothing (or both add and update outright fail). Views
     /// observe and present as an alert, then clear. Added in 0.4.1.
-    public var passwordSaveError: PasswordSaveError?
+    /// 0.6.0 Slice 15b — backed by `CameraKeychainStore`. Setter
+    /// retained so the existing "clear after presentation" pattern in
+    /// the alert handlers (`store.passwordSaveError = nil`) still
+    /// works.
+    public var passwordSaveError: PasswordSaveError? {
+        get { keychainStore.passwordSaveError }
+        set { keychainStore.passwordSaveError = newValue }
+    }
 
     /// Reset the session for a camera without touching its Keychain
     /// entry. Used by the "Reconnect" context-menu action when a
@@ -490,8 +520,20 @@ public final class CameraStore {
     /// `package`-scoped `Keychain` enum — can read/write the
     /// preference through this public surface.
     public var iCloudKeychainSyncEnabled: Bool {
-        get { UserDefaults.standard.bool(forKey: Keychain.syncDefaultsKey) }
-        set { UserDefaults.standard.set(newValue, forKey: Keychain.syncDefaultsKey) }
+        get { keychainStore.iCloudSyncEnabled }
+        set { keychainStore.iCloudSyncEnabled = newValue }
+    }
+
+    /// 0.6.0 Slice B2 — update a camera's HomeKit-exposure flag.
+    /// Mirrors the existing per-entry write helpers (e.g.
+    /// `setRotation`) — locates the entry, flips the field, persists
+    /// via `save()` so the change rides the iCloud sync to other
+    /// Apple devices.
+    public func setHomeKitEnabled(_ enabled: Bool, for id: CameraEntry.ID) {
+        guard let i = cameras.firstIndex(where: { $0.id == id }) else { return }
+        guard cameras[i].homeKitEnabled != enabled else { return }
+        cameras[i].homeKitEnabled = enabled
+        save()
     }
 
     /// Re-save every known camera password on the requested side
@@ -506,8 +548,7 @@ public final class CameraStore {
     /// Password"). Never throws; OSStatus errors are logged.
     @discardableResult
     public func migrateKeychainSync(toSync syncOn: Bool) -> (migrated: Int, skipped: Int) {
-        let ids = cameras.map(\.id)
-        let result = Keychain.migrate(accounts: ids, toSync: syncOn)
+        let result = keychainStore.migrate(accounts: cameras.map(\.id), toSync: syncOn)
         return (result.migrated, result.skipped)
     }
 
@@ -668,7 +709,7 @@ public final class CameraStore {
     public func session(for id: CameraEntry.ID) -> CameraSession? {
         if let s = sessions[id] { return s }
         guard let entry = cameras.first(where: { $0.id == id }),
-              let password = Keychain.password(for: id) else { return nil }
+              let password = keychainStore.password(for: id) else { return nil }
         let creds = CameraCredentials(
             host: entry.host,
             port: entry.port,
@@ -746,9 +787,12 @@ public final class CameraStore {
     /// the user chooses (accept new cert / cancel).
     public var pendingTrustChange: TrustChangeRequest?
 
+    /// 0.6.0 Slice 15c — list-persistence carve-out. Forwards
+    /// load/save through `CameraListPersistence`. The previous inline
+    /// helpers are gone; the side effects on `cameras` / `selection`
+    /// stay here because they touch CameraStore's observable surface.
     private func load() {
-        guard let data = ICloudCameraStorage.shared.read(),
-              let entries = try? JSONDecoder().decode([CameraEntry].self, from: data) else { return }
+        guard let entries = CameraListPersistence.shared.load() else { return }
         cameras = entries
         if selection == nil {
             selection = entries.first.map { .device($0.id) }
@@ -756,8 +800,7 @@ public final class CameraStore {
     }
 
     private func save() {
-        guard let data = try? JSONEncoder().encode(cameras) else { return }
-        ICloudCameraStorage.shared.write(data)
+        CameraListPersistence.shared.save(cameras)
     }
 
     /// Pull the latest JSON from storage and rebuild the in-memory model
@@ -766,10 +809,8 @@ public final class CameraStore {
     /// change. Preserves the user's current `selection` so a remote
     /// update doesn't yank the focus away mid-interaction.
     private func reloadFromStorageIfChanged() {
-        guard let data = ICloudCameraStorage.shared.read(),
-              let entries = try? JSONDecoder().decode([CameraEntry].self, from: data) else { return }
-        if entries != cameras {
-            cameras = entries
-        }
+        guard CameraListPersistence.shared.hasChanged(comparedTo: cameras),
+              let entries = CameraListPersistence.shared.load() else { return }
+        cameras = entries
     }
 }

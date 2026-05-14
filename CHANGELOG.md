@@ -7,6 +7,318 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-05-14
+
+The largest release the project has shipped. Five storylines pulled
+together by a single unifying piece of plumbing.
+
+1. **The user-reported notification fix.** iOS / iPadOS push
+   notifications now actually arrive. The root cause was
+   `MotionEventRelaySettings.subscriberEnabled` gating
+   `registerForRemoteNotifications()` with no iOS UI to flip it; the
+   release lands the toggle in Settings → Notifications, defaults it
+   ON when the user grants notification permission, and pairs it with
+   a new **Notification Diagnostics** screen + a 1,000-record rolling
+   **Notification log** so this class of issue is self-diagnosing
+   forever.
+2. **Cross-day AI search.** Type "packages this week" or "vehicles
+   yesterday at the driveway" in the All Recordings search bar and get
+   results across the last 30 days. On Apple Intelligence hardware the
+   prompt goes through an on-device `FoundationModels` `@Generable`
+   query plan (synonym handling, fuzzy camera-name matching); every
+   other device falls back to a deterministic regex parser. The
+   user's prompt is the only thing the model sees — no recording data
+   crosses the model boundary.
+3. **Visual schedule editors.** Two surfaces share a reusable 7×24
+   weekly grid (`WeeklyScheduleEditor`): one for the camera's
+   recording schedule (`GetRec` / `SetRec`), one for motion-detection
+   alarms (`GetMdAlarm` / `SetMdAlarm`) with optional per-AI-tag
+   overrides — "quiet vehicles overnight, still alert on people."
+   Capability-aware: firmware that responds with `rspCode = -9`
+   degrades to a read-only display rather than failing silently.
+4. **Architecture pass.** Five tech-debt extractions land at once:
+   `RecordingsLoader` actor pulls 12+ duplicated `@State` variables
+   out of the iOS / macOS RecordingsView pair (with a generation
+   guard that stops stale reloads from publishing previous-day data
+   on rapid date flips, and a three-tier detection memoization that
+   eliminates per-render re-scans); `RecordingIndex` actor stores
+   30 days of cross-day metadata; `PollManager` extracts the polling
+   lifecycle out of `CameraSession`; `CameraStore` carves into three
+   focused stores (`AppPreferences`, `CameraKeychainStore`,
+   `CameraListPersistence`); `RecordingsScreenHeader` consolidates
+   the shared chrome stack between the two platform shells.
+5. **The bookmark, finally working.** New `sourceFileName` field on
+   the bookmark schema so the launch-time reconciler can re-enqueue
+   any background download that silently failed. HTTP-status
+   validation on the URLSession delegate stops expired-token 401
+   error pages from being saved as a `.mp4`. Explicit Delete button
+   on every bookmark row with a confirmation dialog that names the
+   downloaded clip when present. Tapping a bookmark whose local file
+   is missing now actually re-triggers the download rather than just
+   toasting "still downloading…" forever.
+
+Plus a long tail of UX fixes the user surfaced during the release:
+auto-wake battery cameras on single-camera detail open (no more
+"tap the sleeping overlay" second tap), restore the last-viewed
+camera on iOS / iPadOS cold launch, hide the AI filter chips on
+empty days, pin empty-state messages to the top of the window
+instead of centering them in a void, drop the macOS HomeKit section
+(non-Catalyst macOS can't reach the public HomeKit framework
+anyway), and lazy bookmark enumeration off the main thread.
+
+### Added
+
+- **Notification fix + iOS UI** — Settings → Notifications →
+  "Receive motion events from other devices" toggle bound to
+  `MotionEventRelaySettings.subscriberEnabled`. Defaults ON the
+  first time the user grants notification permission. `Motion
+  RelayPublisherSection` moves from Settings → Privacy to Settings
+  → Notifications on macOS for symmetry.
+- **Notification Diagnostics screen** — `RelayDiagnostics` actor
+  surfaces `UNAuthorizationStatus`, APNS registration timestamp +
+  last failure, `CKAccountStatus`, subscription-install state,
+  publisher save-error history, recent silent-push receipt count,
+  per-camera mute summary, and the throttle drop counter. Send-
+  test-notification button. New view: Settings → Notifications →
+  Diagnostics.
+- **Notification log** — `NotificationHistory` actor backs a 1,000-
+  record rolling SQLite-style JSON log in the App Group container.
+  Captures every notification's outcome at each gate (`posted` /
+  `throttledCooldown` / `permissionDenied` / `perCameraMuted` /
+  `tagMuted` / `globallyDisabled` / etc.) plus silent-push receipts
+  and tap events. New `NotificationLogView` reachable from Settings
+  → Notifications and from the Diagnostics screen. Filters: per-
+  camera, per-tag, per-delivery-status. Tap → deep-link to the
+  matching recording when within retention.
+- **Cross-day AI search via `RecordingIndex` actor** — versioned
+  file-backed cross-day index (`recording-index.v1.json` in the
+  App Group container, 30-day rolling retention, idempotent per-
+  (camera, day) ingest, Baichuan tag merge by filename + time
+  overlap). Ingestion hooks fire from `RecordingsLoader.reload()`
+  and `AllRecordingsView`'s streaming load — no new network calls,
+  just stores what was already fetched. New `RecordingNLSearcher`
+  translates prompts → structured queries (`tagFilter` /
+  `dateRange` / `cameraIDs`). `AllRecordingsView` gains a
+  `.searchable` field that calls `planWithModel` (FoundationModels
+  on Apple Intelligence devices, deterministic regex everywhere
+  else); the model and deterministic parser's outputs are
+  *unioned* on tags + camera IDs so the FM path never produces a
+  worse result than deterministic alone.
+- **Recording schedule editor** — `RecordingScheduleView` reachable
+  from per-channel Settings. Reads via `GetRec` (handles both the
+  canonical `Rec.schedule.table` shape and the legacy
+  `Rec.scheduleTable.mainStream` shape), edits via the reusable
+  7×24 `WeeklyScheduleEditor`, writes via `SetRec` (always emits the
+  canonical shape). Capability fallback: `-9 notSupport` puts the
+  editor in read-only mode with an explanatory notice.
+- **Motion-detection schedule editor + per-tag overrides** —
+  `MotionScheduleView` for the channel's main `MdAlarm` schedule
+  plus optional per-AI-tag override schedules. Example: main
+  schedule on 06:00-22:00, but quiet `vehicle` overnight and
+  trigger `people` 24/7. New `Commands.getMotionSchedule` /
+  `setMotionSchedule` mirror the recording-schedule shape.
+- **`WeeklyScheduleEditor` reusable component** — 7×24 grid (one
+  cell per hour, Sun..Sat × 00..23) with single-tap toggle and a
+  drag-paint gesture for sweeping multiple cells. Always / Never /
+  Revert / Apply controls. Pure SwiftUI, no networking — drives
+  both schedule surfaces above.
+- **iOS bookmarks parity** — toolbar bookmark button with scoped
+  count badge on the per-camera Recordings tab, reusing the
+  existing cross-platform `BookmarksSheet`. macOS gains the auto-
+  download path on `addBookmark` so iOS users see clips already
+  cached when iCloud syncs the bookmark over.
+- **`sourceFileName` on `RecordingBookmark`** — additive,
+  forward-compatible field so the launch-time bookmark reconciler
+  can re-enqueue downloads without doing a Search to find the
+  matching file. Legacy bookmarks created pre-0.6.0 decode to
+  `nil`; the next interaction repopulates the field.
+- **Bookmark reconciler + tap re-enqueue** —
+  `BookmarkAutoDownloader.reconcile(across:)` waits up to 30 s per
+  session for `.connected`, then re-enqueues every bookmark whose
+  local clip is missing. Fired on app launch + scene activation.
+  `playBookmark` on `AllRecordingsView` now re-triggers the
+  download when the local file is missing and surfaces an accurate
+  toast (`alreadyDownloaded` / `alreadyInFlight` / `enqueued` /
+  `cannotResolveSource`).
+- **Explicit bookmark delete** — every row in `BookmarksSheet` has
+  a red trash button next to Play / Export. Confirmation dialog
+  adapts its copy to "Removes the bookmark and the downloaded clip
+  from this device" vs just "Removes the bookmark." Both the
+  button and the iOS swipe-delete route through
+  `BookmarkAutoDownloader.removeBookmark(_:)` which cancels any in-
+  flight URLSession download, deletes the local `<id>.mp4`, and
+  removes the JSON entry.
+- **Per-camera health badges** — `CameraNotificationHealth` surfaces
+  "last notification at X" annotation on the camera list so users
+  can spot a camera that's been silent.
+- **Adaptive motion-event polling** — `AdaptivePollSchedule`:
+  10 s foreground / 60 s background / 120 s under Low Power Mode.
+  Phase changes take effect on the next sleep, never mid-poll.
+- **`HomeKitBridge` scaffolding (iOS only)** — `HomeKitBridge`
+  actor with availability state machine, entitlement detection,
+  per-camera opt-in (`CameraEntry.homeKitEnabled`). Settings →
+  Notifications → HomeKit section on iOS. Actual `HMCameraProfile`
+  registration is stubbed pending Apple MFi certification —
+  treated as a 0.7 opportunity, not a 0.6.0 deliverable. macOS
+  doesn't render the section because Apple removed public HomeKit
+  framework headers from the macOS SDK.
+- **Single-camera battery-cam auto-wake** — opening a battery /
+  sleeping camera's detail view now auto-fires the Baichuan wake
+  call on appear. Grid tiles skip the wake to avoid burning
+  battery cams on every Live-grid render.
+- **iOS / iPadOS last-camera-on-launch** — `AppPreferences.last
+  ViewedCameraID` round-trips through UserDefaults; the platform
+  shell restores the previous camera on cold launch (skipped when
+  an App Intent has a more-specific destination).
+- **XCUITest harness** — new `ReolensiOSUITests` target with 3
+  baseline journeys (cold-launch reaches primary navigation,
+  Settings → Notifications header renders, Notification log row
+  scrolls into view + pushes a navigation destination). Wired into
+  CI as a best-effort step that auto-selects the first available
+  iPhone simulator.
+
+### Changed
+
+- **Coverage gate is now enforced** — `Scripts/coverage-gate.sh`
+  switched from a single global 80% threshold (which nothing met)
+  to a per-target regression gate against
+  `Scripts/coverage-baselines.txt`. Failed PRs now block on
+  coverage *regression* rather than absolute floor; baselines
+  ratchet upward via `COVERAGE_FORCE_UPDATE_BASELINE=1`. The CI
+  step lost its `continue-on-error: true` flag. Long-term 80%
+  goal is still tracked in the script's header.
+- **`CameraStore` carved into three focused stores** —
+  `AppPreferences` (developerMode, showCameraNameOnFeed,
+  lastViewedCameraID), `CameraKeychainStore` (password reads /
+  writes / deletes + iCloud sync toggle + migration), and
+  `CameraListPersistence` (the iCloud-backed JSON encode / decode
+  boundary, with an injectable `Backend` protocol for tests).
+  `CameraStore` proxies all three so the dozens of existing view
+  consumers don't change.
+- **`PollManager` extracted from `CameraSession`** — depth-
+  counted `pausingBackgroundPolling`, injectable interval +
+  `shouldContinue` gate. The session loses `pollTask` +
+  `foregroundCGIOperationDepth` + `shouldResumePollingAfter
+  ForegroundCGI`. Tested in isolation.
+- **`RecordingsLoader` is the single source of truth for the
+  per-camera recordings tab.** Both the iOS and macOS
+  RecordingsView shells delegate all network state (files, sub
+  files, alarm-video entries, month statuses, event log,
+  `eventsUnsupported`) to the loader. Generation guard on
+  `reload()` drops stale results on rapid date flips (previously a
+  race could publish previous-day rows on top of the current
+  day). Three-tier `effectiveDetections` (triggers → Baichuan
+  overlap → live aiEventLog) is memoized per file id.
+- **`RecordingsScreenHeader` consolidates the shared 3-row glass
+  toolbar stack** (`MonthRecordingDensity` /
+  `DayTimelineStrip` / `AIEventFilterBar`) between the iOS and
+  macOS shells. The AI filter bar hides when there are zero
+  loaded files — the chip row was useless when nothing could be
+  filtered and contributed to the empty-state void users were
+  surfacing.
+- **Empty-state messages pin to the top** rather than centering in
+  the full remaining window height. `ContentUnavailableView`
+  centers by default, which left a visible void above the message;
+  the new `topPinnedEmptyState` wrapper pushes the empty space to
+  the bottom where it reads as "no more list" instead of "this
+  window is broken."
+- **`CameraPreviewPrefetcher` respects Low Power Mode** + macOS
+  resign-active stop. The prefetcher's sweep short-circuits when
+  `ProcessInfo.processInfo.isLowPowerModeEnabled` returns true and
+  bumps a `skippedSweepCount` for diagnostics. macOS now stops the
+  prefetcher loop when the app loses front-most (was iOS only);
+  `didBecomeActive` re-starts + immediate-sweeps.
+- **Lazy bookmark loading off the per-day reload path** — both
+  RecordingsView shells move `loadBookmarks()` out of `.task(id:
+  selectedDate)` (which re-enumerated iCloud Drive on every date
+  flip) into a separate one-shot `.task { }` that runs on a
+  detached high-priority Task, keeping the first-render path
+  unblocked.
+- **Honest error messages for the schedule editors** — catch
+  `ReolinkClientError` separately and render its
+  `CustomStringConvertible.description` (which prints the actual
+  case + payload like `Malformed response: keyNotFound...`)
+  instead of `localizedDescription`'s opaque NSError-bridged
+  "(Domain error N.)" string. Users no longer stare at "error 4"
+  with no path forward.
+
+### Fixed
+
+- **Push notifications on iOS / iPadOS** (the headline user-
+  reported bug). The subscriber-enabled toggle is reachable from
+  Settings; default-ON behaviour matches the macOS publisher.
+- **Bookmark downloads complete reliably.** Adds the
+  `sourceFileName` schema field for the reconciler, HTTP-status
+  validation on the URLSession delegate (a 401 expired-token
+  response no longer gets saved as a `.mp4`), tap-time re-enqueue
+  when the local file is missing, and launch-time reconciler that
+  walks every camera's bookmarks.
+- **Battery cameras don't require a second tap.** Single-camera
+  detail tiles auto-wake on appear.
+- **macOS HomeKit section** removed (Apple doesn't expose the
+  HomeKit framework to native macOS apps, only Mac Catalyst).
+- **DetectionType is now `Codable`** — necessary for the
+  `RecordingIndex` persistence path.
+- **`BaichuanAlarmVideoFile` gains a public memberwise init** so
+  tests can construct it without poking module internals.
+
+### Architecture / new files
+
+- `Sources/AppShared/RecordingsLoader.swift` + `CameraSession+
+  RecordingsLoader.swift`
+- `Sources/AppShared/RecordingIndex.swift` +
+  `RecordingNLSearcher.swift`
+- `Sources/AppShared/RecordingsScreenHeader.swift`
+- `Sources/AppShared/PollManager.swift`
+- `Sources/AppShared/AppPreferences.swift` +
+  `CameraKeychainStore.swift` + `CameraListPersistence.swift`
+- `Sources/AppShared/WeeklyScheduleEditor.swift` +
+  `RecordingScheduleView.swift` + `MotionScheduleView.swift`
+- `Sources/AppShared/HomeKitBridge.swift` +
+  `HomeKitSection.swift`
+- `Sources/AppShared/RelayDiagnostics.swift` +
+  `RelayDiagnosticsSection.swift` +
+  `MotionRelaySubscriberSection.swift`
+- `Sources/AppShared/NotificationHistory.swift` +
+  `NotificationLogView.swift` +
+  `CameraNotificationHealth.swift`
+- `Sources/AppShared/AdaptivePollSchedule.swift` +
+  `VersionedCodable.swift`
+- `Sources/ReolinkAPI/Models/RecordingSchedule.swift` +
+  `MotionSchedule.swift`
+- `AppiOS/UITests/ReolensiOSUITests.swift` (new XCUITest target)
+- `Scripts/coverage-baselines.txt`
+
+### Tests
+
+**~340 tests across 68 suites** (up from 183 / 49 at 0.5.1). New
+suites cover `RecordingsLoader` (race condition + memoization +
+3-tier detection fallback), `RecordingIndex` (idempotent ingest,
+tag merge, retention purge, persistence round-trip),
+`RecordingNLSearcher` (deterministic parser + merge policy),
+`WeeklySchedule` (wire-format multi-shape decode), `MotionSchedule`,
+`PollManager` (depth-counted pause / resume, shouldContinue gate),
+`AppPreferences`, `CameraKeychainStore`, `CameraListPersistence`,
+`CameraPreviewPrefetcher` (Low Power Mode skip + counter),
+`HomeKitBridge` (per-camera flag round-trip + CameraEntry forward-
+compat decode), and `BookmarkAutoDownloader` (sourceFileName
+schema + full-cleanup delete path). XCUITest baseline added for the
+iOS / iPadOS shell.
+
+### Notes for upgraders
+
+- **No breaking changes.** `cameras.json` decodes legacy entries
+  unchanged. Bookmarks created pre-0.6.0 lack `sourceFileName` and
+  resolve themselves the first time the user reopens the camera.
+  All new schedule wire types tolerate both observed Reolink
+  firmware shapes.
+- **HomeKit exposure** lights up only on iOS / iPadOS and only
+  when the build's been signed with the `com.apple.developer.
+  homekit` entitlement (commented out in both
+  `*.entitlements` files for now; flip to uncommented when MFi
+  cert lands). Until then the bridge stays in `.entitlement
+  Missing` state and renders an explanatory line.
+
 ## [0.5.1] — 2026-05-13
 
 A "big minor" on top of 0.5.0. Five storylines:

@@ -22,8 +22,8 @@ Tooling:
 - Xcode 26 (both platforms). 0.5.0 raised the deployment floor to
   macOS 26 / iOS 26 to adopt Liquid Glass + ActivityKit + WidgetKit
   desktop widgets; 0.5.1 leans on the same floor for
-  `FoundationModels`. The macOS app builds through SwiftPM; iOS
-  uses an xcodegen-managed Xcode project.
+  `FoundationModels`; 0.6.0 keeps it. The macOS app builds through
+  SwiftPM; iOS uses an xcodegen-managed Xcode project.
 - Swift 6.2 (strict concurrency on by default).
 - An Apple Developer account for code signing iOS builds locally;
   unsigned macOS dev builds run fine via `./Scripts/build-app.sh run`.
@@ -32,7 +32,7 @@ Build & test:
 
 ```sh
 swift build                 # libs + macOS app
-swift test                  # 183 tests across 49 suites (AppShared, RTSP, Baichuan, …)
+swift test                  # ~340 tests across 68 suites
 ./Scripts/build-app.sh run  # bundled .app with Local Network entitlement
 ```
 
@@ -40,8 +40,16 @@ CI gates also runnable locally (both block PRs in `.github/workflows/ci.yml`):
 
 ```sh
 bash Scripts/check-versions.sh   # macOS + iOS marketing versions must match (AGENTS.md §13)
-bash Scripts/coverage-gate.sh    # ≥ 80 % line coverage on AppShared + Reolink* (AGENTS.md §12)
+bash Scripts/coverage-gate.sh    # per-target coverage regression gate (AGENTS.md §12)
 ```
+
+The coverage gate is **enforced as of 0.6.0** — it now fails on a
+regression against `Scripts/coverage-baselines.txt` rather than a
+single global 80% floor. If your PR drops coverage on any of the
+four library targets by more than 1 pp, the gate fails. Intentional
+regressions (e.g. removing dead test code) require running
+`COVERAGE_FORCE_UPDATE_BASELINE=1 ./Scripts/coverage-gate.sh`
+locally and committing the updated baselines file.
 
 iOS:
 
@@ -62,7 +70,7 @@ the diagram. The short version:
 | RTSP / VideoToolbox / sample buffer / H.264 + H.265 decode | `Sources/ReolinkStreaming/` |
 | CGI commands, Codable models, URL building, `MaskSettings` | `Sources/ReolinkAPI/` |
 | Baichuan (port 9000, talkback, push, `findAlarmVideo`, XML helpers) | `Sources/ReolinkBaichuan/` |
-| State, persistence, iCloud, Keychain, App Intents, EventNotifier, SharedContainer, DigestScheduler, ThumbnailCache, ClipExporter, RecordingBookmarkStore, PrivacyZoneEditor*, ReolensGlass, ScrubberView, MotionEventActivityAttributes, ReolensScene, AllRecordingsView, AllRecordingsLoader, RecordingsCache, CameraFilterBar, HubExpansionStore, CameraNotificationPreferences, PerCameraNotificationsSection, BookmarkAutoDownloader, BackgroundDownloadPreferences, EventSummarizer, LiveActivityPushTokenRegistry | `Sources/AppShared/` |
+| State, persistence, iCloud, Keychain, App Intents, EventNotifier, SharedContainer, DigestScheduler, ThumbnailCache, ClipExporter, RecordingBookmarkStore, PrivacyZoneEditor*, ReolensGlass, ScrubberView, MotionEventActivityAttributes, ReolensScene, AllRecordingsView, AllRecordingsLoader, RecordingsCache, CameraFilterBar, HubExpansionStore, CameraNotificationPreferences, PerCameraNotificationsSection, BookmarkAutoDownloader, BackgroundDownloadPreferences, EventSummarizer, LiveActivityPushTokenRegistry, **RecordingsLoader, RecordingIndex, RecordingNLSearcher, PollManager, AppPreferences, CameraKeychainStore, CameraListPersistence, RecordingsScreenHeader, WeeklyScheduleEditor, NotificationHistory, RelayDiagnostics, CameraNotificationHealth, AdaptivePollSchedule, HomeKitBridge** | `Sources/AppShared/` |
 | macOS SwiftUI views | `App/Views/` |
 | macOS menu-bar item + Recent-events popover | `App/MenuBar/` |
 | macOS desktop widgets (extension target) | `App/Widgets/` |
@@ -92,19 +100,33 @@ instead — that's the rule from [`AGENTS.md`](AGENTS.md) §6.
 ## Testing
 
 - Use Swift Testing (`import Testing`, `@Test`, `#expect`). New tests
-  are not XCTest.
-- **80 % line-coverage floor on `AppShared` and `Reolink*` — CI-enforced**
-  by `Scripts/coverage-gate.sh` (AGENTS.md §12). PRs that drop coverage
-  on those targets below 80 % are blocked.
+  are not XCTest. The one exception is XCUITest under
+  `AppiOS/UITests/` — `XCTest` is unavoidable there because the iOS
+  UI-testing harness predates Swift Testing.
+- **Per-target coverage regression gate — CI-enforced as of 0.6.0**
+  via `Scripts/coverage-gate.sh` (AGENTS.md §12). PRs that drop
+  coverage on any library target by more than 1 pp against
+  `Scripts/coverage-baselines.txt` are blocked. The long-term 80%
+  goal is tracked in the script header; baselines ratchet upward
+  as new tests land.
 - No real network in tests. Use `URLProtocol` stubs, fixture servers,
   or protocol-injected fakes.
 - Tests must be deterministic. If a test depends on timing or random
-  ordering, it's wrong.
+  ordering, it's wrong. Actor + persistence tests follow the
+  `makeFreshURL()` / `makeFreshDefaults()` pattern (see
+  `NotificationHistoryTests`, `RecordingIndexTests`,
+  `AppPreferencesTests`) — every test gets an isolated storage path
+  so cross-test bleed is impossible.
 - Widget / Live Activity extension code is tested via the shared
   `AppShared` model layer (see `Tests/AppSharedTests/SharedContainerTests.swift`).
   The extension targets themselves are integration-tested by
   `xcodebuild` against the regenerated Xcode project; SPM-side tests
   don't exercise them.
+- **XCUITest journeys (added in 0.6.0)** live under
+  `AppiOS/UITests/ReolensiOSUITests.swift`. New journeys land here
+  when a regression class can only be caught at the SwiftUI-shell
+  level (e.g. a nav-link that compiles but doesn't route). Keep
+  journey count small and high-signal — UI tests are slow.
 
 ## Commits & PRs
 
@@ -138,9 +160,20 @@ ship in marketing materials.
 
 Maintainer-only. See [`docs/RELEASE.md`](docs/RELEASE.md) for the macOS
 runbook and [`docs/IOS_RELEASE.md`](docs/IOS_RELEASE.md) for the iOS
-one. Short version: bump versions in both Info.plist files plus the iOS
-project.pbxproj `MARKETING_VERSION`, add a `## [X.Y.Z]` section to
-[`CHANGELOG.md`](CHANGELOG.md), tag, push.
+one. Short version:
+
+1. Bump `CFBundleShortVersionString` in [`App/Info.plist`](App/Info.plist)
+   and the matching `MARKETING_VERSION` in [`AppiOS/project.yml`](AppiOS/project.yml).
+   `check-versions.sh` blocks PRs that drift.
+2. Regenerate the iOS project: `cd AppiOS && xcodegen generate` —
+   picks up the bumped version into both Info.plist files.
+3. Add a `## [X.Y.Z] — YYYY-MM-DD` section to
+   [`CHANGELOG.md`](CHANGELOG.md).
+4. Tag and push: `git tag v0.6.0 && git push --tags`.
+
+The `release.yml` workflow handles signing, notarization, DMG
+packaging, appcast regeneration, and publishing the GitHub Release
+automatically from the tag.
 
 ## Code of conduct
 

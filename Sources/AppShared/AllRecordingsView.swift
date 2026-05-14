@@ -59,6 +59,13 @@ public struct AllRecordingsView: View {
     /// immediately and runs a background refresh; the date label
     /// surfaces "Refreshing…" so the user knows fresh data is coming.
     @State private var cachedAt: Date?
+    /// 0.6.0 Slice 11 — cross-day search. When `searchQuery` is non-
+    /// empty, the feed switches from "this day's rows" to results
+    /// queried out of `RecordingIndex`. The natural-language prompt is
+    /// translated by `RecordingNLSearcher` into a structured query.
+    @State private var searchQuery: String = ""
+    @State private var indexedResults: [RecordingIndex.IndexedRecording] = []
+    @State private var isSearching: Bool = false
 
     /// Convenience: shorthand to the first session (when present) so
     /// the bookmark/preview path can still reach a `CGIClient` for
@@ -172,6 +179,14 @@ public struct AllRecordingsView: View {
         .task(id: reloadKey) {
             await reload()
         }
+        .searchable(
+            text: $searchQuery,
+            placement: searchFieldPlacement,
+            prompt: "Search recordings — e.g. \"packages this week\""
+        )
+        .task(id: searchQuery) {
+            await runIndexSearch()
+        }
         .sheet(item: $nowPlaying) { rec in
             RecordingPreviewSheet(url: rec.url, title: rec.title) { nowPlaying = nil }
         }
@@ -235,7 +250,9 @@ public struct AllRecordingsView: View {
 
     @ViewBuilder
     private var content: some View {
-        if let errorMessage {
+        if !searchQuery.isEmpty {
+            indexedSearchContent
+        } else if let errorMessage {
             ContentUnavailableView {
                 Label("Couldn't load recordings", systemImage: "exclamationmark.triangle")
             } description: {
@@ -595,6 +612,146 @@ public struct AllRecordingsView: View {
         await RecordingsCache.shared.set(sessionIDs: sessionIDs, day: day, rows: freshRows)
         cachedAt = Date()
         refreshDigest(for: freshRows)
+        // 0.6.0 Slice 11 — feed the cross-day index. Group rows by
+        // (camera, channel) so each `ingest` call is camera-scoped
+        // and idempotent. Side-effect only; never blocks the UI.
+        ingestStreamingResults(freshRows, day: day)
+    }
+
+    private func ingestStreamingResults(_ rows: [ScopedRecording], day: Date) {
+        let cameraNameByKey = Dictionary(
+            uniqueKeysWithValues: availableCameras.map { ($0, $0.label) }
+        )
+        let grouped = Dictionary(grouping: rows, by: \.cameraKey)
+        for (cameraKey, scoped) in grouped {
+            let files = scoped.map(\.file)
+            let cameraID = cameraKey.deviceID
+            let name = cameraNameByKey[cameraKey] ?? cameraKey.label
+            let channel = cameraKey.channel
+            Task {
+                await RecordingIndex.shared.ingest(
+                    files,
+                    cameraID: cameraID,
+                    cameraName: name,
+                    channel: channel,
+                    day: day
+                )
+            }
+        }
+    }
+
+    // MARK: - 0.6.0 Cross-day index search
+
+    /// Available cameras as `RecordingNLSearcher.CameraHint`s so the
+    /// parser can resolve camera-name tokens in prompts.
+    private var cameraHintsForSearch: [RecordingNLSearcher.CameraHint] {
+        sessions.map { session in
+            RecordingNLSearcher.CameraHint(
+                cameraID: session.entry.id,
+                name: session.entry.displayName
+            )
+        }
+    }
+
+    /// Search-field placement adapts to platform: a toolbar field on
+    /// macOS, the system navigation-bar search affordance on iOS.
+    private var searchFieldPlacement: SearchFieldPlacement {
+        #if os(iOS)
+        return .navigationBarDrawer(displayMode: .always)
+        #else
+        return .toolbar
+        #endif
+    }
+
+    /// Translate the prompt to a structured query and run it against
+    /// `RecordingIndex`. No-op when the search field is empty.
+    private func runIndexSearch() async {
+        let trimmed = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            indexedResults = []
+            isSearching = false
+            return
+        }
+        let searcher = RecordingNLSearcher()
+        // 0.6.0 — use the on-device-model variant when available. It
+        // falls back to the deterministic parser internally when
+        // FoundationModels is unavailable, so this call is safe on
+        // every device. The user prompt is the only thing the model
+        // sees — no recording data crosses the boundary.
+        var query = await searcher.planWithModel(
+            prompt: trimmed,
+            availableCameras: cameraHintsForSearch
+        )
+        // Merge the UI filter pills onto the parser's output so a
+        // user's existing AI/camera selections compose with the NL
+        // prompt rather than getting silently dropped.
+        if !aiFilter.isEmpty {
+            query.tagFilter = query.tagFilter.isEmpty
+                ? aiFilter
+                : query.tagFilter.intersection(aiFilter)
+        }
+        if !cameraFilter.isEmpty {
+            let pillCameraIDs = Set(cameraFilter.map(\.deviceID))
+            query.cameraIDs = query.cameraIDs.isEmpty
+                ? pillCameraIDs
+                : query.cameraIDs.intersection(pillCameraIDs)
+        }
+        isSearching = true
+        defer { isSearching = false }
+        let hits = await RecordingIndex.shared.query(query)
+        indexedResults = hits
+    }
+
+    @ViewBuilder
+    private var indexedSearchContent: some View {
+        if isSearching, indexedResults.isEmpty {
+            ContentUnavailableView {
+                Label("Searching", systemImage: "magnifyingglass")
+            } description: {
+                Text("Looking across the last 30 days…").font(.caption)
+            }
+        } else if indexedResults.isEmpty {
+            ContentUnavailableView(
+                "No matches",
+                systemImage: "magnifyingglass",
+                description: Text(
+                    "Nothing in the indexed window matches \"\(searchQuery)\". Try a tag (people, packages, vehicles), a relative date (today, yesterday, this week), or clear the search box."
+                )
+            )
+        } else {
+            List(indexedResults) { hit in
+                indexedRow(hit)
+                    .contentShape(.rect)
+            }
+            .listStyle(.plain)
+        }
+    }
+
+    @ViewBuilder
+    private func indexedRow(_ hit: RecordingIndex.IndexedRecording) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: hit.hasBookmark ? "bookmark.fill" : "play.rectangle.fill")
+                .font(.title2)
+                .foregroundStyle(hit.hasBookmark ? Color.yellow : Color.accentColor)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(timeLabel(epoch: hit.start.timeIntervalSince1970))
+                    .font(.body.monospacedDigit())
+                HStack(spacing: 6) {
+                    Text(hit.start, format: .dateTime.month(.abbreviated).day())
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Label(hit.cameraName, systemImage: "video.fill")
+                        .labelStyle(.titleAndIcon)
+                        .font(.caption.weight(.medium))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .reolensGlassChip(selected: false)
+                }
+            }
+            Spacer()
+            detectionTags(Array(hit.detectionTags))
+        }
+        .padding(.vertical, 4)
     }
 
     private func refreshDigest(for rows: [ScopedRecording]) {
@@ -657,6 +814,7 @@ public struct AllRecordingsView: View {
     }
 
     private func playBookmark(_ bm: RecordingBookmark, cameraKey: CameraFilterBar.CameraChannelKey) {
+        // 1. Local copy wins — offline, no network, fastest start.
         let localURL = BookmarkAutoDownloader.localFileURL(for: bm)
         if FileManager.default.fileExists(atPath: localURL.path) {
             nowPlaying = PreviewTarget(
@@ -666,21 +824,79 @@ public struct AllRecordingsView: View {
             )
             return
         }
-        // No local clip yet — the user bookmarked it but the
-        // background download hasn't finished (or has been purged).
-        // Surface a toast so it's clear what happened.
-        bookmarkToast = "Bookmark still downloading…"
+        // 2. No local file. Stream from the camera right away (same
+        //    HTTP-progressive-download path the normal `preview()`
+        //    flow uses) and kick the background download in parallel
+        //    so the next play is offline. The previous behaviour
+        //    just toasted "download in progress" with no video and
+        //    no progress indication, which left users staring at
+        //    nothing.
+        guard let session = session(for: cameraKey) else {
+            bookmarkToast = "Camera not connected — open it once, then try again."
+            scheduleBookmarkToastDismiss()
+            return
+        }
+        // Resolve the source filename. Newly-created bookmarks
+        // persist it on the schema; legacy bookmarks may not, in
+        // which case we look for a row in the currently-loaded feed
+        // whose time range contains the bookmark's start.
+        let resolvedFileName: String? = bm.sourceFileName
+            ?? rows.first(where: { row in
+                guard row.cameraKey == cameraKey,
+                      let start = row.file.startDate,
+                      let end = row.file.endDate else { return false }
+                return start <= bm.startDate && bm.startDate <= end
+            })?.file.name
+        guard let fileName = resolvedFileName else {
+            bookmarkToast = "Open this camera at \(bm.startDate.formatted(date: .abbreviated, time: .omitted)) to play this bookmark."
+            scheduleBookmarkToastDismiss()
+            return
+        }
+        Task { @MainActor in
+            let token = await session.client.currentToken?.name
+            let creds = await session.client.credentials
+            let streamURL = StreamURLs(credentials: creds).recordingDownload(
+                source: fileName,
+                output: fileName,
+                token: token
+            )
+            // Open the player immediately on the streaming URL —
+            // user sees video right away.
+            nowPlaying = PreviewTarget(
+                id: "bm:\(bm.id.uuidString)",
+                url: streamURL,
+                title: "\(cameraKey.label) — bookmark"
+            )
+            // Fire-and-forget the background download for offline-
+            // next-time. Idempotent via `tasksInFlight` so it's safe
+            // to call on every tap.
+            Task {
+                _ = await BookmarkAutoDownloader.shared.enqueueIfMissing(
+                    bookmark: bm,
+                    session: session,
+                    fallbackFileName: fileName
+                )
+            }
+        }
+    }
+
+    private func scheduleBookmarkToastDismiss() {
         Task {
-            try? await Task.sleep(for: .seconds(2))
+            try? await Task.sleep(for: .seconds(3))
             await MainActor.run { bookmarkToast = nil }
         }
     }
 
     private func removeBookmark(_ bm: RecordingBookmark) {
-        Task.detached(priority: .userInitiated) {
-            try? RecordingBookmarkStore.remove(id: bm.id, cameraID: bm.cameraID)
-        }
+        // Optimistic UI: drop from the in-memory list immediately
+        // so the row disappears without waiting on disk IO. The
+        // full-cleanup helper handles the persistent side
+        // (cancelling any in-flight download, deleting the local
+        // clip file, removing the JSON entry).
         bookmarks.removeAll { $0.id == bm.id }
+        Task {
+            await BookmarkAutoDownloader.shared.removeBookmark(bm)
+        }
     }
 
     private func preview(_ row: ScopedRecording) {
@@ -796,32 +1012,107 @@ private struct TodayDigestRow: View {
     }
 }
 
-/// A simple AVKit-backed preview sheet so the cross-platform All
-/// Recordings view doesn't depend on the macOS-specific
-/// `RecordingPlayerSheet`. Heavier playback paths (download +
-/// trim + export) live on the per-camera Recordings view; this is
-/// just an in-app player.
+/// Cross-platform preview sheet for the All Recordings list.
+///
+/// For HTTP URLs (camera CGI `cmd=Download`) we route through
+/// `RecordingDownloader` first: AVPlayer's progressive-HTTP code path
+/// gives up on Reolink's CGI response (no `Accept-Ranges`, omitted
+/// `Content-Type`, no `Content-Length` on Home Hub Pro) and renders
+/// a slashed-player icon. Downloading the whole clip to a cache file
+/// first and then handing that local URL to `AVPlayer` always works
+/// and is a no-op on the second tap thanks to the downloader's
+/// content-stable disk cache.
+///
+/// For `file://` URLs we play directly — the bookmark path passes a
+/// local file that's already on disk.
 private struct RecordingPreviewSheet: View {
     let url: URL
     let title: String
     let onDismiss: () -> Void
 
+    @State private var downloader = RecordingDownloader()
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text(title).font(.headline)
+                Text(title).font(.headline).lineLimit(1)
                 Spacer()
                 Button("Close", action: onDismiss).keyboardShortcut(.escape, modifiers: [])
             }
             .padding(12)
-            #if canImport(AVKit)
-            AVPlayerStreamView(url: url)
-                .frame(minWidth: 480, minHeight: 270)
-            #else
-            ContentUnavailableView("Playback unavailable", systemImage: "play.slash")
-            #endif
+            content
         }
         .frame(minWidth: 520, minHeight: 360)
+        .task(id: url) {
+            // Local files (already-downloaded bookmarks) play
+            // directly; only remote CGI URLs go through the
+            // downloader.
+            if !url.isFileURL {
+                downloader.start(url: url)
+            }
+        }
+        .onDisappear { downloader.cancel() }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        #if canImport(AVKit)
+        if url.isFileURL {
+            AVPlayerStreamView(url: url)
+                .frame(minWidth: 480, minHeight: 270)
+        } else {
+            switch downloader.state {
+            case .idle, .downloading:
+                downloadingPanel
+            case .ready:
+                if let localURL = downloader.localURL {
+                    AVPlayerStreamView(url: localURL)
+                        .frame(minWidth: 480, minHeight: 270)
+                } else {
+                    ContentUnavailableView("Couldn't open clip", systemImage: "play.slash")
+                }
+            case .failed(let message):
+                ContentUnavailableView {
+                    Label("Couldn't play this recording", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(message).font(.caption).textSelection(.enabled)
+                } actions: {
+                    Button("Retry") { downloader.start(url: url) }
+                }
+            }
+        }
+        #else
+        ContentUnavailableView("Playback unavailable", systemImage: "play.slash")
+        #endif
+    }
+
+    private var downloadingPanel: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "arrow.down.circle")
+                .font(.system(size: 36))
+                .foregroundStyle(.secondary)
+            Text("Loading recording…").font(.headline)
+            let received = downloader.bytesReceived
+            let total = max(downloader.totalBytes, received)
+            if total > 0 {
+                ProgressView(value: min(1.0, Double(received) / Double(max(total, 1))))
+                    .frame(maxWidth: 320)
+                Text("\(byteString(received)) of \(byteString(total))")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            } else {
+                ProgressView().controlSize(.regular)
+                Text("Starting…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(20)
+    }
+
+    private func byteString(_ n: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: n, countStyle: .file)
     }
 }
 

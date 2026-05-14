@@ -32,6 +32,13 @@ public struct BookmarksSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var exporting = false
     @State private var exportStatus: String?
+    /// 0.6.0 — confirmation prompt before an explicit Delete-button
+    /// tap removes a bookmark. Swipe-to-delete on iOS still works
+    /// without a prompt (the swipe gesture itself is the
+    /// confirmation), but a discoverable button in the row needs an
+    /// intermediate "are you sure?" step so an accidental click
+    /// doesn't lose a saved clip.
+    @State private var pendingDelete: RecordingBookmark?
 
     public init(
         cameraID: UUID,
@@ -102,6 +109,39 @@ public struct BookmarksSheet: View {
             }
         }
         .frame(minWidth: 480, minHeight: 360)
+        .confirmationDialog(
+            "Remove bookmark?",
+            isPresented: Binding(
+                get: { pendingDelete != nil },
+                set: { if !$0 { pendingDelete = nil } }
+            ),
+            presenting: pendingDelete
+        ) { bookmark in
+            Button("Remove bookmark", role: .destructive) {
+                Task { await performDelete(bookmark) }
+            }
+            Button("Cancel", role: .cancel) {
+                pendingDelete = nil
+            }
+        } message: { bookmark in
+            // Tell the user exactly what's getting removed —
+            // including the downloaded clip if it's present — so
+            // they can make an informed choice.
+            if BookmarkAutoDownloader.hasLocalClip(for: bookmark) {
+                Text("Removes the bookmark and the downloaded clip from this device. The original recording on the camera isn't affected.")
+            } else {
+                Text("Removes the bookmark. The original recording on the camera isn't affected.")
+            }
+        }
+    }
+
+    /// Centralized delete path. Both the explicit Delete button and
+    /// the swipe-to-delete route here so the in-flight-download
+    /// cancel + local-clip-file cleanup always runs.
+    private func performDelete(_ bookmark: RecordingBookmark) async {
+        await BookmarkAutoDownloader.shared.removeBookmark(bookmark)
+        bookmarks = RecordingBookmarkStore.read(cameraID: cameraID)
+        pendingDelete = nil
     }
 
     private func bookmarkRow(_ bookmark: RecordingBookmark) -> some View {
@@ -158,6 +198,19 @@ public struct BookmarksSheet: View {
                     .labelStyle(.iconOnly)
             }
             .buttonStyle(.plain)
+            // 0.6.0 — explicit Delete button, in addition to the
+            // iOS swipe-to-delete. Discoverable on macOS (where
+            // swipe is awkward) and on iPad Stage Manager (where a
+            // pointer-driven user might not think to swipe).
+            Button(role: .destructive) {
+                pendingDelete = bookmark
+            } label: {
+                Label("Delete", systemImage: "trash")
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.red)
+            .help("Remove this bookmark and its downloaded clip from this device.")
         }
         .padding(.vertical, 4)
     }
@@ -171,10 +224,18 @@ public struct BookmarksSheet: View {
 
     private func delete(at offsets: IndexSet) {
         let snapshot = visibleBookmarks
-        for index in offsets {
-            let target = snapshot[index]
-            try? RecordingBookmarkStore.remove(id: target.id, cameraID: cameraID)
+        let targets = offsets.map { snapshot[$0] }
+        Task {
+            for target in targets {
+                // 0.6.0 — route through the full-cleanup helper so
+                // swipe-delete also cancels an in-flight download +
+                // removes the downloaded clip file. Previously this
+                // path only removed the JSON entry.
+                await BookmarkAutoDownloader.shared.removeBookmark(target)
+            }
+            await MainActor.run {
+                bookmarks = RecordingBookmarkStore.read(cameraID: cameraID)
+            }
         }
-        bookmarks = RecordingBookmarkStore.read(cameraID: cameraID)
     }
 }

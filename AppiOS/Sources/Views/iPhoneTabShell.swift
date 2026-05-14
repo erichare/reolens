@@ -21,6 +21,11 @@ struct iPhoneTabShell: View {
 
     @State private var selectedTab: Tab = .live
     @State private var liveTabPath = NavigationPath()
+    /// 0.6.0 — set after the first appear's restoration logic has
+    /// run so a re-render of the shell (which happens on every
+    /// `store.cameras` change) doesn't keep re-pushing the same
+    /// camera onto the path.
+    @State private var restoredLastCamera: Bool = false
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -28,15 +33,23 @@ struct iPhoneTabShell: View {
                 LivePlaceholderView()
                     .navigationTitle("Live")
                     .navigationDestination(for: CameraEntry.self) { entry in
-                        if let session = store.session(for: entry.id) {
-                            CameraDetailView(session: session)
-                        } else {
-                            ContentUnavailableView {
-                                Label("No password on this device", systemImage: "key.slash")
-                            } description: {
-                                Text("\(entry.displayName) was added on another device. Enter the password to stream from it.")
+                        Group {
+                            if let session = store.session(for: entry.id) {
+                                CameraDetailView(session: session)
+                            } else {
+                                ContentUnavailableView {
+                                    Label("No password on this device", systemImage: "key.slash")
+                                } description: {
+                                    Text("\(entry.displayName) was added on another device. Enter the password to stream from it.")
+                                }
                             }
                         }
+                        // 0.6.0 — remember this as the last-viewed
+                        // camera so a future cold launch lands here
+                        // rather than the placeholder. Persisting on
+                        // appear (not on push) catches both manual
+                        // navigation and App-Intent deep links.
+                        .onAppear { store.preferences.lastViewedCameraID = entry.id }
                     }
                     // Per-channel deep-link destination — pushed by
                     // expandable rows in the Live tab so an NVR's
@@ -44,27 +57,30 @@ struct iPhoneTabShell: View {
                     // Falls back to `CameraDetailView` when the
                     // session is still mounting (no channels yet).
                     .navigationDestination(for: CameraChannelTarget.self) { target in
-                        if let session = store.session(for: target.deviceID),
-                           let channel = session.channels.first(where: { $0.channel == target.channel }) {
-                            SingleChannelView(session: session, channel: channel)
-                                // Belt-and-suspenders so swapping
-                                // channels by tapping a sibling row
-                                // rebuilds the live tile cleanly.
-                                .id(target)
-                        } else if let session = store.session(for: target.deviceID) {
-                            // Session exists but channels haven't
-                            // arrived yet (still connecting).
-                            // Fall back to the device's full view.
-                            CameraDetailView(session: session, focusedChannel: target.channel)
-                        } else if let entry = store.cameras.first(where: { $0.id == target.deviceID }) {
-                            ContentUnavailableView {
-                                Label("No password on this device", systemImage: "key.slash")
-                            } description: {
-                                Text("\(entry.displayName) was added on another device. Enter the password to stream from it.")
+                        Group {
+                            if let session = store.session(for: target.deviceID),
+                               let channel = session.channels.first(where: { $0.channel == target.channel }) {
+                                SingleChannelView(session: session, channel: channel)
+                                    // Belt-and-suspenders so swapping
+                                    // channels by tapping a sibling row
+                                    // rebuilds the live tile cleanly.
+                                    .id(target)
+                            } else if let session = store.session(for: target.deviceID) {
+                                // Session exists but channels haven't
+                                // arrived yet (still connecting).
+                                // Fall back to the device's full view.
+                                CameraDetailView(session: session, focusedChannel: target.channel)
+                            } else if let entry = store.cameras.first(where: { $0.id == target.deviceID }) {
+                                ContentUnavailableView {
+                                    Label("No password on this device", systemImage: "key.slash")
+                                } description: {
+                                    Text("\(entry.displayName) was added on another device. Enter the password to stream from it.")
+                                }
+                            } else {
+                                ContentUnavailableView("Camera not found", systemImage: "video.slash")
                             }
-                        } else {
-                            ContentUnavailableView("Camera not found", systemImage: "video.slash")
                         }
+                        .onAppear { store.preferences.lastViewedCameraID = target.deviceID }
                     }
             }
             .tabItem { Label("Live", systemImage: "play.rectangle.fill") }
@@ -90,6 +106,22 @@ struct iPhoneTabShell: View {
             }
             .tabItem { Label("Settings", systemImage: "gear") }
             .tag(Tab.settings)
+        }
+        .task {
+            // 0.6.0 — restore the most-recently-viewed camera on
+            // cold launch. App-Intent navigation (Open Camera Siri
+            // shortcut, notification tap, recording tap) takes
+            // precedence because its destination is more specific
+            // than "wherever you were last". `restoredLastCamera`
+            // gates this so a SwiftUI re-render doesn't keep
+            // pushing the same entry onto the stack.
+            guard !restoredLastCamera else { return }
+            restoredLastCamera = true
+            guard store.pendingIntentNavigation == nil,
+                  let lastID = store.preferences.lastViewedCameraID,
+                  let entry = store.cameras.first(where: { $0.id == lastID }) else { return }
+            selectedTab = .live
+            liveTabPath.append(entry)
         }
         .onChange(of: store.pendingIntentNavigation) { _, target in
             guard let target else { return }

@@ -40,6 +40,17 @@ struct ReolensApp: App {
                     // periodically just for a still would drain
                     // battery for low value).
                     CameraPreviewPrefetcher.shared.start(store: store)
+                    // 0.6.0 — reconcile bookmark downloads. Catches
+                    // bookmarks whose background download failed or
+                    // was never enqueued (legacy bookmarks created
+                    // pre-0.6.0 with a missing `sourceFileName` are
+                    // resolved lazily on next interaction).
+                    Task {
+                        let sessions = await MainActor.run {
+                            store.cameras.compactMap { store.session(for: $0.id) }
+                        }
+                        await BookmarkAutoDownloader.shared.reconcile(across: sessions)
+                    }
                 }
                 .onContinueUserActivity(CameraContinuity.cameraDetailActivityType) { activity in
                     if CameraContinuity.handle(activity: activity) {
@@ -48,10 +59,12 @@ struct ReolensApp: App {
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                     store.applyPendingIntentFocus()
-                    // 0.5.1 — re-sweep on activation so a user
-                    // returning to the app after a while sees fresh
-                    // tiles rather than waiting for the next 15-min
-                    // periodic cycle.
+                    // 0.6.0 TD-3b — re-start the periodic loop (it
+                    // was stopped on didResignActive) AND fire an
+                    // immediate sweep so a user returning to the app
+                    // after a while sees fresh tiles rather than
+                    // waiting for the next 15-min periodic cycle.
+                    CameraPreviewPrefetcher.shared.start(store: store)
                     Task { await CameraPreviewPrefetcher.shared.sweepNow() }
                     // 0.6.0 — restore foreground motion-poll cadence
                     // (10 s). Mirrors the iOS scenePhase observer in
@@ -66,6 +79,12 @@ struct ReolensApp: App {
                     // watching the grid — battery + thermal headroom
                     // win.
                     Task { @MainActor in AdaptivePollSchedule.shared.enteredBackground() }
+                    // 0.6.0 TD-3b — stop the snapshot prefetcher loop
+                    // when the Mac app loses front-most. The next
+                    // .didBecomeActive transition kicks an immediate
+                    // sweep, so first-render tiles stay fresh.
+                    // Mirrors the iOS scenePhase .background handler.
+                    CameraPreviewPrefetcher.shared.stop()
                 }
                 // Drain when a focus request is written AFTER the
                 // scene's launch `.task` ran — typically the

@@ -230,7 +230,18 @@ struct LiveCameraTile: View {
             isVisible = true
         }
         .task(id: channel.channel) {
-            guard !preferPreview, autoStart, !channel.isAsleep, !session.isBatteryPowered(channel: channel.channel), !didStart, !paused else { return }
+            guard !preferPreview, autoStart, !didStart, !paused else { return }
+            let needsWake = channel.isAsleep || session.isBatteryPowered(channel: channel.channel)
+            if needsWake {
+                // 0.6.0 — mirror of the iOS auto-wake. Single-camera
+                // detail tiles (`onTap == nil`) wake on appear; grid
+                // tiles (`onTap != nil`) skip the wake to avoid
+                // burning battery cams on Live-grid render. See the
+                // iOS LiveTileView comment for the rationale.
+                guard onTap == nil else { return }
+                await wakeAndStart()
+                return
+            }
             await startPlayer()
         }
         .onChange(of: rotation) { _, newValue in

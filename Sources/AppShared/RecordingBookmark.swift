@@ -20,6 +20,17 @@ public struct RecordingBookmark: Codable, Sendable, Hashable, Identifiable {
     public let endEpoch: TimeInterval
     public let note: String?
     public let aiTagsAtMark: [String]
+    /// 0.6.0 — name of the underlying CGI Search file (e.g.
+    /// "Mp4Record/2026-05-14/RecS04_..._.mp4"). Captured at bookmark-
+    /// creation time so the reconciler can re-enqueue the background
+    /// download after an app relaunch / iCloud sync without re-doing
+    /// a Search to find the matching file.
+    ///
+    /// Optional + nil-by-default so older `bookmarks_v1.json` files
+    /// (written without this field) still decode cleanly. The
+    /// `BookmarkAutoDownloader.enqueueIfMissing(...)` path falls
+    /// back to a time-range Search when the field is nil.
+    public let sourceFileName: String?
     /// Schema-version marker per AGENTS.md §7. Always `1` for the
     /// initial release; bump in a future minor version to introduce
     /// breaking field changes alongside a `bookmarks_v2.json` file.
@@ -33,6 +44,7 @@ public struct RecordingBookmark: Codable, Sendable, Hashable, Identifiable {
         endEpoch: TimeInterval,
         note: String? = nil,
         aiTagsAtMark: [String] = [],
+        sourceFileName: String? = nil,
         schemaVersion: Int = 1
     ) {
         self.id = id
@@ -42,6 +54,7 @@ public struct RecordingBookmark: Codable, Sendable, Hashable, Identifiable {
         self.endEpoch = endEpoch
         self.note = note
         self.aiTagsAtMark = aiTagsAtMark
+        self.sourceFileName = sourceFileName
         self.schemaVersion = schemaVersion
     }
 

@@ -15,6 +15,10 @@ struct SettingsView: View {
     @Environment(CameraStore.self) private var store
     @State private var notifier = EventNotifier.shared
     @AppStorage(GridPreviewSetting.liveGridDefaultsKey) private var liveGridEnabled: Bool = false
+    /// 0.6.0 Slice B2 — HomeKit bridge instance, owned by the view
+    /// so the @Bindable wrapper in `HomeKitSection` works. Cheap to
+    /// construct — initial availability probe is synchronous.
+    @State private var homeKitBridge = HomeKitBridge()
 
     var body: some View {
         Form {
@@ -58,6 +62,8 @@ struct SettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+
+            HomeKitSection(bridge: homeKitBridge)
 
             Section("Cameras") {
                 LabeledContent("Configured", value: "\(store.cameras.count)")

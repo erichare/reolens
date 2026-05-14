@@ -1,0 +1,18 @@
+# Per-target coverage baselines for Scripts/coverage-gate.sh.
+#
+# Set during 0.6.0 from the observed line-coverage numbers after all
+# the new actor + persistence + view extractions landed. The script
+# fails a CI run when any target drops more than SLACK percentage
+# points (default 1) below its baseline; intentional regressions
+# require running `COVERAGE_FORCE_UPDATE_BASELINE=1 ./Scripts/
+# coverage-gate.sh` locally and committing the updated file.
+#
+# Long-term goal stays at AGENTS.md §12's 80% — these floors
+# ratchet up as new tests land. Per-target rather than global so
+# AppShared's slow climb (it accumulates SwiftUI view code that
+# only XCUITest can cover) doesn't gate the protocol libraries'
+# faster progress.
+AppShared=13.81
+ReolinkAPI=56.47
+ReolinkStreaming=23.70
+ReolinkBaichuan=32.70

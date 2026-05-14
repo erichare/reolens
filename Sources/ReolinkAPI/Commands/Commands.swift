@@ -107,6 +107,51 @@ public enum Commands {
         CGICommand(cmd: "SetMask", action: .get, param: SetMaskParam(Mask: mask))
     }
 
+    /// 0.6.0 Slice 12 — read the current recording schedule for a
+    /// channel. Reolink returns a `Rec` block whose `scheduleTable`
+    /// carries a 168-char weekly bitmap. Older firmware responds with
+    /// rspCode = -9 (not supported); callers downgrade to a read-only
+    /// display in that case.
+    public static func getRecordingSchedule(channel: Int = 0) -> CGICommand<ChannelParam> {
+        CGICommand(cmd: "GetRec", action: .get, param: .init(channel: channel))
+    }
+
+    /// 0.6.0 Slice 12 — write a recording schedule back to the camera.
+    /// Caller must ensure `schedule.scheduleTable.isWellFormed` before
+    /// reaching this command — the editor enforces that via the diff
+    /// path so a malformed string never hits the wire.
+    public static func setRecordingSchedule(
+        _ schedule: RecordingScheduleSettings
+    ) -> CGICommand<SetRecordingScheduleParam> {
+        CGICommand(
+            cmd: "SetRec",
+            action: .get,
+            param: SetRecordingScheduleParam(Rec: schedule)
+        )
+    }
+
+    /// 0.6.0 Slice 12b — read the per-channel motion-detection
+    /// alarm schedule. Returns a 168-char weekly bitmap that decides
+    /// when motion / AI events on this channel actually fire alarms.
+    /// Older firmware responds with rspCode = -9 (not supported);
+    /// callers downgrade to a read-only display in that case.
+    public static func getMotionSchedule(channel: Int = 0) -> CGICommand<ChannelParam> {
+        CGICommand(cmd: "GetMdAlarm", action: .get, param: .init(channel: channel))
+    }
+
+    /// 0.6.0 Slice 12b — write a motion-detection schedule back to
+    /// the camera. Caller validates `schedule.scheduleTable.isWell
+    /// Formed` before reaching this command.
+    public static func setMotionSchedule(
+        _ schedule: MotionScheduleSettings
+    ) -> CGICommand<SetMotionScheduleParam> {
+        CGICommand(
+            cmd: "SetMdAlarm",
+            action: .get,
+            param: SetMotionScheduleParam(MdAlarm: schedule)
+        )
+    }
+
     /// Speculative probe for an alarm-event log endpoint. Reolink's official
     /// CGI docs don't mention this command, but some newer NVR/hub firmware
     /// implements it. Returns -9 (not supported) on hubs that don't.

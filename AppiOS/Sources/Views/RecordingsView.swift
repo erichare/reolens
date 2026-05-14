@@ -37,6 +37,11 @@ struct RecordingsView: View {
     @State private var playedScrollTarget: Bool = false
     @State private var nowPlaying: PlayableRecording?
     @State private var aiFilter: Set<DetectionType> = []
+    /// 0.6.0 Slice 13 — iOS bookmarks parity. Reuses the cross-
+    /// platform `BookmarksSheet` from `AppShared` so this stays in
+    /// sync with the macOS UX automatically.
+    @State private var bookmarks: [RecordingBookmark] = []
+    @State private var showingBookmarks = false
 
     init(session: CameraSession, channel: ChannelStatus, scrollTarget: Date? = nil) {
         self.session = session
@@ -47,7 +52,10 @@ struct RecordingsView: View {
             channel: channel.channel,
             channelUID: channel.uid,
             captureRawResponses: false,
-            initialDate: Date()
+            initialDate: Date(),
+            cameraID: session.entry.id,
+            cameraName: session.entry.displayName,
+            index: RecordingIndex.shared
         )
         self._loader = State(wrappedValue: initial)
     }
@@ -70,41 +78,50 @@ struct RecordingsView: View {
             .datePickerStyle(.compact)
             .padding(.horizontal)
             .padding(.vertical, 8)
-            // 0.5.0 Liquid Glass — date picker reads as a header
-            // toolbar over the day / timeline / filter stack.
             .reolensGlassToolbar()
-
-            MonthRecordingDensity(selectedDate: dateBinding, monthStatuses: loader.monthStatuses)
-                .reolensGlassToolbar()
-
-            if !filteredFiles.isEmpty {
-                DayTimelineStrip(
-                    day: loader.selectedDate,
-                    files: filteredFiles,
-                    events: dayEvents,
-                    onTapSegment: { file in
-                        let sub = loader.subFileMatch(for: file)
-                        playEntry(file: file, sub: sub, preferSub: true)
-                    }
-                )
-                .reolensGlassToolbar()
-            }
-
-            AIEventFilterBar(selected: $aiFilter)
-                .reolensGlassToolbar()
-
+            RecordingsScreenHeader(
+                loader: loader,
+                aiFilter: $aiFilter,
+                filteredFiles: filteredFiles,
+                onTapTimelineSegment: { file in
+                    let sub = loader.subFileMatch(for: file)
+                    playEntry(file: file, sub: sub, preferSub: true)
+                }
+            )
             Divider()
             content
         }
         .navigationTitle("Recordings")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                let scopedCount = bookmarks.filter { $0.channel == channel.channel }.count
+                Button {
+                    showingBookmarks = true
+                } label: {
+                    Label("Bookmarks (\(scopedCount))", systemImage: "bookmark")
+                }
+                .accessibilityLabel("Bookmarks")
+            }
+        }
         .task(id: loader.selectedDate) {
+            // 0.6.0 TD-3a — bookmark enumeration moved out of the
+            // per-day reload path. The per-camera bookmark list
+            // doesn't change with the selected date, so re-reading
+            // iCloud Drive on every date flip was wasted work.
             await loader.reload()
             if let target = pendingScrollTarget, !playedScrollTarget {
                 playedScrollTarget = true
                 pendingScrollTarget = nil
                 autoPlayClipNearest(target)
             }
+        }
+        .task {
+            // Runs once per view appear (no `id:`). Bookmarks update
+            // after `bookmarkAndDownload(file:)` succeeds, so the
+            // explicit re-read here only matters on first appear and
+            // on iCloud-pushed bookmark changes from another device.
+            await loadBookmarksLazily()
         }
         .onAppear {
             if let target = scrollTarget, !playedScrollTarget {
@@ -124,28 +141,76 @@ struct RecordingsView: View {
         .sheet(item: $nowPlaying) { recording in
             RecordingPlayerSheet(recording: recording)
         }
+        .sheet(isPresented: $showingBookmarks) {
+            BookmarksSheet(
+                cameraID: session.entry.id,
+                cameraName: cameraScopedName,
+                channel: channel.channel,
+                bookmarks: $bookmarks,
+                onPlay: { bookmark in
+                    showingBookmarks = false
+                    playBookmark(bookmark)
+                }
+            )
+        }
+    }
+
+    /// Camera-scoped display name for the bookmarks sheet header.
+    /// Mirrors the macOS view's helper of the same name so users
+    /// see identical copy across platforms.
+    private var cameraScopedName: String {
+        let channelName = (channel.name?.trimmingCharacters(in: .whitespaces)).flatMap {
+            $0.isEmpty ? nil : $0
+        }
+        if let channelName {
+            return session.entry.displayName == channelName
+                ? channelName
+                : "\(channelName) · \(session.entry.displayName)"
+        }
+        return session.entry.displayName
+    }
+
+    private func loadBookmarks() {
+        bookmarks = RecordingBookmarkStore.read(cameraID: session.entry.id)
+    }
+
+    /// 0.6.0 TD-3a — read bookmarks off the main thread so the
+    /// first-render path doesn't block on iCloud Drive enumeration.
+    /// `RecordingBookmarkStore.read` is synchronous file IO; running
+    /// it inside a detached task and hopping back to the actor only
+    /// to publish the result keeps the recordings list responsive on
+    /// camera switches.
+    private func loadBookmarksLazily() async {
+        let cameraID = session.entry.id
+        let read = await Task.detached(priority: .userInitiated) {
+            RecordingBookmarkStore.read(cameraID: cameraID)
+        }.value
+        bookmarks = read
+    }
+
+    /// Replay a bookmark by finding the recording whose time range
+    /// contains the bookmark's start. Reuses `playEntry` so playback
+    /// feels identical to a row tap.
+    private func playBookmark(_ bookmark: RecordingBookmark) {
+        guard let match = loader.files.first(where: {
+            guard let s = $0.startDate, let e = $0.endDate else { return false }
+            return s <= bookmark.startDate && bookmark.startDate <= e
+        }) ?? loader.files.first(where: {
+            guard let s = $0.startDate else { return false }
+            return abs(s.timeIntervalSince(bookmark.startDate)) < 90
+        }) else { return }
+        let sub = loader.subFileMatch(for: match)
+        playEntry(file: match, sub: sub, preferSub: true)
     }
 
     /// Locate the file whose time range contains `target` (preferred)
     /// or the file with the closest start time. Plays via the same
-    /// `playEntry` path a manual tap uses.
+    /// `playEntry` path a manual tap uses. 0.6.0 Slice 13b — search
+    /// algorithm lives in shared `RecordingsAutoPlay`.
     private func autoPlayClipNearest(_ target: Date) {
-        if let containing = filteredFiles.first(where: { file in
-            guard let start = file.startDate, let end = file.endDate else { return false }
-            return start <= target && target <= end
-        }) {
-            let sub = loader.subFileMatch(for: containing)
-            playEntry(file: containing, sub: sub, preferSub: true)
-            return
-        }
-        let withDistance = filteredFiles.compactMap { file -> (SearchFile, TimeInterval)? in
-            guard let start = file.startDate else { return nil }
-            return (file, abs(start.timeIntervalSince(target)))
-        }
-        if let (closest, _) = withDistance.min(by: { $0.1 < $1.1 }) {
-            let sub = loader.subFileMatch(for: closest)
-            playEntry(file: closest, sub: sub, preferSub: true)
-        }
+        guard let match = RecordingsAutoPlay.bestMatch(for: target, in: filteredFiles) else { return }
+        let sub = loader.subFileMatch(for: match)
+        playEntry(file: match, sub: sub, preferSub: true)
     }
 
     @ViewBuilder
@@ -154,23 +219,29 @@ struct RecordingsView: View {
             ProgressView("Loading recordings…")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let errorMessage = loader.errorMessage {
-            ContentUnavailableView(
-                "Couldn't load recordings",
-                systemImage: "exclamationmark.triangle",
-                description: Text(errorMessage)
-            )
+            topPinnedEmptyState {
+                ContentUnavailableView(
+                    "Couldn't load recordings",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text(errorMessage)
+                )
+            }
         } else if loader.files.isEmpty {
-            ContentUnavailableView(
-                "No recordings",
-                systemImage: "moon.zzz",
-                description: Text("Nothing recorded on \(loader.selectedDate.formatted(date: .abbreviated, time: .omitted)).")
-            )
+            topPinnedEmptyState {
+                ContentUnavailableView(
+                    "No recordings",
+                    systemImage: "moon.zzz",
+                    description: Text("Nothing recorded on \(loader.selectedDate.formatted(date: .abbreviated, time: .omitted)).")
+                )
+            }
         } else if filteredFiles.isEmpty {
-            ContentUnavailableView(
-                "No matching recordings",
-                systemImage: "line.3.horizontal.decrease.circle",
-                description: Text("No recordings match the selected AI filter. Tap chips above to remove filters.")
-            )
+            topPinnedEmptyState {
+                ContentUnavailableView(
+                    "No matching recordings",
+                    systemImage: "line.3.horizontal.decrease.circle",
+                    description: Text("No recordings match the selected AI filter. Tap chips above to remove filters.")
+                )
+            }
         } else {
             List(filteredFiles) { file in
                 row(for: file)
@@ -179,29 +250,38 @@ struct RecordingsView: View {
         }
     }
 
-    private var filteredFiles: [SearchFile] {
-        guard !aiFilter.isEmpty else { return loader.files }
-        return loader.files.filter { file in
-            let detections = Set(loader.effectiveDetections(for: file))
-            return !detections.isDisjoint(with: aiFilter)
-        }
-    }
+    /// 0.6.0 Slice 13b — both shells now delegate filtering to the
+    /// loader. `dayEvents` likewise lives on the loader.
+    private var filteredFiles: [SearchFile] { loader.filtered(by: aiFilter) }
 
-    private var dayEvents: [TimestampedAIEvent] {
-        let cal = Calendar.current
-        let startOfDay = cal.startOfDay(for: loader.selectedDate)
-        let endOfDay = cal.date(byAdding: .day, value: 1, to: startOfDay) ?? startOfDay
-        return session.aiEventLog.filter { ev in
-            ev.channelID == channel.channel
-            && ev.timestamp >= startOfDay
-            && ev.timestamp < endOfDay
+    /// 0.6.0 — pin the empty-state message to the top of the
+    /// available space rather than letting `ContentUnavailable
+    /// View` center itself in the full leftover height. The
+    /// centered default left a visible void above the message
+    /// which read as "the window is broken" rather than "nothing
+    /// recorded yet". Mirrors the macOS helper of the same name.
+    @ViewBuilder
+    private func topPinnedEmptyState<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        VStack(spacing: 0) {
+            content()
+                .padding(.top, 32)
+            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     @ViewBuilder
     private func row(for file: SearchFile) -> some View {
         let sub = loader.subFileMatch(for: file)
         let detections = loader.effectiveDetections(for: file)
+        // 0.6.0 — full-row tap target. Without `.contentShape(.rect)`
+        // on the RecordingRow label, iOS treats the Button's hit
+        // area as only the painted glyphs + text — Spacer regions
+        // and the trailing size column read as "nothing here" and
+        // taps there fall through to the List. Rect content-shape
+        // covers the whole bounding box so a tap anywhere on the
+        // row fires `playEntry`. Mirrors the All Recordings list's
+        // `.contentShape(.rect).onTapGesture` pattern.
         Button {
             // Tap default: play the sub stream when available — much
             // smaller and faster to download than the main stream.
@@ -210,6 +290,7 @@ struct RecordingsView: View {
             Task { playEntry(file: file, sub: sub, preferSub: true) }
         } label: {
             RecordingRow(file: file, subFile: sub, detections: detections)
+                .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .contextMenu {
@@ -256,10 +337,15 @@ struct RecordingsView: View {
             startEpoch: file.startDate?.timeIntervalSince1970 ?? Date().timeIntervalSince1970,
             endEpoch: file.endDate?.timeIntervalSince1970 ?? Date().timeIntervalSince1970,
             note: nil,
-            aiTagsAtMark: file.triggers.map(\.rawValue)
+            aiTagsAtMark: file.triggers.map(\.rawValue),
+            // 0.6.0 — persist the source file name so the launch-
+            // time reconciler can re-enqueue the background download
+            // without first doing a Search to find the file.
+            sourceFileName: file.name
         )
         do {
             try RecordingBookmarkStore.add(bookmark)
+            bookmarks = RecordingBookmarkStore.read(cameraID: session.entry.id)
         } catch {
             // Surfacing a sheet on every bookmark feels heavy; the
             // alert path can come later if users hit this in the wild.

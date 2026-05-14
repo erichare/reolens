@@ -123,7 +123,7 @@ public struct SearchFile: Decodable, Sendable, Hashable, Identifiable {
 
 /// Reolink trigger bitfield values. Order and bits inferred from
 /// observed `GetAiState` + `Search` results across firmware versions.
-public enum DetectionType: String, Sendable, CaseIterable, Hashable {
+public enum DetectionType: String, Codable, Sendable, CaseIterable, Hashable {
     case motion, person, vehicle, pet, face, packageDelivery, visitor, other
 
     public var bit: Int {

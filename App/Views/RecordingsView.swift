@@ -53,7 +53,10 @@ struct RecordingsView: View {
             channel: channel.channel,
             channelUID: channel.uid,
             captureRawResponses: true,
-            initialDate: Date()
+            initialDate: Date(),
+            cameraID: session.entry.id,
+            cameraName: session.entry.displayName,
+            index: RecordingIndex.shared
         )
         self._loader = State(wrappedValue: initial)
     }
@@ -80,19 +83,17 @@ struct RecordingsView: View {
             // bar all use the same glass toolbar surface so the
             // recordings header reads as one continuous hovering
             // chrome strip.
-            MonthRecordingDensity(selectedDate: dateBinding, monthStatuses: loader.monthStatuses)
-                .reolensGlassToolbar()
-            if !filteredFiles.isEmpty {
-                DayTimelineStrip(
-                    day: loader.selectedDate,
-                    files: filteredFiles,
-                    events: dayEvents,
-                    onTapSegment: { preview($0) }
-                )
-                .reolensGlassToolbar()
-            }
-            AIEventFilterBar(selected: $aiFilter)
-                .reolensGlassToolbar()
+            // 0.6.0 Slice 13b — header stack (density, timeline,
+            // filter) now lives in shared `RecordingsScreenHeader`.
+            // macOS keeps its own `controls` row above (date picker,
+            // raw-JSON popover, bookmarks button, refresh) because
+            // it has more affordances than iOS.
+            RecordingsScreenHeader(
+                loader: loader,
+                aiFilter: $aiFilter,
+                filteredFiles: filteredFiles,
+                onTapTimelineSegment: { preview($0) }
+            )
             Divider()
             content
             if !loader.files.isEmpty {
@@ -112,7 +113,10 @@ struct RecordingsView: View {
             }
         }
         .task(id: loader.selectedDate) {
-            loadBookmarks()
+            // 0.6.0 TD-3a — bookmark enumeration moved off the per-
+            // day reload path. The per-camera bookmark list doesn't
+            // change with the selected date, so iCloud Drive
+            // enumeration on every date flip was wasted work.
             await loader.reload()
             // After the day's files load, if the user got here via a
             // notification tap with a target time, auto-play the
@@ -124,6 +128,13 @@ struct RecordingsView: View {
                 pendingScrollTarget = nil
                 autoPlayClipNearest(target)
             }
+        }
+        .task {
+            // Runs once per view appear (no `id:`). Bookmarks update
+            // in-line after `addBookmark` / `exportBookmark`, so the
+            // explicit re-read here only matters on first appear and
+            // on iCloud-pushed bookmark changes from another device.
+            await loadBookmarksLazily()
         }
         .onAppear {
             // Seed `pendingScrollTarget` from the prop on first
@@ -232,11 +243,28 @@ struct RecordingsView: View {
             startEpoch: start.timeIntervalSince1970,
             endEpoch: end.timeIntervalSince1970,
             note: nil,
-            aiTagsAtMark: loader.effectiveDetections(for: file).map { $0.label }
+            aiTagsAtMark: loader.effectiveDetections(for: file).map { $0.label },
+            // 0.6.0 — persist source filename so the background
+            // reconciler can re-enqueue the download on relaunch.
+            // The macOS app's primary bookmark flow is "user
+            // exports later" rather than "auto-download" but the
+            // field is universally useful — iOS reads the same
+            // `bookmarks_v1.json` via iCloud and relies on it for
+            // its auto-download path.
+            sourceFileName: file.name
         )
         do {
             try RecordingBookmarkStore.add(bookmark)
             bookmarks = RecordingBookmarkStore.read(cameraID: session.entry.id)
+            // 0.6.0 — kick a background download on macOS too. Users
+            // sharing bookmarks across devices via iCloud benefit
+            // from the file being already cached locally when they
+            // tap "Open" on iPhone / iPad later.
+            Task { await BookmarkAutoDownloader.shared.enqueueIfMissing(
+                bookmark: bookmark,
+                session: session,
+                fallbackFileName: file.name
+            ) }
         } catch {
             log.warning("Couldn't save bookmark: \(error.localizedDescription, privacy: .public)")
         }
@@ -244,6 +272,20 @@ struct RecordingsView: View {
 
     private func loadBookmarks() {
         bookmarks = RecordingBookmarkStore.read(cameraID: session.entry.id)
+    }
+
+    /// 0.6.0 TD-3a — read bookmarks off the main thread so the
+    /// first-render path doesn't block on iCloud Drive enumeration.
+    /// Mirrors the iOS view's helper of the same name. `Recording
+    /// BookmarkStore.read` is synchronous file IO; running it inside
+    /// a detached task and hopping back to the actor only to publish
+    /// the result keeps the recordings list responsive.
+    private func loadBookmarksLazily() async {
+        let cameraID = session.entry.id
+        let read = await Task.detached(priority: .userInitiated) {
+            RecordingBookmarkStore.read(cameraID: cameraID)
+        }.value
+        bookmarks = read
     }
 
     /// Replay a bookmark by re-opening the recording whose time range
@@ -263,26 +305,11 @@ struct RecordingsView: View {
     /// Locate the file whose time range contains `target` (preferred),
     /// or — if no file straddles the timestamp exactly — the file
     /// with the closest start time. Opens it via the same `preview`
-    /// path a manual row tap uses.
+    /// path a manual row tap uses. 0.6.0 Slice 13b — search
+    /// algorithm lives in shared `RecordingsAutoPlay`.
     private func autoPlayClipNearest(_ target: Date) {
-        // Containment first: AI-classified motion events typically
-        // fire mid-clip, so the clip that straddles the timestamp is
-        // the one the user actually wants.
-        if let containing = filteredFiles.first(where: { file in
-            guard let start = file.startDate, let end = file.endDate else { return false }
-            return start <= target && target <= end
-        }) {
-            preview(containing)
-            return
-        }
-        // Fallback: nearest by start time.
-        let withDistance = filteredFiles.compactMap { file -> (SearchFile, TimeInterval)? in
-            guard let start = file.startDate else { return nil }
-            return (file, abs(start.timeIntervalSince(target)))
-        }
-        if let (closest, _) = withDistance.min(by: { $0.1 < $1.1 }) {
-            preview(closest)
-        }
+        guard let match = RecordingsAutoPlay.bestMatch(for: target, in: filteredFiles) else { return }
+        preview(match)
     }
 
     private var aiUnavailableFooter: some View {
@@ -371,58 +398,94 @@ struct RecordingsView: View {
     @ViewBuilder
     private var content: some View {
         if let errorMessage = loader.errorMessage {
-            ContentUnavailableView {
-                Label("Couldn't load recordings", systemImage: "exclamationmark.triangle")
-            } description: {
-                Text(errorMessage).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-            } actions: {
-                Button("Retry") { Task { await loader.reload() } }
+            topPinnedEmptyState {
+                ContentUnavailableView {
+                    Label("Couldn't load recordings", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(errorMessage).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                } actions: {
+                    Button("Retry") { Task { await loader.reload() } }
+                }
             }
         } else if loader.files.isEmpty && !loader.isLoading {
-            ContentUnavailableView(
-                "No recordings",
-                systemImage: "tray",
-                description: Text("No recordings on this channel for \(loader.selectedDate, format: .dateTime.day().month().year()).")
-            )
+            topPinnedEmptyState {
+                ContentUnavailableView(
+                    "No recordings",
+                    systemImage: "tray",
+                    description: Text("No recordings on this channel for \(loader.selectedDate, format: .dateTime.day().month().year()).")
+                )
+            }
         } else if filteredFiles.isEmpty && !loader.isLoading {
-            ContentUnavailableView(
-                "No matching recordings",
-                systemImage: "line.3.horizontal.decrease.circle",
-                description: Text("No recordings on this channel match the selected AI filter. Tap chips to remove filters or clear them entirely.")
-            )
+            topPinnedEmptyState {
+                ContentUnavailableView(
+                    "No matching recordings",
+                    systemImage: "line.3.horizontal.decrease.circle",
+                    description: Text("No recordings on this channel match the selected AI filter. Tap chips to remove filters or clear them entirely.")
+                )
+            }
         } else {
             List(filteredFiles) { file in
-                fileRow(file)
-                    .contentShape(.rect)
-                    .onTapGesture { preview(file) }
-                    .contextMenu {
-                        Button {
-                            preview(file)
-                        } label: {
-                            Label("Preview (Low Quality)", systemImage: "play.circle")
-                        }
-                        Divider()
-                        Button {
-                            saveToDisk(file, quality: .low)
-                        } label: {
-                            Label("Download Low Quality…", systemImage: "arrow.down.circle")
-                        }
-                        .disabled(loader.subFileMatch(for: file) == nil)
-                        Button {
-                            saveToDisk(file, quality: .high)
-                        } label: {
-                            Label("Download High Quality…", systemImage: "arrow.down.circle.fill")
-                        }
-                        Divider()
-                        Button {
-                            addBookmark(for: file)
-                        } label: {
-                            Label("Bookmark this clip", systemImage: "bookmark")
-                        }
+                // 0.6.0 — wrap the row body in a Button so the whole
+                // row is a click target. The previous `.onTapGesture`
+                // approach on macOS only fired on the rowActions
+                // buttons because macOS `List` selection intercepts
+                // taps on the surrounding row content before
+                // `.onTapGesture` sees them.
+                Button {
+                    preview(file)
+                } label: {
+                    fileRow(file)
+                }
+                .buttonStyle(.plain)
+                .contentShape(.rect)
+                .contextMenu {
+                    Button {
+                        preview(file)
+                    } label: {
+                        Label("Preview (Low Quality)", systemImage: "play.circle")
                     }
+                    Divider()
+                    Button {
+                        saveToDisk(file, quality: .low)
+                    } label: {
+                        Label("Download Low Quality…", systemImage: "arrow.down.circle")
+                    }
+                    .disabled(loader.subFileMatch(for: file) == nil)
+                    Button {
+                        saveToDisk(file, quality: .high)
+                    } label: {
+                        Label("Download High Quality…", systemImage: "arrow.down.circle.fill")
+                    }
+                    Divider()
+                    Button {
+                        addBookmark(for: file)
+                    } label: {
+                        Label("Bookmark this clip", systemImage: "bookmark")
+                    }
+                }
             }
             .listStyle(.plain)
         }
+    }
+
+    /// 0.6.0 — pin the empty-state / error message right under the
+    /// header rather than letting `ContentUnavailableView` center
+    /// itself in the full remaining height. The old behavior left a
+    /// large vertical void above the message because SwiftUI hands
+    /// the entire leftover space to the view, which then centers
+    /// its icon + text. Adding a top-aligned wrapper + trailing
+    /// `Spacer()` keeps the readable copy adjacent to the calendar
+    /// strip, with the empty space pushed to the bottom of the
+    /// window where it feels like "more list could go here" rather
+    /// than "this window is broken".
+    @ViewBuilder
+    private func topPinnedEmptyState<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        VStack(spacing: 0) {
+            content()
+                .padding(.top, 32)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     @ViewBuilder
@@ -496,45 +559,39 @@ struct RecordingsView: View {
         }
     }
 
-    /// Per-row action buttons — visible so the available gestures are
-    /// obvious without right-clicking. Play button previews on the sub
-    /// stream when available, falling back to main; the menu offers explicit
-    /// quality choices for both preview and download.
+    /// Per-row action menu — only the ellipsis-menu remains. The
+    /// inline play button was removed in 0.6.0 because:
+    ///   (a) the whole row is already the play target via the outer
+    ///       `Button` wrapper in the list builder, and
+    ///   (b) on macOS, an inner SwiftUI `Button` inside a `List` row
+    ///       captures the entire row's hit area for itself — so the
+    ///       outer row Button only fired when the user happened to
+    ///       hit the small play glyph. Pruning it makes the whole
+    ///       row click reliable; the menu still exposes
+    ///       quality-specific download/preview actions.
     @ViewBuilder
     private func rowActions(_ file: SearchFile) -> some View {
         let hasSub = loader.subFileMatch(for: file) != nil
-        HStack(spacing: 4) {
-            Button {
+        Menu {
+            Button("Preview (Low Quality)", systemImage: "play.circle") {
                 preview(file)
-            } label: {
-                Image(systemName: "play.fill")
             }
-            .buttonStyle(.borderless)
-            .help(hasSub ? "Preview (low quality, fast)" : "Preview (high quality — this camera has no sub stream)")
-
-            Menu {
-                Button("Preview (Low Quality)", systemImage: "play.circle") {
-                    preview(file)
-                }
-                .disabled(!hasSub)
-                Divider()
-                Button("Download Low Quality…", systemImage: "arrow.down.circle") {
-                    saveToDisk(file, quality: .low)
-                }
-                .disabled(!hasSub)
-                Button("Download High Quality…", systemImage: "arrow.down.circle.fill") {
-                    saveToDisk(file, quality: .high)
-                }
-            } label: {
-                Image(systemName: "ellipsis.circle")
+            .disabled(!hasSub)
+            Divider()
+            Button("Download Low Quality…", systemImage: "arrow.down.circle") {
+                saveToDisk(file, quality: .low)
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("More actions")
+            .disabled(!hasSub)
+            Button("Download High Quality…", systemImage: "arrow.down.circle.fill") {
+                saveToDisk(file, quality: .high)
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
         }
-        // Stop row taps from firing inside the buttons.
-        .onTapGesture {}
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("More actions")
     }
 
     /// Detection tag pipeline:
@@ -571,26 +628,9 @@ struct RecordingsView: View {
     /// A file matches when at least one of its effective detections is
     /// in the selected set (OR semantics — pick "people" OR "vehicle"
     /// for a "stuff worth watching" view).
-    private var filteredFiles: [SearchFile] {
-        guard !aiFilter.isEmpty else { return loader.files }
-        return loader.files.filter { file in
-            let detections = Set(loader.effectiveDetections(for: file))
-            return !detections.isDisjoint(with: aiFilter)
-        }
-    }
-
-    /// Live AI events from this session that fell on the displayed
-    /// day. Feeds the timeline strip's event-tick overlay.
-    private var dayEvents: [TimestampedAIEvent] {
-        let cal = Calendar.current
-        let startOfDay = cal.startOfDay(for: loader.selectedDate)
-        let endOfDay = cal.date(byAdding: .day, value: 1, to: startOfDay) ?? startOfDay
-        return session.aiEventLog.filter { ev in
-            ev.channelID == channel.channel
-            && ev.timestamp >= startOfDay
-            && ev.timestamp < endOfDay
-        }
-    }
+    /// 0.6.0 Slice 13b — both shells delegate filtering and day-
+    /// event extraction to the loader.
+    private var filteredFiles: [SearchFile] { loader.filtered(by: aiFilter) }
 
     private var distinctTaggedRecordingCount: Int {
         Set(loader.alarmVideoEntries.map(\.fileName)).count
