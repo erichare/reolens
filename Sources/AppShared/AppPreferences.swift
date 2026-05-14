@@ -63,12 +63,33 @@ public final class AppPreferences {
         }
     }
 
+    /// 0.6.1 — opt-in to the redesigned Settings IA. Defaults to
+    /// `true` in DEBUG so the new IA is exercised during simulator /
+    /// macOS click-through; release builds get the new IA too — the
+    /// flag exists primarily as an emergency revert, not a long-term
+    /// rollout gate. Remove the legacy path in 0.7.x once we've
+    /// confirmed no regressions in the wild.
+    public var useReorganizedSettings: Bool {
+        didSet {
+            defaults.set(useReorganizedSettings, forKey: Self.useReorganizedSettingsKey)
+        }
+    }
+
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         self.developerMode = defaults.bool(forKey: Self.developerModeKey)
         self.showCameraNameOnFeed = defaults.bool(forKey: Self.showCameraNameKey)
         self.lastViewedCameraID = defaults.string(forKey: Self.lastViewedCameraKey)
             .flatMap(UUID.init(uuidString:))
+        // The reorganized Settings IA defaults ON when the user has
+        // never touched the flag — so a fresh install gets the new
+        // structure. Existing users keep whatever they last set.
+        if defaults.object(forKey: Self.useReorganizedSettingsKey) == nil {
+            self.useReorganizedSettings = true
+            defaults.set(true, forKey: Self.useReorganizedSettingsKey)
+        } else {
+            self.useReorganizedSettings = defaults.bool(forKey: Self.useReorganizedSettingsKey)
+        }
     }
 
     // MARK: - Keys
@@ -76,6 +97,7 @@ public final class AppPreferences {
     static let developerModeKey = "com.reolens.developerMode"
     static let showCameraNameKey = "com.reolens.showCameraNameOnFeed"
     static let lastViewedCameraKey = "com.reolens.lastViewedCameraID"
+    static let useReorganizedSettingsKey = "com.reolens.useReorganizedSettings"
 
     // MARK: - Non-isolated peeks
 

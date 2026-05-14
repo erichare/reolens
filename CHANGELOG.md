@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+A hardening release. No new storylines — every surface 0.6.0 shipped
+gets a careful second look. Lead with stability, then UI, then a few
+small features.
+
+### Added
+
+- **Diagnostics Center** — local-only error log surface in
+  Settings → Advanced. `AppError` (typed enum: network, streaming,
+  auth, playback, persistence, notification, schedule, bookmark) +
+  `AppErrorRecorder` (file-backed actor in the App Group container,
+  500-record cap, atomic writes, never relayed to a server). Browse,
+  filter by category, copy-to-clipboard for support threads. Preserves
+  AGENTS.md §5 "zero telemetry" posture.
+- **`docs/ROADMAP.md`** — consolidates the scattered future-work notes
+  from AGENTS.md / SECURITY.md / CHANGELOG into one place.
+
+### Changed
+
+- macOS `CFBundleVersion` 15 → 16, iOS 10 → 11.
+
+### Fixed
+
+- (top-10 error-swallowing fixes pending in this release; see
+  [docs/audit-0.6.1-error-sites.md](docs/audit-0.6.1-error-sites.md))
+
 ## [0.6.0] — 2026-05-14
 
 The largest release the project has shipped. Five storylines pulled

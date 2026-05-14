@@ -150,6 +150,11 @@ Drag tiles to rearrange them. Right-click a tile for "Make primary",
 - **Live Activities + Dynamic Island** on iOS for in-flight motion
   events. Hub-grouped — multiple events on the same hub merge into
   one Live Activity rather than stacking.
+- **HomeKit bridge scaffolding** on iOS / iPadOS (added in 0.6.0). The
+  per-camera "Expose to HomeKit" toggle syncs through iCloud so flipping
+  it on one device propagates to the device that has the entitlement.
+  Full HomeKit Secure Video recording tier ships once Apple completes
+  MFi certification — see [docs/ROADMAP.md](docs/ROADMAP.md).
 - **Liquid Glass throughout** — toolbars, sidebars, chips, badges,
   popovers, sheets, HUDs all use the iOS 26 / macOS 26
   `.glassEffect()` material via centralized design tokens.
