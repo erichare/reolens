@@ -234,6 +234,9 @@ public actor RTSPClient {
         rtcpTask?.cancel()
         rtcpTask = Task { [weak self] in
             while !Task.isCancelled {
+                // safe: Task.sleep(_:) only throws on cancellation, and the
+                // surrounding loop guards on Task.isCancelled — swallowing
+                // the throw is intentional.
                 try? await Task.sleep(for: .seconds(2))
                 guard let self else { return }
                 await self.sendRTCPReceiverReport()
@@ -299,6 +302,7 @@ public actor RTSPClient {
         log.debug("Starting RTSP keepalive every \(interval, format: .fixed(precision: 1))s")
         keepaliveTask = Task { [weak self] in
             while !Task.isCancelled {
+                // safe: Task.sleep cancellation throw is intentional.
                 try? await Task.sleep(for: .seconds(interval))
                 guard let self else { return }
                 await self.sendKeepalive()
@@ -535,6 +539,9 @@ public actor RTSPClient {
         // server is unresponsive. The actor serializes resume/clear so we won't
         // double-resume.
         let timeoutTask = Task<Void, Never> { [weak self] in
+            // safe: Task.sleep cancellation throw is intentional —
+            // when the awaited response arrives the timeout task is
+            // cancelled and the throw short-circuits this block.
             try? await Task.sleep(for: .seconds(timeout))
             if Task.isCancelled { return }
             await self?.failPendingResponse(with: RTSPError.protocolError("response timed out"))

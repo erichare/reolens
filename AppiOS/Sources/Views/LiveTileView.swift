@@ -89,7 +89,14 @@ struct LiveTileView: View {
                              session.baichuanClient)
                         }
                         guard asleep, let baichuan else { return }
-                        _ = try? await baichuan.wakeBatteryCamera(channelID: UInt8(channelID))
+                        do {
+                            _ = try await baichuan.wakeBatteryCamera(channelID: UInt8(channelID))
+                        } catch {
+                            AppErrorRecorder.recordAsync(
+                                .other("batteryWakeFailed: \(error.localizedDescription)"),
+                                context: "liveTileView.sleepingOverlayTap"
+                            )
+                        }
                     },
                     centerCrop: centerCropPreview
                 )
@@ -458,7 +465,14 @@ struct LiveTileView: View {
         }
         if session.isBatteryPowered(channel: channel.channel) || channel.isAsleep,
            let baichuan = session.baichuanClient {
-            _ = try? await baichuan.wakeBatteryCamera(channelID: UInt8(channel.channel))
+            do {
+                _ = try await baichuan.wakeBatteryCamera(channelID: UInt8(channel.channel))
+            } catch {
+                AppErrorRecorder.recordAsync(
+                    .other("batteryWakeFailed: \(error.localizedDescription)"),
+                    context: "liveTileView.startPlayer"
+                )
+            }
         }
         let credentials = await session.client.credentials
         if preferPreview || !isVisible {

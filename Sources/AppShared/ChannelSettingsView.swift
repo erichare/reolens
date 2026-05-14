@@ -255,7 +255,18 @@ public struct ChannelSettingsView: View {
         // returns nothing or a long-stale frame.
         if session.isBatteryPoweredOrAsleep(channel: channel.channel),
            let baichuan = session.baichuanClient {
-            _ = try? await baichuan.wakeBatteryCamera(channelID: UInt8(channel.channel))
+            do {
+                _ = try await baichuan.wakeBatteryCamera(channelID: UInt8(channel.channel))
+            } catch {
+                // 0.6.1 — surfaced as a diagnostic so a chronically-
+                // failing wake doesn't silently leave the snap endpoint
+                // returning stale frames. The snap itself can still
+                // succeed if the camera was already awake.
+                AppErrorRecorder.recordAsync(
+                    .other("batteryWakeFailed: \(error.localizedDescription)"),
+                    context: "channelSettings.snapshotRefresh"
+                )
+            }
         }
         guard let url = await session.snapshotURL(channel: channel.channel) else { return }
         let bytes = await CameraPreviewService.shared.refresh(

@@ -105,7 +105,17 @@ struct LiveCameraTile: View {
                              session.baichuanClient)
                         }
                         guard asleep, let baichuan else { return }
-                        _ = try? await baichuan.wakeBatteryCamera(channelID: UInt8(channelID))
+                        do {
+                            _ = try await baichuan.wakeBatteryCamera(channelID: UInt8(channelID))
+                        } catch {
+                            // 0.6.1 — log so a flapping battery camera
+                            // is discoverable from the Diagnostics
+                            // Center instead of silently failing.
+                            AppErrorRecorder.recordAsync(
+                                .other("batteryWakeFailed: \(error.localizedDescription)"),
+                                context: "liveCameraTile.sleepingOverlayTap"
+                            )
+                        }
                     },
                     centerCrop: centerCropPreview
                 )
@@ -564,7 +574,14 @@ struct LiveCameraTile: View {
         // sleeping camera. If we go straight to RTSP, the camera won't
         // respond because it's offline at the radio layer.
         if session.isBatteryPowered(channel: channel.channel) || channel.isAsleep, let baichuan = session.baichuanClient {
-            _ = try? await baichuan.wakeBatteryCamera(channelID: UInt8(channel.channel))
+            do {
+                _ = try await baichuan.wakeBatteryCamera(channelID: UInt8(channel.channel))
+            } catch {
+                AppErrorRecorder.recordAsync(
+                    .other("batteryWakeFailed: \(error.localizedDescription)"),
+                    context: "liveCameraTile.startPlayer"
+                )
+            }
         }
         let credentials = await session.client.credentials
         if preferPreview || !isVisible {
