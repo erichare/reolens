@@ -44,6 +44,21 @@ struct SettingsView: View {
                 permissionRow
             }
 
+            MotionRelaySubscriberSection()
+
+            RelayDiagnosticsSection()
+
+            Section("Notification log") {
+                NavigationLink {
+                    NotificationLogView()
+                } label: {
+                    Label("View notification history", systemImage: "list.bullet.rectangle.portrait")
+                }
+                Text("Browse the last 1,000 notifications delivered or silenced on this device. New in 0.6.0.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Cameras") {
                 LabeledContent("Configured", value: "\(store.cameras.count)")
                 if store.cameras.isEmpty {

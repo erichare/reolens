@@ -16,6 +16,7 @@ struct iPadSplitShell: View {
     @State private var showingAdd = false
     @State private var isReorderingCameras: Bool = false
     @State private var draggingDevice: UUID?
+    @State private var health = CameraNotificationHealth.shared
 
     enum SidebarSection: Hashable {
         case live
@@ -174,6 +175,7 @@ struct iPadSplitShell: View {
         // latency to every tap on a hub label. `.dropDestination`
         // stays always-on (inert outside an active drag).
         let baseLabel = Label(entry.displayName, systemImage: "video.fill")
+            .badge(health.badgeText(for: entry.id) ?? "")
             .opacity(draggingDevice == entry.id ? 0.35 : 1.0)
             .jiggle(isActive: isReorderingCameras)
             .dropDestination(for: DeviceDragPayload.self) { payload, _ in

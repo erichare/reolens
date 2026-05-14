@@ -238,13 +238,46 @@ public final class EventNotifier {
         cameraName: String,
         snapshotURL: URL?
     ) async {
-        let (title, body, throttleKey) = format(event: event, cameraName: cameraName)
-        guard !title.isEmpty else { return }
+        let classification = classify(event: event, cameraName: cameraName)
+
+        // Non-notifiable kinds (motion-stop, other) never reach the
+        // user log — they aren't user-visible events to begin with.
+        if case .ignored = classification {
+            return
+        }
+
+        // Suppressed-but-loggable kinds: the user has muted the
+        // category. Record so they can see it in the notification log
+        // and understand WHY a real event didn't surface.
+        if case .suppressedForLog(let syntheticTitle, let tag, let reason) = classification {
+            await logDroppedEvent(
+                event: event,
+                cameraID: cameraID,
+                cameraName: cameraName,
+                title: syntheticTitle,
+                tag: tag,
+                reason: reason
+            )
+            return
+        }
+
+        guard case .composed(let title, let body, let throttleKey, let tag) = classification else {
+            return
+        }
+
         // 0.5.1 — per-camera notification toggle (defaults to ON,
         // synced across devices via NSUbiquitousKeyValueStore). The
         // off-main-actor read avoids hopping the MainActor for every
         // alarm event on a busy hub.
         guard CameraNotificationPreferences.isNotificationsEnabledOffMainActor(for: cameraID) else {
+            await logDroppedEvent(
+                event: event,
+                cameraID: cameraID,
+                cameraName: cameraName,
+                title: title,
+                tag: tag,
+                reason: .perCameraMuted
+            )
             return
         }
 
@@ -264,11 +297,31 @@ public final class EventNotifier {
         relayAllowed = false
         #endif
 
-        let localNotificationAllowed = enabled
-            && permissionStatus == .authorized
-            && consumeLocalNotificationCooldown(for: throttleKey)
+        // 0.6.0 — split the three gates apart so the notification log
+        // can record the specific failure reason. The combined boolean
+        // still drives the post-or-skip decision.
+        let masterEnabled = enabled
+        let permissionGranted = permissionStatus == .authorized
+        let throttleOK = consumeLocalNotificationCooldown(for: throttleKey)
+        let localNotificationAllowed = masterEnabled && permissionGranted && throttleOK
 
         guard relayAllowed || localNotificationAllowed else {
+            let reason: NotificationRecord.DeliveryStatus
+            if !masterEnabled {
+                reason = .globallyDisabled
+            } else if !permissionGranted {
+                reason = .permissionDenied
+            } else {
+                reason = .throttledCooldown
+            }
+            await logDroppedEvent(
+                event: event,
+                cameraID: cameraID,
+                cameraName: cameraName,
+                title: title,
+                tag: tag,
+                reason: reason
+            )
             return
         }
 
@@ -320,8 +373,13 @@ public final class EventNotifier {
             content.attachments = [attachment]
         }
 
+        // Allocate the UUID once so the same id flows into the
+        // notification request and into the notification log — that
+        // way `NotificationTapDelegate` can mark the right record as
+        // tapped when the user opens it.
+        let notificationID = UUID()
         let request = UNNotificationRequest(
-            identifier: UUID().uuidString,
+            identifier: notificationID.uuidString,
             content: content,
             trigger: nil
         )
@@ -350,6 +408,25 @@ public final class EventNotifier {
             log.info("Notified: \(title, privacy: .public) — \(body, privacy: .public)")
         }
 
+        // 0.6.0 — record into the user-facing notification log so the
+        // user can browse delivered notifications + filter by camera,
+        // tag, or status. Failures get logged with `.failed` so a
+        // permission-state-versus-add-failed split is visible.
+        let postedRecord = NotificationRecord(
+            id: notificationID,
+            timestamp: Date(),
+            source: .local,
+            cameraID: cameraID,
+            channel: Int(event.channelID),
+            cameraName: cameraName,
+            detectionTag: tag,
+            title: title,
+            body: body,
+            thumbnailRelativePath: nil,
+            deliveryStatus: postError == nil ? .posted : .failed
+        )
+        Task { await NotificationHistory.shared.record(postedRecord) }
+
         // 0.5.0 — record the event into the shared App Group so
         // widgets (CameraSnapshotWidget, LastMotionWidget,
         // MotionDigestWidget) can render the most-recent fire
@@ -363,6 +440,13 @@ public final class EventNotifier {
             cameraName: cameraName,
             snapshotURL: attachment?.url
         )
+
+        // 0.6.0 — refresh the per-camera health badge driver after
+        // every published notification so the sidebar tag flips to
+        // "now" immediately. EventNotifier is @MainActor, so we're
+        // already on the right isolation domain for the @Observable
+        // refresh.
+        CameraNotificationHealth.shared.refresh()
 
         #if os(iOS)
         // Start (or replace) the in-flight motion-event Live Activity
@@ -501,28 +585,80 @@ public final class EventNotifier {
     }
     #endif
 
-    /// caller can drop them.
-    private func format(event: BaichuanEvent, cameraName: String) -> (title: String, body: String, throttleKey: String) {
+    /// Decision tree for a Baichuan event. Three outcomes:
+    ///   - `.composed` — passed all `format`-level filters; this is
+    ///     the title/body the user should see and the cache key for
+    ///     the throttle.
+    ///   - `.suppressedForLog` — the user has explicitly muted this
+    ///     class of event (AI master off, per-tag off, or motion-only
+    ///     off). The notification log records it so the user can see
+    ///     "we got the event but you'd asked us to be quiet".
+    ///   - `.ignored` — non-notifiable event kind (motion-stop, other)
+    ///     that should never appear in the user log.
+    enum FormatResult {
+        case composed(title: String, body: String, throttleKey: String, tag: String?)
+        case suppressedForLog(syntheticTitle: String, tag: String?, reason: NotificationRecord.DeliveryStatus)
+        case ignored
+    }
+
+    func classify(event: BaichuanEvent, cameraName: String) -> FormatResult {
         switch event.kind {
         case .ai(let tag):
-            guard notifyAI else { return ("", "", "") }
             let detection = DetectionType.fromReolinkString(tag)
+            let label = detection?.label ?? tag.capitalized
+            let synthetic = "\(label) detected"
+            if !notifyAI {
+                return .suppressedForLog(
+                    syntheticTitle: synthetic,
+                    tag: tag,
+                    reason: .aiMutedGlobally
+                )
+            }
             // Per-tag filter (0.4.0). When the detection maps to a
             // known DetectionType, honor the user's per-tag toggle.
             // Unknown tags fall through with the master `notifyAI`
             // gate above so the firmware can roll out new categories
             // without us silently dropping them.
             if let detection, notifyPerTag[detection] == false {
-                return ("", "", "")
+                return .suppressedForLog(
+                    syntheticTitle: synthetic,
+                    tag: tag,
+                    reason: .tagMuted
+                )
             }
-            let label = detection?.label ?? tag.capitalized
-            return ("\(label) detected", cameraName, "\(event.channelID)-ai-\(tag)")
+            return .composed(
+                title: synthetic,
+                body: cameraName,
+                throttleKey: "\(event.channelID)-ai-\(tag)",
+                tag: tag
+            )
         case .motionStart:
-            guard notifyMotion else { return ("", "", "") }
-            return ("Motion detected", cameraName, "\(event.channelID)-motion")
+            if !notifyMotion {
+                return .suppressedForLog(
+                    syntheticTitle: "Motion detected",
+                    tag: nil,
+                    reason: .motionMutedGlobally
+                )
+            }
+            return .composed(
+                title: "Motion detected",
+                body: cameraName,
+                throttleKey: "\(event.channelID)-motion",
+                tag: nil
+            )
         case .motionStop, .other:
-            return ("", "", "")
+            return .ignored
         }
+    }
+
+    /// Back-compat shim used by the existing `notify(...)` body until
+    /// the call site is updated. Returns empty strings on every
+    /// non-`.composed` result.
+    func format(event: BaichuanEvent, cameraName: String) -> (title: String, body: String, throttleKey: String) {
+        if case .composed(let title, let body, let key, _) = classify(event: event, cameraName: cameraName) {
+            return (title, body, key)
+        }
+        return ("", "", "")
     }
 
     private func consumeLocalNotificationCooldown(for key: String) -> Bool {
@@ -541,6 +677,35 @@ public final class EventNotifier {
         }
         lastRelayedAt[key] = Date()
         return true
+    }
+
+    /// Write a dropped-event record into the notification log. Called
+    /// from every early-return path in `notify(...)` so the user can
+    /// see motion events that fired on a camera but were silenced by
+    /// a setting they may have forgotten about. The synthesized title
+    /// matches what the notification would have read if delivered, so
+    /// the log entry is recognizable.
+    func logDroppedEvent(
+        event: BaichuanEvent,
+        cameraID: UUID,
+        cameraName: String,
+        title: String,
+        tag: String?,
+        reason: NotificationRecord.DeliveryStatus
+    ) async {
+        let record = NotificationRecord(
+            timestamp: Date(),
+            source: .local,
+            cameraID: cameraID,
+            channel: Int(event.channelID),
+            cameraName: cameraName,
+            detectionTag: tag,
+            title: title,
+            body: cameraName,
+            thumbnailRelativePath: nil,
+            deliveryStatus: reason
+        )
+        await NotificationHistory.shared.record(record)
     }
 
     /// Download the snapshot JPEG to a temp file and wrap it in a
@@ -652,6 +817,17 @@ public final class NotificationTapDelegate: NSObject, UNUserNotificationCenterDe
             target = .recording(deviceID: cameraID, channelID: channelID, at: eventTime)
         }
         AppIntentFocus.request(target)
+
+        // 0.6.0 — record the tap in the notification history so the
+        // log can show which notifications the user actually engaged
+        // with. The notification's request.identifier was set to the
+        // `NotificationRecord.id.uuidString` in `EventNotifier.notify()`
+        // and `AppDelegate.postLocalNotification(for:)`, so this is the
+        // stable handle.
+        if let recordID = UUID(uuidString: response.notification.request.identifier) {
+            Task { await NotificationHistory.shared.markTapped(id: recordID) }
+        }
+
         // The running app's foreground/launch task drains the pointer
         // and routes. We also kick a Darwin notification post here to
         // help wake the app if it was suspended — but the standard

@@ -179,6 +179,7 @@ public actor CloudKitMotionEventPublisher: MotionEventPublisher {
         // absent, doesn't trap.
         guard CloudKitAvailability.canUseCloudKit(containerID: containerID) else {
             log.info("CloudKit unavailable on this binary (no iCloud entitlement); skipping relay")
+            await RelayDiagnostics.shared.recordPublisherSave(outcome: .noEntitlement)
             return
         }
         // Multi-account guard. The first publish from a given iCloud
@@ -190,9 +191,11 @@ public actor CloudKitMotionEventPublisher: MotionEventPublisher {
         switch identity {
         case .accountChanged:
             log.error("Skipping relay: iCloud account identity changed since last publish")
+            await RelayDiagnostics.shared.recordPublisherSave(outcome: .accountChanged)
             return
         case .unavailable:
             log.info("Skipping relay: no iCloud identity token available")
+            await RelayDiagnostics.shared.recordPublisherSave(outcome: .accountUnavailable)
             return
         case .allow:
             enrolledHash = nil  // already enrolled
@@ -205,14 +208,18 @@ public actor CloudKitMotionEventPublisher: MotionEventPublisher {
         // *that* a burst occurred and how many events were dropped.
         let decision = await rateLimiter.decide(for: event.cameraID)
         let recordToSave: CKRecord
+        let outcomeOnSuccess: RelayPublisherOutcome
         switch decision {
         case .allow:
             recordToSave = makeDedupedRecord(for: event)
+            outcomeOnSuccess = .saved
         case .suppress:
             log.debug("Rate-limited motion event suppressed (channel \(event.channel))")
+            await RelayDiagnostics.shared.recordPublisherSave(outcome: .rateLimitedSuppressed)
             return
         case .burstSummary(let suppressed):
             recordToSave = makeBurstRecord(for: event, suppressed: suppressed)
+            outcomeOnSuccess = .burstSummary
             log.info("Emitting burst summary for channel \(event.channel) (suppressed: \(suppressed))")
         }
 
@@ -224,6 +231,7 @@ public actor CloudKitMotionEventPublisher: MotionEventPublisher {
             if let enrolledHash {
                 CloudKitAccountIdentityGuard.enroll(hash: enrolledHash)
             }
+            await RelayDiagnostics.shared.recordPublisherSave(outcome: outcomeOnSuccess)
         } catch let error as CKError where error.code == .serverRecordChanged {
             // Already published (e.g. retry after partial success or
             // a dedup hash collision because two events fell in the
@@ -234,8 +242,13 @@ public actor CloudKitMotionEventPublisher: MotionEventPublisher {
             if let enrolledHash {
                 CloudKitAccountIdentityGuard.enroll(hash: enrolledHash)
             }
+            await RelayDiagnostics.shared.recordPublisherSave(outcome: .deduped)
         } catch {
             log.warning("Motion event relay failed: \(error.localizedDescription, privacy: .public)")
+            await RelayDiagnostics.shared.recordPublisherSave(
+                outcome: .failed,
+                errorMessage: error.localizedDescription
+            )
         }
     }
 
@@ -400,6 +413,7 @@ public actor CloudKitMotionEventSubscriber {
         // builds.
         guard CloudKitAvailability.canUseCloudKit(containerID: containerID) else {
             log.info("CloudKit unavailable; skipping subscription install")
+            await RelayDiagnostics.shared.recordSubscriptionInstall(outcome: .noEntitlement)
             return
         }
         let container = CKContainer(identifier: containerID)
@@ -423,12 +437,18 @@ public actor CloudKitMotionEventSubscriber {
         do {
             _ = try await db.save(subscription)
             log.info("Motion-event CKQuerySubscription installed")
+            await RelayDiagnostics.shared.recordSubscriptionInstall(outcome: .installed)
         } catch let error as CKError where error.code == .serverRejectedRequest {
             // CloudKit returns this when the subscription already
             // exists. Treat as success.
             log.debug("Motion-event subscription already registered")
+            await RelayDiagnostics.shared.recordSubscriptionInstall(outcome: .alreadyRegistered)
         } catch {
             log.warning("Subscription install failed: \(error.localizedDescription, privacy: .public)")
+            await RelayDiagnostics.shared.recordSubscriptionInstall(
+                outcome: .failed,
+                errorMessage: error.localizedDescription
+            )
         }
     }
 

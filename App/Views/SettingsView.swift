@@ -5,6 +5,7 @@ import AppShared
 struct SettingsView: View {
     @Environment(CameraStore.self) private var store
     @State private var notifier = EventNotifier.shared
+    @State private var showingNotificationLog: Bool = false
     @AppStorage(GridPreviewSetting.liveGridDefaultsKey) private var liveGridEnabled: Bool = false
     @AppStorage(MenuBarController.menuBarModeKey) private var menuBarMode: Bool = false
     @AppStorage(MenuBarController.launchAtLoginKey) private var launchAtLogin: Bool = false
@@ -83,6 +84,7 @@ struct SettingsView: View {
         Form {
             ICloudKeychainSyncSection()
             MotionRelayPublisherSection()
+            RelayDiagnosticsSection()
         }
         .formStyle(.grouped)
     }
@@ -109,9 +111,30 @@ struct SettingsView: View {
             Section("System permission") {
                 permissionRow
             }
+            Section("Notification log") {
+                Button {
+                    showingNotificationLog = true
+                } label: {
+                    Label("View notification history…", systemImage: "list.bullet.rectangle.portrait")
+                }
+                Text("Browse the last 1,000 notifications delivered or silenced on this Mac. New in 0.6.0.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .task { await notifier.refreshPermissionStatus() }
+        .sheet(isPresented: $showingNotificationLog) {
+            NavigationStack {
+                NotificationLogView()
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") { showingNotificationLog = false }
+                        }
+                    }
+            }
+            .frame(minWidth: 520, minHeight: 600)
+        }
     }
 
     @ViewBuilder

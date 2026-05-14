@@ -93,12 +93,19 @@ struct ReolensiOSApp: App {
                         // — see CameraPreviewPrefetcher header.
                         CameraPreviewPrefetcher.shared.start(store: store)
                         Task { await CameraPreviewPrefetcher.shared.sweepNow() }
+                        // 0.6.0 — bump every CameraSession's poll
+                        // cadence back to foreground (10 s). The next
+                        // poll iteration picks up the shorter interval.
+                        AdaptivePollSchedule.shared.enteredForeground()
                     case .background:
                         // Cancel the periodic loop while backgrounded
                         // so we don't fire snapshot HTTP calls iOS
                         // would interrupt anyway. The next .active
                         // transition kicks an immediate sweep.
                         CameraPreviewPrefetcher.shared.stop()
+                        // 0.6.0 — relax motion polling to 60 s while
+                        // suspended (or 120 s under Low Power Mode).
+                        AdaptivePollSchedule.shared.enteredBackground()
                     default:
                         break
                     }
@@ -223,6 +230,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // Token is opaque to us — CloudKit handles its own routing.
         // Don't log token bytes (privacy).
         log.info("APNS registered (\(deviceToken.count) byte token)")
+        let tokenLength = deviceToken.count
+        Task { await RelayDiagnostics.shared.recordAPNSRegistered(tokenByteCount: tokenLength) }
     }
 
     func application(
@@ -230,6 +239,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         didFailToRegisterForRemoteNotificationsWithError error: any Error
     ) {
         log.warning("APNS registration failed: \(error.localizedDescription, privacy: .public)")
+        let message = error.localizedDescription
+        Task { await RelayDiagnostics.shared.recordAPNSFailed(message: message) }
     }
 
     /// CloudKit silent-push entry point. iOS wakes the app briefly
@@ -255,6 +266,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             return
         }
         Task {
+            // Record arrival before fetch — the silent push got through
+            // APNS + CloudKit even if the record fetch later fails. This
+            // is the signal the diagnostic screen needs to confirm the
+            // push pipeline is alive.
+            await RelayDiagnostics.shared.recordSilentPushReceived()
             let subscriber = CloudKitMotionEventSubscriber()
             if let motionEvent = await subscriber.fetch(recordID: recordID) {
                 await postLocalNotification(for: motionEvent)
@@ -273,22 +289,53 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     private func postLocalNotification(for event: MotionEvent) async {
         // Honor master + per-tag user preferences before posting.
         let notifier = EventNotifier.shared
-        guard await MainActor.run(body: { notifier.enabled }) else { return }
+        let cameraNameFallback = "Camera \(event.channel + 1)"
         let detection = ReolinkAPI.DetectionType.fromReolinkString(event.detection)
-        let title: String
+        let syntheticTitle: String
+        if let detection {
+            syntheticTitle = "\(detection.label) detected"
+        } else if event.detection == "motion" {
+            syntheticTitle = "Motion detected"
+        } else if event.detection == "test" {
+            syntheticTitle = "Reolens test event received"
+        } else {
+            return
+        }
+
+        // 0.6.0 — log silent drops to the notification history so users
+        // can see relayed events that didn't surface as a banner.
+        func logDrop(_ status: NotificationRecord.DeliveryStatus) async {
+            let record = NotificationRecord(
+                id: event.id,
+                timestamp: event.timestamp,
+                source: .cloudKitSilentPush,
+                cameraID: event.cameraID,
+                channel: event.channel,
+                cameraName: cameraNameFallback,
+                detectionTag: detection?.rawValue ?? event.detection,
+                title: syntheticTitle,
+                body: cameraNameFallback,
+                thumbnailRelativePath: nil,
+                deliveryStatus: status
+            )
+            await NotificationHistory.shared.record(record)
+        }
+
+        guard await MainActor.run(body: { notifier.enabled }) else {
+            await logDrop(.globallyDisabled)
+            return
+        }
         if let detection {
             // Per-tag user gate, mirroring local-notification path.
             let perTagOn = await MainActor.run { notifier.notifyPerTag[detection] ?? true }
             let aiOn = await MainActor.run { notifier.notifyAI }
-            guard aiOn, perTagOn else { return }
-            title = "\(detection.label) detected"
+            if !aiOn { await logDrop(.aiMutedGlobally); return }
+            if !perTagOn { await logDrop(.tagMuted); return }
         } else if event.detection == "motion" {
             let motionOn = await MainActor.run { notifier.notifyMotion }
-            guard motionOn else { return }
-            title = "Motion detected"
-        } else {
-            return
+            if !motionOn { await logDrop(.motionMutedGlobally); return }
         }
+        let title = syntheticTitle
         let cameraName = await MainActor.run {
             // Without the camera list at hand here, fall back to a
             // generic body — the CameraStore is owned by the SwiftUI
@@ -327,8 +374,48 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             content: content,
             trigger: nil
         )
-        _ = try? await UNUserNotificationCenter.current().add(request)
+        let addError: (any Error)? = await withCheckedContinuation { (cont: CheckedContinuation<(any Error)?, Never>) in
+            UNUserNotificationCenter.current().add(request) { error in
+                cont.resume(returning: error)
+            }
+        }
         log.info("Posted relayed motion notification (channel \(event.channel), detection \(event.detection, privacy: .public))")
+
+        // 0.6.0 — record the relayed event into the user-facing
+        // notification log so iPhone/iPad users see CloudKit-delivered
+        // events alongside local ones, with the right source tag.
+        let postedRecord = NotificationRecord(
+            id: event.id,
+            timestamp: event.timestamp,
+            source: .cloudKitSilentPush,
+            cameraID: event.cameraID,
+            channel: event.channel,
+            cameraName: cameraName,
+            detectionTag: detection?.rawValue ?? event.detection,
+            title: title,
+            body: cameraName,
+            thumbnailRelativePath: nil,
+            deliveryStatus: addError == nil ? .posted : .failed
+        )
+        await NotificationHistory.shared.record(postedRecord)
+
+        // 0.6.0 — feed the per-camera health badge + widgets on iOS too.
+        // Until now only the macOS publisher path wrote to the shared
+        // widget log via `EventNotifier`; CloudKit-relayed events arriving
+        // on iOS skipped this entirely, leaving widgets and badges stale.
+        let widgetEvent = SharedContainer.RecentMotionEvent(
+            id: event.id,
+            cameraID: event.cameraID,
+            channel: event.channel,
+            cameraName: cameraName,
+            timestamp: event.timestamp,
+            aiTags: detection.map { [$0.label] } ?? [],
+            triggerFrameRelativePath: nil
+        )
+        try? SharedContainer.appendMotionEvent(widgetEvent)
+        await MainActor.run {
+            CameraNotificationHealth.shared.refresh()
+        }
     }
 }
 

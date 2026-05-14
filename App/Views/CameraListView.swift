@@ -204,6 +204,7 @@ struct DeviceRowLabel: View {
     let entry: CameraEntry
     let session: CameraSession?
     let channelCount: Int
+    @State private var health = CameraNotificationHealth.shared
 
     private var deviceIcon: String {
         if let info = session?.deviceInfo {
@@ -225,6 +226,15 @@ struct DeviceRowLabel: View {
                     .lineLimit(1)
             }
             Spacer()
+            if let badge = health.badgeText(for: entry.id) {
+                Text(badge)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(.secondary.opacity(0.15), in: Capsule())
+                    .accessibilityLabel("Last notification \(badge)")
+            }
             statusDot(for: session?.status ?? .disconnected)
         }
         .padding(.vertical, 2)

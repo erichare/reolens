@@ -514,7 +514,13 @@ public final class CameraSession {
             try? await Task.sleep(for: .seconds(Self.initialMotionPollDelaySeconds))
             while let self, !Task.isCancelled, self.status == .connected {
                 await self.pollOnce()
-                try? await Task.sleep(for: .seconds(Self.motionPollIntervalSeconds))
+                // 0.6.0 — read the adaptive poll interval each
+                // iteration. Phase changes (foreground ↔ background ↔
+                // low-power) take effect on the next sleep, never
+                // mid-poll. Worst-case responsiveness to a phase shift
+                // is the prior interval (10/60/120 s).
+                let interval = AdaptivePollSchedule.shared.currentIntervalSeconds
+                try? await Task.sleep(for: .seconds(interval))
             }
         }
     }

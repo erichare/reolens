@@ -53,6 +53,19 @@ struct ReolensApp: App {
                     // tiles rather than waiting for the next 15-min
                     // periodic cycle.
                     Task { await CameraPreviewPrefetcher.shared.sweepNow() }
+                    // 0.6.0 — restore foreground motion-poll cadence
+                    // (10 s). Mirrors the iOS scenePhase observer in
+                    // ReolensiOSApp.swift. Single source of truth for
+                    // poll interval is AdaptivePollSchedule.shared.
+                    Task { @MainActor in AdaptivePollSchedule.shared.enteredForeground() }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+                    // 0.6.0 — relax motion polling to 60 s once the
+                    // Mac app is no longer the front-most. macOS apps
+                    // keep running when not active, but the user isn't
+                    // watching the grid — battery + thermal headroom
+                    // win.
+                    Task { @MainActor in AdaptivePollSchedule.shared.enteredBackground() }
                 }
                 // Drain when a focus request is written AFTER the
                 // scene's launch `.task` ran — typically the
