@@ -700,6 +700,12 @@ public struct AllRecordingsView: View {
         defer { isSearching = false }
         let hits = await RecordingIndex.shared.query(query)
         indexedResults = hits
+        // 0.6.1 — Record the query in local history if it produced
+        // at least one result. Misses don't get recorded so the
+        // suggestions list stays signal, not noise.
+        if !hits.isEmpty {
+            NLSearchHistory.shared.record(trimmed)
+        }
     }
 
     @ViewBuilder
@@ -738,6 +744,10 @@ public struct AllRecordingsView: View {
     /// understands without having to read the changelog. Mirrors the
     /// Spotlight pattern: when the search input is the focus, suggest
     /// shapes rather than leaving the screen blank.
+    ///
+    /// Now also surfaces personal search history (last 10 successful
+    /// queries) above the static suggestions so users don't have to
+    /// retype common searches.
     @ViewBuilder
     private var searchEmptyState: some View {
         VStack(spacing: 16) {
@@ -748,32 +758,64 @@ public struct AllRecordingsView: View {
                     "Nothing in the indexed window matches \"\(searchQuery)\". Try one of these:"
                 )
             )
-            VStack(alignment: .leading, spacing: 10) {
-                ForEach(Self.searchSuggestions, id: \.self) { suggestion in
-                    Button {
-                        searchQuery = suggestion
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "sparkle")
-                                .foregroundStyle(.secondary)
-                            Text(suggestion)
-                                .font(.body)
-                            Spacer()
-                            Image(systemName: "arrow.up.left.circle")
-                                .foregroundStyle(.tertiary)
+            VStack(alignment: .leading, spacing: 12) {
+                if !NLSearchHistory.shared.entries.isEmpty {
+                    HStack {
+                        Text("Recent")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Clear") {
+                            NLSearchHistory.shared.clear()
                         }
-                        .padding(.vertical, 6)
-                        .padding(.horizontal, 12)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                        .buttonStyle(.plain)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .accessibilityHint("Clears your recent search history on this device.")
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityHint("Replaces your search with this suggestion.")
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(NLSearchHistory.shared.entries, id: \.self) { recent in
+                            suggestionRow(prompt: recent, systemImage: "clock.arrow.circlepath")
+                        }
+                    }
+                    Divider()
+                        .padding(.vertical, 4)
+                }
+                Text("Try")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Self.searchSuggestions, id: \.self) { suggestion in
+                        suggestionRow(prompt: suggestion, systemImage: "sparkle")
+                    }
                 }
             }
             .padding(.horizontal, 24)
             searchPrivacyFooter
                 .padding(.horizontal, 24)
         }
+    }
+
+    @ViewBuilder
+    private func suggestionRow(prompt: String, systemImage: String) -> some View {
+        Button {
+            searchQuery = prompt
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: systemImage)
+                    .foregroundStyle(.secondary)
+                Text(prompt)
+                    .font(.body)
+                Spacer()
+                Image(systemName: "arrow.up.left.circle")
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.vertical, 6)
+            .padding(.horizontal, 12)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Replaces your search with this suggestion.")
     }
 
     /// 0.6.1 — Static suggestions surfaced when search returns nothing.

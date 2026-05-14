@@ -2,6 +2,16 @@ import SwiftUI
 import AppKit
 import AppShared
 
+/// 0.6.1 — Notification names for the macOS Camera menu's keyboard
+/// shortcuts. Decoupled from any one view's state — the active
+/// `ContentView` observes these and routes to the selected
+/// `CameraSession` / `CameraStore`.
+extension Notification.Name {
+    static let reolensRefreshLiveTiles = Notification.Name("com.reolens.command.refreshLiveTiles")
+    /// `userInfo["index": Int]` — zero-based index into `CameraStore.cameras`.
+    static let reolensSwitchToCamera = Notification.Name("com.reolens.command.switchToCamera")
+}
+
 @main
 struct ReolensApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
@@ -170,6 +180,30 @@ struct ReolensApp: App {
             }
             SidebarCommands()
             ToolbarCommands()
+            // 0.6.1 — Camera menu with keyboard shortcuts. Each item
+            // posts a Notification the active view layer observes
+            // (ContentView / CameraDetailView / CameraListView). Keeps
+            // the menu wiring decoupled from any one view's state
+            // while still giving power users keyboard control.
+            CommandMenu("Camera") {
+                Button("Refresh Live Tiles") {
+                    NotificationCenter.default.post(name: .reolensRefreshLiveTiles, object: nil)
+                }
+                .keyboardShortcut("r", modifiers: [.command])
+
+                Divider()
+
+                ForEach(1...9, id: \.self) { index in
+                    Button("Switch to Camera \(index)") {
+                        NotificationCenter.default.post(
+                            name: .reolensSwitchToCamera,
+                            object: nil,
+                            userInfo: ["index": index - 1]
+                        )
+                    }
+                    .keyboardShortcut(KeyEquivalent(Character("\(index)")), modifiers: [.command])
+                }
+            }
         }
 
         Settings {
