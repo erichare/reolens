@@ -50,21 +50,45 @@ public struct CameraListPersistence {
     /// when the on-disk bytes don't decode (treated as nil rather
     /// than throwing — callers fall back to the current in-memory
     /// list).
+    ///
+    /// 0.6.2 — decode failures now route through `AppErrorRecorder`
+    /// so a corrupted `cameras.json` is discoverable in Diagnostics
+    /// Center rather than presenting as a mysteriously-empty camera
+    /// list at app launch.
     public func load() -> [CameraEntry]? {
         guard let data = backend.read() else { return nil }
-        return try? JSONDecoder().decode([CameraEntry].self, from: data)
+        do {
+            return try JSONDecoder().decode([CameraEntry].self, from: data)
+        } catch {
+            log.error("Failed to decode camera list: \(error.localizedDescription, privacy: .public)")
+            Task {
+                await AppErrorRecorder.shared.record(
+                    .persistence(.decode(reason: String(describing: error))),
+                    context: "cameraList.load"
+                )
+            }
+            return nil
+        }
     }
 
     /// Encode the supplied entries and write them through the
-    /// backend. Failures are logged and dropped — the previous
-    /// implementation also swallowed encode errors silently because
-    /// `CameraEntry` is `Codable` with synthesized init and a stable
-    /// shape, so a runtime failure here would only indicate a
+    /// backend. 0.6.2 — encode failures now record to
+    /// `AppErrorRecorder` (and `save` itself is non-throwing because
+    /// the encode shape is stable and a runtime failure indicates a
     /// programming error rather than a recoverable runtime
-    /// condition.
+    /// condition). Discoverable in Diagnostics Center.
     public func save(_ entries: [CameraEntry]) {
-        guard let data = try? JSONEncoder().encode(entries) else {
-            log.error("Failed to encode camera list; skipping write")
+        let data: Data
+        do {
+            data = try JSONEncoder().encode(entries)
+        } catch {
+            log.error("Failed to encode camera list: \(error.localizedDescription, privacy: .public)")
+            Task {
+                await AppErrorRecorder.shared.record(
+                    .persistence(.write(path: "cameras.json")),
+                    context: "cameraList.save"
+                )
+            }
             return
         }
         backend.write(data)

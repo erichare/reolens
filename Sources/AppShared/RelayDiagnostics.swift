@@ -126,9 +126,22 @@ public actor RelayDiagnostics {
         let suite = suiteName.flatMap { UserDefaults(suiteName: $0) } ?? .standard
         self.defaults = suite
         self.storageKey = storageKey
-        if let data = suite.data(forKey: storageKey),
-           let decoded = try? JSONDecoder.iso8601.decode(RelayDiagnosticsState.self, from: data) {
-            self.state = decoded
+        // 0.6.2 — when bytes are present but won't decode, route the
+        // failure through AppErrorRecorder so a corrupt diag state
+        // shows up in Diagnostics Center rather than the user seeing
+        // a silently-reset Notification Diagnostics screen.
+        if let data = suite.data(forKey: storageKey) {
+            do {
+                self.state = try JSONDecoder.iso8601.decode(RelayDiagnosticsState.self, from: data)
+            } catch {
+                Task {
+                    await AppErrorRecorder.shared.record(
+                        .persistence(.decode(reason: String(describing: error))),
+                        context: "relayDiagnostics.decode"
+                    )
+                }
+                self.state = RelayDiagnosticsState()
+            }
         } else {
             self.state = RelayDiagnosticsState()
         }

@@ -47,15 +47,44 @@ package final class ICloudCameraStorage {
     /// exist (first-ever launch) or if the read errored. The coordinator
     /// blocks while another device is mid-write, so we get a consistent
     /// snapshot rather than a partial file.
+    ///
+    /// 0.6.2 — read failures on a file that exists (the second-device
+    /// "iCloud download corrupt" case) now surface in Diagnostics
+    /// Center via `AppErrorRecorder`. The first-launch nil case
+    /// stays silent — that's the empty-by-design state, not an error.
     package func read() -> Data? {
         let coordinator = NSFileCoordinator(filePresenter: nil)
         var coordError: NSError?
         var data: Data?
+        var readError: (any Error)?
         coordinator.coordinate(readingItemAt: currentURL, options: [], error: &coordError) { url in
-            data = try? Data(contentsOf: url)
+            do {
+                data = try Data(contentsOf: url)
+            } catch CocoaError.fileReadNoSuchFile {
+                // First-launch path; not an error worth recording.
+            } catch {
+                readError = error
+            }
         }
         if let coordError {
             log.error("Read coord error: \(coordError.localizedDescription, privacy: .public)")
+            let path = currentURL.lastPathComponent
+            Task {
+                await AppErrorRecorder.shared.record(
+                    .persistence(.read(path: path)),
+                    context: "iCloudStorage.coordinator"
+                )
+            }
+        }
+        if let readError {
+            log.error("Read failed: \(readError.localizedDescription, privacy: .public)")
+            let path = currentURL.lastPathComponent
+            Task {
+                await AppErrorRecorder.shared.record(
+                    .persistence(.read(path: path)),
+                    context: "iCloudStorage.read"
+                )
+            }
         }
         return data
     }
