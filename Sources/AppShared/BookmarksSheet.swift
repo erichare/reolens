@@ -1,5 +1,6 @@
 import SwiftUI
 import ReolinkAPI
+import UniformTypeIdentifiers
 
 /// 0.5.0 Theme C1 — bookmark list + delete + export. Presented from
 /// `RecordingsView`, `ChannelDetailContent`, and `SingleChannelView`;
@@ -231,6 +232,39 @@ public struct BookmarksSheet: View {
             .help("Remove this bookmark and its downloaded clip from this device.")
         }
         .padding(.vertical, 4)
+        #if os(macOS)
+        // 0.6.2 — Finder drag-out. The provider's file representation
+        // runs `ClipExportCoordinator.stage` lazily, so the user just
+        // grabs the row and drops it on Finder / Mail / Messages and
+        // the system handles the trim + composition while showing its
+        // own "Preparing…" indicator over the drag image.
+        .onDrag {
+            guard let transferable, let item = transferable(bookmark) else {
+                return NSItemProvider()
+            }
+            let provider = NSItemProvider()
+            provider.suggestedName = item.suggestedFilename + ".mp4"
+            provider.registerFileRepresentation(
+                forTypeIdentifier: UTType.mpeg4Movie.identifier,
+                fileOptions: [],
+                visibility: .all
+            ) { completion in
+                Task {
+                    do {
+                        let staged = try await ClipExportCoordinator.stage(item.request)
+                        completion(staged.stagedURL, false, nil)
+                    } catch {
+                        completion(nil, false, error)
+                    }
+                }
+                // We don't surface granular progress — the system shows
+                // its own indeterminate spinner while awaiting the
+                // completion handler, which is the standard pattern.
+                return nil
+            }
+            return provider
+        }
+        #endif
     }
 
     /// 0.6.2 — the per-row Export menu. Hosts the platform-appropriate
