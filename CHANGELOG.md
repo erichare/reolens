@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.6.2] — TBD
+## [0.6.2] — 2026-05-15
 
 A patch release that continues the 0.6.1 hardening tradition while
 landing one user-facing storyline. The headline: `ClipExporter` finally
