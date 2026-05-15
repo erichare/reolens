@@ -47,14 +47,17 @@ public final class RecordingDownloader {
         case failed(String)
     }
 
-    /// Bytes per ranged chunk. 1 MB is a good balance — small enough that
-    /// progress updates frequently, large enough that per-chunk overhead is
-    /// negligible.
-    private static let chunkSize: Int64 = 1024 * 1024
-    /// Concurrent in-flight chunks. The hub typically allows several
-    /// simultaneous CGI sessions; 4 is conservative and avoids overwhelming
-    /// the host on slower hardware.
-    private static let concurrency = 4
+    /// Bytes per ranged chunk. 4 MB is larger than the historic 1 MB because
+    /// fewer larger chunks dominate fewer-but-larger round trips and let
+    /// TCP windows grow on LAN. Still small enough that 8-way concurrency
+    /// scales: 8 × 4 MB = 32 MB peak pipeline. Progress updates still
+    /// arrive ~once per 4 MB, which is smooth enough for the UI.
+    private static let chunkSize: Int64 = 4 * 1024 * 1024
+    /// Concurrent in-flight chunks. Reolink hubs sustain many parallel
+    /// CGI sessions on LAN; the per-TCP-connection cap is the real
+    /// bottleneck and the parallel path exists specifically to defeat
+    /// it. 8 matches what the official app appears to do.
+    private static let concurrency = 8
     /// Anything smaller than this falls back to single-stream; the parallel
     /// path has too much setup overhead to pay back for tiny files.
     private static let minSizeForParallel: Int64 = 512 * 1024
@@ -70,8 +73,12 @@ public final class RecordingDownloader {
         config.timeoutIntervalForResource = 1800
         // Plenty of headroom over `concurrency` so the URLSession layer
         // doesn't queue our tasks behind itself.
-        config.httpMaximumConnectionsPerHost = 8
+        config.httpMaximumConnectionsPerHost = 16
         config.urlCache = nil
+        // Higher-priority QoS for the network path so the downloader
+        // isn't starved by background work when the user is staring
+        // at a progress bar.
+        config.networkServiceType = .responsiveData
         self.session = URLSession(configuration: config)
     }
 
@@ -241,26 +248,66 @@ public final class RecordingDownloader {
     // MARK: - Strategy selection
 
     private func run(url: URL) async {
-        // Race a HEAD probe vs a 5-second deadline. HEAD avoids the trap
-        // where the server ignores `Range` and `session.data(for:)` ends up
-        // dutifully downloading the whole file before we can check headers.
-        let probeResult = await probeWithTimeout(url: url, timeout: 5)
-        switch probeResult {
-        case .ranged(let total):
-            if total >= Self.minSizeForParallel {
-                log.info("Range support OK; total=\(total) bytes — using parallel download (\(Self.concurrency) chunks of \(Self.chunkSize / 1024) KB)")
-                await downloadParallel(url: url, total: total)
-                return
-            } else {
-                log.info("File too small for parallel split (total=\(total)); falling back to single-stream")
-            }
-        case .unsupported(let reason):
-            log.info("No range support — \(reason, privacy: .public); falling back to single-stream")
-        case .timeout:
-            log.warning("Probe timed out after 5s; falling back to single-stream")
-        }
+        // No more pre-download probe — historically we did a HEAD probe
+        // under a 5-second deadline before any byte arrived, which on a
+        // busy hub added ~1-3s of pure latency before we even started.
+        // Instead we issue the first chunk as the actual download:
+        //   * If the server replies 206 with Content-Range, we have the
+        //     total size AND the first chunk's bytes already. We seed
+        //     the output file and run the remaining chunks in parallel.
+        //   * If the server replies 200 (Range ignored), the body IS
+        //     the whole file. We finish via the single-stream path
+        //     without re-issuing the request.
+        await runOptimistic(url: url)
+    }
 
-        await downloadSingleStream(url: url)
+    /// Issue the first ranged GET as the first chunk of the download.
+    /// Skips the historical HEAD probe so time-to-first-byte equals
+    /// time-to-first-chunk.
+    private func runOptimistic(url: URL) async {
+        var req = URLRequest(url: url)
+        req.setValue("bytes=0-\(Self.chunkSize - 1)", forHTTPHeaderField: "Range")
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        do {
+            let (data, response) = try await session.data(for: req)
+            guard let http = response as? HTTPURLResponse else {
+                await finishWithFailure("Server returned non-HTTP response")
+                return
+            }
+            if http.statusCode == 206,
+               let total = parseContentRangeTotal(http: http),
+               total >= Self.minSizeForParallel {
+                log.info("Optimistic first chunk got 206 (\(data.count) bytes); total=\(total) — parallel download (\(Self.concurrency) chunks of \(Self.chunkSize / 1024 / 1024) MB)")
+                await downloadParallel(url: url, total: total, firstChunk: data)
+                return
+            }
+            if http.statusCode == 206 {
+                // 206 but total too small (or unparseable Content-Range):
+                // we already have the file — write it out and finish.
+                log.info("Optimistic first chunk got 206 but file is small/unparseable; saving directly (\(data.count) bytes)")
+                await finishWithSingleData(data, downloadURL: url)
+                return
+            }
+            if http.statusCode == 200 {
+                // Server ignored Range and is streaming the whole file.
+                // `session.data(for:)` already returned the full body in
+                // `data`, so just write it and finish — same outcome as
+                // the legacy single-stream path, minus the wasted probe.
+                log.info("Server ignored Range header (HTTP 200, \(data.count) bytes) — saving directly")
+                await finishWithSingleData(data, downloadURL: url)
+                return
+            }
+            // Any other status — bail with a friendly error.
+            await finishWithFailure("HTTP \(http.statusCode) from camera.")
+        } catch {
+            if (error as NSError).code == NSURLErrorCancelled { return }
+            // First-chunk transient failure → fall through to the
+            // legacy delegate-driven single-stream download which has
+            // its own retry/observation behavior. Logs the reason for
+            // diagnosis.
+            log.warning("Optimistic first chunk failed (\(error.localizedDescription, privacy: .public)); falling back to single-stream")
+            await downloadSingleStream(url: url)
+        }
     }
 
     /// Parse `Content-Range: bytes 0-1023/45678` and return the trailing
@@ -273,102 +320,49 @@ public final class RecordingDownloader {
         return Int64(totalPart)
     }
 
-    private enum ProbeOutcome {
-        case ranged(total: Int64)
-        case unsupported(reason: String)
-        case timeout
-    }
-
-    /// Run a HEAD probe (with a Range-GET fallback) under a hard deadline.
-    /// The deadline matters because `session.data(for:)` on a non-Range-
-    /// aware endpoint will faithfully stream the entire response, defeating
-    /// the whole point of a probe.
-    private func probeWithTimeout(url: URL, timeout: TimeInterval) async -> ProbeOutcome {
-        await withTaskGroup(of: ProbeOutcome.self) { [session] group in
-            group.addTask {
-                // Try HEAD first — it returns headers only, no body, and is
-                // honored by Reolink's CGI on recent firmware.
-                var headReq = URLRequest(url: url)
-                headReq.httpMethod = "HEAD"
-                headReq.cachePolicy = .reloadIgnoringLocalCacheData
-                do {
-                    let (_, response) = try await session.data(for: headReq)
-                    guard let http = response as? HTTPURLResponse else {
-                        return .unsupported(reason: "HEAD returned non-HTTP response")
-                    }
-                    let ar = http.value(forHTTPHeaderField: "Accept-Ranges") ?? "<none>"
-                    let cl = http.value(forHTTPHeaderField: "Content-Length") ?? "<none>"
-                    log.info("HEAD probe: HTTP \(http.statusCode) Accept-Ranges=\(ar, privacy: .public) Content-Length=\(cl, privacy: .public)")
-                    if http.statusCode == 200,
-                       ar.lowercased().contains("bytes"),
-                       let n = Int64(cl), n > 0 {
-                        return .ranged(total: n)
-                    }
-                    if http.statusCode == 405 || http.statusCode == 501 {
-                        // HEAD not supported — try a tiny Range GET instead.
-                        return await Self.probeViaRangeGet(url: url, session: session)
-                    }
-                    return .unsupported(reason: "HEAD HTTP \(http.statusCode) Accept-Ranges=\(ar)")
-                } catch {
-                    log.info("HEAD probe errored (\(error.localizedDescription, privacy: .public)); trying Range GET")
-                    return await Self.probeViaRangeGet(url: url, session: session)
-                }
-            }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(timeout))
-                return .timeout
-            }
-            let outcome = await group.next() ?? .timeout
-            group.cancelAll()
-            return outcome
-        }
-    }
-
-    /// Range-GET probe: opens the connection, reads at most 1 KB, then
-    /// cancels. Used when HEAD is rejected by the server.
-    private static func probeViaRangeGet(url: URL, session: URLSession) async -> ProbeOutcome {
-        var req = URLRequest(url: url)
-        req.setValue("bytes=0-1023", forHTTPHeaderField: "Range")
-        req.cachePolicy = .reloadIgnoringLocalCacheData
+    /// Persist `data` as the full downloaded file — used when the server
+    /// returned 200 (ignored Range) or returned 206 but the file is too
+    /// small to be worth splitting. Promotes to cache so a re-tap is a
+    /// zero-byte hit.
+    private func finishWithSingleData(_ data: Data, downloadURL: URL) async {
+        let dest = FileManager.default.temporaryDirectory
+            .appendingPathComponent("reolens-\(UUID().uuidString).mp4")
         do {
-            let (asyncBytes, response) = try await session.bytes(for: req)
-            guard let http = response as? HTTPURLResponse else {
-                return .unsupported(reason: "Range GET returned non-HTTP response")
-            }
-            let cr = http.value(forHTTPHeaderField: "Content-Range") ?? "<none>"
-            log.info("Range-GET probe: HTTP \(http.statusCode) Content-Range=\(cr, privacy: .public)")
-            // Consume up to 1 KB then drop the connection — we don't want
-            // the whole file streaming back if the server ignored Range.
-            var read = 0
-            for try await _ in asyncBytes {
-                read += 1
-                if read >= 1024 { break }
-            }
-            if http.statusCode == 206, let slash = cr.lastIndex(of: "/"),
-               let total = Int64(cr[cr.index(after: slash)...].trimmingCharacters(in: .whitespaces)) {
-                return .ranged(total: total)
-            }
-            return .unsupported(reason: "HTTP \(http.statusCode), Content-Range=\(cr)")
+            try data.write(to: dest, options: .atomic)
         } catch {
-            return .unsupported(reason: "Range GET error: \(error.localizedDescription)")
+            await finishWithFailure("Couldn't write file: \(error.localizedDescription)")
+            return
         }
+        let final = Self.promoteToCache(tempURL: dest, downloadURL: downloadURL)
+        let size = Int64(data.count)
+        totalBytes = size
+        bytesReceived = size
+        localURL = final
+        state = .ready
     }
 
     // MARK: - Parallel ranged download
 
-    private func downloadParallel(url: URL, total: Int64) async {
+    /// Run the parallel download. The caller has already issued the
+    /// first chunk (a `Range: bytes=0-(chunkSize-1)` GET); its bytes
+    /// arrive in `firstChunk` and become chunk 0 of the layout, saving
+    /// one round trip vs. re-issuing the same range.
+    private func downloadParallel(url: URL, total: Int64, firstChunk: Data) async {
         // 1. Pre-allocate output file with the final size so each chunk task
-        //    can seek to its offset and write.
+        //    can open its own writable FileHandle, seek to the chunk's
+        //    offset, and write without contending with sibling chunks.
         let dest = FileManager.default.temporaryDirectory
             .appendingPathComponent("reolens-\(UUID().uuidString).mp4")
         guard FileManager.default.createFile(atPath: dest.path, contents: nil) else {
             await finishWithFailure("Cannot create output file")
             return
         }
-        let handle: FileHandle
+        // Pre-truncate once so the per-task handles see a file of the
+        // right size when they seek.
         do {
-            handle = try FileHandle(forWritingTo: dest)
-            try handle.truncate(atOffset: UInt64(total))
+            let h = try FileHandle(forWritingTo: dest)
+            try h.truncate(atOffset: UInt64(total))
+            try h.close()
         } catch {
             try? FileManager.default.removeItem(at: dest)
             await finishWithFailure("Couldn't open output: \(error.localizedDescription)")
@@ -377,47 +371,84 @@ public final class RecordingDownloader {
 
         totalBytes = total
         localURL = dest
-        let writer = OffsetWriter(handle: handle)
-        let progress = ProgressCounter()
 
-        // 2. Slice [0, total) into chunkSize-byte ranges.
+        // 2. Write chunk 0 (already in hand from the optimistic first GET).
+        //    Use a one-shot FileHandle write off the main actor — this is
+        //    fast (memory-mapped on macOS) but we still keep the work off
+        //    MainActor to avoid jitter on slow filesystems.
+        let firstSize = Int64(firstChunk.count)
+        do {
+            try await Self.writeChunkToFile(dest: dest, offset: 0, data: firstChunk)
+        } catch {
+            try? FileManager.default.removeItem(at: dest)
+            await finishWithFailure("Couldn't write first chunk: \(error.localizedDescription)")
+            return
+        }
+        bytesReceived = firstSize
+
+        // 3. Slice [firstSize, total) into chunkSize-byte ranges.
         var ranges: [(start: Int64, end: Int64)] = []
-        var cursor: Int64 = 0
+        var cursor: Int64 = firstSize
         while cursor < total {
             let end = min(cursor + Self.chunkSize - 1, total - 1)
             ranges.append((cursor, end))
             cursor = end + 1
         }
 
-        // 4. Run with bounded concurrency. TaskGroup with manual gating gives
-        //    us "at most N in flight" without an external semaphore.
+        if ranges.isEmpty {
+            // The first chunk was the whole file.
+            let final = Self.promoteToCache(tempURL: dest, downloadURL: url)
+            log.info("Parallel download complete in one chunk: \(total) bytes → \(final.lastPathComponent, privacy: .public)")
+            localURL = final
+            bytesReceived = total
+            state = .ready
+            return
+        }
+
+        // 4. Run with bounded concurrency. TaskGroup with manual gating
+        //    gives us "at most N in flight" without an external semaphore.
+        //    Each task writes its bytes through its own FileHandle and
+        //    reports the count back; no shared writer actor contention.
+        let progress = ProgressCounter()
+        await progress.set(firstSize)
         do {
-            try await withThrowingTaskGroup(of: (Int64, Data).self) { group in
+            try await withThrowingTaskGroup(of: Int64.self) { group in
                 var inFlight = 0
                 var iterator = ranges.makeIterator()
+                var chunkIndex = 1
 
                 func launchNext() {
                     guard let range = iterator.next() else { return }
                     inFlight += 1
-                    let chunkIdx = inFlight
-                    group.addTask { [session] in
+                    let idx = chunkIndex
+                    chunkIndex += 1
+                    group.addTask { [session, dest] in
                         try Task.checkCancellation()
                         let started = Date()
-                        log.debug("chunk[\(chunkIdx)] launching bytes=\(range.start)-\(range.end) (\(range.end - range.start + 1) bytes)")
                         var req = URLRequest(url: url)
                         req.setValue("bytes=\(range.start)-\(range.end)", forHTTPHeaderField: "Range")
                         req.cachePolicy = .reloadIgnoringLocalCacheData
-                        let (data, response) = try await session.data(for: req)
-                        let elapsed = Date().timeIntervalSince(started)
+                        // Stream the response straight to disk via the
+                        // chunk's own FileHandle. Avoids holding the
+                        // whole chunk (~4 MB) in RAM and reduces the
+                        // peak memory footprint to a small per-task
+                        // I/O buffer.
+                        let (asyncBytes, response) = try await session.bytes(for: req)
                         let http = response as? HTTPURLResponse
-                        log.info("chunk[\(chunkIdx)] done bytes=\(range.start)-\(range.end) status=\(http?.statusCode ?? -1) received=\(data.count) bytes in \(elapsed, format: .fixed(precision: 2))s (\(Double(data.count) / 1024 / max(elapsed, 0.001), format: .fixed(precision: 0)) KB/s)")
                         if let http, http.statusCode >= 400 {
                             throw URLError(.badServerResponse, userInfo: [
                                 "status": http.statusCode,
                                 "range": "\(range.start)-\(range.end)"
                             ])
                         }
-                        return (range.start, data)
+                        let written = try await Self.streamChunkToFile(
+                            dest: dest,
+                            offset: range.start,
+                            bytes: asyncBytes
+                        )
+                        let elapsed = Date().timeIntervalSince(started)
+                        log.info("chunk[\(idx)] done bytes=\(range.start)-\(range.end) status=\(http?.statusCode ?? -1) received=\(written) bytes in \(elapsed, format: .fixed(precision: 2))s (\(Double(written) / 1024 / max(elapsed, 0.001), format: .fixed(precision: 0)) KB/s)")
+                        return written
                     }
                 }
 
@@ -425,11 +456,9 @@ public final class RecordingDownloader {
                     launchNext()
                 }
 
-                while let result = try await group.next() {
+                while let written = try await group.next() {
                     inFlight -= 1
-                    let (offset, data) = result
-                    try await writer.write(data, at: offset)
-                    let received = await progress.add(Int64(data.count))
+                    let received = await progress.add(written)
                     self.bytesReceived = received
                     launchNext()
                     if Task.isCancelled { throw CancellationError() }
@@ -437,29 +466,72 @@ public final class RecordingDownloader {
                 _ = inFlight  // suppress unused-warning under release
             }
         } catch is CancellationError {
-            await writer.close()
             try? FileManager.default.removeItem(at: dest)
             localURL = nil
             return
         } catch {
-            await writer.close()
             try? FileManager.default.removeItem(at: dest)
             localURL = nil
             await finishWithFailure("Chunk download failed: \(error.localizedDescription)")
             return
         }
 
-        await writer.close()
         let finalSize = (try? FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? Int64) ?? total
         // Move the completed file into the cache directory so a future
-        // tap on the same recording skips the download entirely. The
-        // promote helper returns the new path on success, or the temp
-        // path unchanged on failure (still playable, just not cached).
+        // tap on the same recording skips the download entirely.
         let final = Self.promoteToCache(tempURL: dest, downloadURL: url)
         log.info("Parallel download complete: \(finalSize) bytes → \(final.lastPathComponent, privacy: .public)")
         localURL = final
         bytesReceived = total
         state = .ready
+    }
+
+    /// One-shot chunk write: open a FileHandle for writing, seek to
+    /// `offset`, write `data`, close. Each call is independent so
+    /// concurrent invocations on different offsets don't contend
+    /// (Darwin's per-file-descriptor offset is per-handle, and the
+    /// file is pre-truncated to final size).
+    nonisolated private static func writeChunkToFile(
+        dest: URL,
+        offset: Int64,
+        data: Data
+    ) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            let h = try FileHandle(forWritingTo: dest)
+            defer { try? h.close() }
+            try h.seek(toOffset: UInt64(offset))
+            try h.write(contentsOf: data)
+        }.value
+    }
+
+    /// Streamed chunk write: open a FileHandle, seek to `offset`, and
+    /// pipe `bytes` straight to disk in ~64 KB buffer increments so the
+    /// whole chunk never lives in RAM at once. Returns the total bytes
+    /// written so progress reporting stays accurate.
+    nonisolated private static func streamChunkToFile(
+        dest: URL,
+        offset: Int64,
+        bytes: URLSession.AsyncBytes
+    ) async throws -> Int64 {
+        let h = try FileHandle(forWritingTo: dest)
+        defer { try? h.close() }
+        try h.seek(toOffset: UInt64(offset))
+        var buffer = Data()
+        buffer.reserveCapacity(64 * 1024)
+        var written: Int64 = 0
+        for try await byte in bytes {
+            buffer.append(byte)
+            if buffer.count >= 64 * 1024 {
+                try h.write(contentsOf: buffer)
+                written += Int64(buffer.count)
+                buffer.removeAll(keepingCapacity: true)
+            }
+        }
+        if !buffer.isEmpty {
+            try h.write(contentsOf: buffer)
+            written += Int64(buffer.count)
+        }
+        return written
     }
 
     // MARK: - Legacy single-stream fallback
@@ -568,33 +640,19 @@ public final class RecordingDownloader {
     }
 }
 
-/// Serializes writes to a single file handle across the parallel-download
-/// task group. Each chunk task hands off `(data, offset)` and awaits a
-/// single seek-and-write under the actor's isolation.
-private actor OffsetWriter {
-    private var handle: FileHandle?
-    init(handle: FileHandle) { self.handle = handle }
-
-    func write(_ data: Data, at offset: Int64) throws {
-        guard let handle else { throw URLError(.cancelled) }
-        try handle.seek(toOffset: UInt64(offset))
-        try handle.write(contentsOf: data)
-    }
-
-    func close() {
-        // safe: close-on-deinit best-effort; OS reclaims the descriptor
-        // regardless and double-close throws are harmless here.
-        try? handle?.close()
-        handle = nil
-    }
-}
-
 /// Lightweight cumulative byte counter shared across parallel chunk tasks.
-/// Returns the new running total so the caller can publish it.
+/// Returns the new running total so the caller can publish it. The
+/// downloader's previous single-FileHandle `OffsetWriter` was removed
+/// in favor of per-task FileHandles so chunk writes no longer
+/// serialize through a shared actor — `pwrite`-style independent
+/// seek-and-write on a pre-allocated file is safe on Darwin.
 private actor ProgressCounter {
     private var total: Int64 = 0
     func add(_ n: Int64) -> Int64 {
         total += n
         return total
+    }
+    func set(_ n: Int64) {
+        total = n
     }
 }

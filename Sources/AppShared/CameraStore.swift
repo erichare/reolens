@@ -371,6 +371,12 @@ public final class CameraStore {
         case .liveCamera(let id):
             guard cameras.contains(where: { $0.id == id }) else { return }
             selection = .device(id)
+        case .liveChannel(let id, let channelID):
+            // Hub-nested notification tap: surface the specific channel
+            // rather than the device-level grid. `pendingIntentNavigation`
+            // is set below so the platform shells route accordingly.
+            guard cameras.contains(where: { $0.id == id }) else { return }
+            selection = .channel(deviceID: id, channel: channelID)
         case .recording(let id, let channelID, let at):
             guard cameras.contains(where: { $0.id == id }) else { return }
             // Surface the user straight into the channel's Recordings

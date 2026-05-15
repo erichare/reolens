@@ -36,6 +36,42 @@ struct NotificationRoutingTests {
         #expect(abs(outAt.timeIntervalSince(at)) < 0.001)
     }
 
+    /// Hub-nested live taps emit `.liveChannel` so the UI can drill
+    /// past the hub's grid view straight into the channel that fired.
+    @Test("liveChannel target preserves device and channel through JSON")
+    func liveChannelRoundTrip() throws {
+        let id = UUID()
+        let original = AppIntentFocus.Target.liveChannel(deviceID: id, channelID: 3)
+        let encoded = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(AppIntentFocus.Target.self, from: encoded)
+        guard case .liveChannel(let outID, let outCh) = decoded else {
+            Issue.record("Decoded wrong case: \(decoded)")
+            return
+        }
+        #expect(outID == id)
+        #expect(outCh == 3)
+    }
+
+    /// Backward-compat: an old `.liveCamera` blob written by a pre-
+    /// channel-aware build must still decode after the upgrade.
+    @Test("legacy liveCamera blob still decodes")
+    func legacyLiveCameraDecodes() throws {
+        let id = UUID()
+        let encoded = try JSONEncoder().encode(AppIntentFocus.Target.liveCamera(deviceID: id))
+        let decoded = try JSONDecoder().decode(AppIntentFocus.Target.self, from: encoded)
+        #expect(decoded == .liveCamera(deviceID: id))
+    }
+
+    /// Distinct cases — `.liveCamera(id)` and `.liveChannel(id, 0)`
+    /// are not equal, since channel 0 of a hub is semantically
+    /// different from "the device as a whole".
+    @Test("liveCamera and liveChannel are distinct cases")
+    func liveCameraNotEqualToLiveChannel() {
+        let id = UUID()
+        #expect(AppIntentFocus.Target.liveCamera(deviceID: id)
+                != AppIntentFocus.Target.liveChannel(deviceID: id, channelID: 0))
+    }
+
     @Test("consumePending drains exactly once")
     func consumePendingDrainsOnce() async {
         // Run under an ephemeral suite name so we don't disturb the

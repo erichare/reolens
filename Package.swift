@@ -9,13 +9,24 @@ let package = Package(
         // releases. Users on macOS 14 / iOS 18 receive security-only
         // backports against the 0.4.x track per SECURITY.md.
         .macOS(.v26),
-        .iOS(.v26)
+        .iOS(.v26),
+        // 0.6.4 adds the AppWatch product (companion watchOS target).
+        // Setting the floor at watchOS 11 lets the watch app run on
+        // Series 6+ — the iOS/macOS floors are only consulted when
+        // those platforms are the build destination, so this doesn't
+        // affect the main app's deployment target.
+        .watchOS(.v11)
     ],
     products: [
         .library(name: "ReolinkAPI", targets: ["ReolinkAPI"]),
         .library(name: "ReolinkStreaming", targets: ["ReolinkStreaming"]),
         .library(name: "ReolinkBaichuan", targets: ["ReolinkBaichuan"]),
         .library(name: "AppShared", targets: ["AppShared"]),
+        // 0.6.4 — Minimal watchOS-facing surface used by the
+        // companion Watch App target in `ReolensiOS.xcodeproj`.
+        // Depends only on `ReolinkAPI` (pure HTTP+JSON) to avoid
+        // dragging UIKit/AppKit-leaning code into the watch build.
+        .library(name: "AppWatch", targets: ["AppWatch"]),
         .executable(name: "Reolens", targets: ["Reolens"])
     ],
     dependencies: [
@@ -74,6 +85,23 @@ let package = Package(
             // warning stops firing.
             dependencies: ["ReolinkAPI", "ReolinkStreaming", "ReolinkBaichuan"],
             path: "Sources/AppShared",
+            swiftSettings: [
+                .enableUpcomingFeature("ExistentialAny")
+            ]
+        ),
+        .target(
+            // 0.6.4 — Watch-app-facing library. Kept deliberately
+            // thin: a slim Codable mirror of `CameraEntry` so the
+            // watch can decode `cameras.json` from the App Group
+            // container without compiling all of AppShared (which
+            // pulls in SwiftUI views, AVFoundation playback, etc.).
+            // The watch target consumes this product from Xcode and
+            // adds its own minimal `@main` shell. See
+            // `Sources/AppWatch/README.md` for setup steps.
+            name: "AppWatch",
+            dependencies: ["ReolinkAPI"],
+            path: "Sources/AppWatch",
+            exclude: ["README.md"],
             swiftSettings: [
                 .enableUpcomingFeature("ExistentialAny")
             ]
