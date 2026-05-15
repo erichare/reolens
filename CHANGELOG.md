@@ -7,6 +7,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.2] — TBD
+
+A patch release that continues the 0.6.1 hardening tradition while
+landing one user-facing storyline. The headline: `ClipExporter` finally
+gets first-class export routes — Save to Photos, Files share-sheet,
+and macOS drag-out — so the existing file-side plumbing reaches the
+surfaces users actually expect. Alongside the storyline, the 0.6.0
+view carve-outs finally decompose under the 800-LOC repo guideline now
+that there's a snapshot-test safety net, the AppShared coverage and
+typed-throws migration ratchets each take another step, four queued
+accessibility items land, and a measurable time-to-first-frame
+improvement ships with the number in the CHANGELOG. A dark HomeKit
+prep flag positions 0.7.0 for full integration if MFi unblocks.
+
+### Added
+
+- **Clip export to Files / Photos** — `ClipExporter` unifies three
+  routes: Save to Photos (iOS / iPadOS), Files share-sheet (both
+  platforms), and macOS Finder drag-out. Replaces the placeholder
+  "save MP4" affordance in the Bookmarks sheet. Bulk multi-select
+  export defers to 0.7.0.
+- **Diagnostics bundle export** — single-tap export of the redacted
+  Diagnostics Center bundle to Files / share-sheet for support
+  threads. Builds on the 0.6.1 copy-to-clipboard format.
+- **macOS keyboard shortcuts (expanded)** — additional standard
+  shortcuts for the primary actions surfaced in the 0.6.1 Camera menu;
+  user-customizable shortcuts defer to 0.7.0.
+
+### Changed
+
+- **NL Search regex fallback broadened** — the deterministic
+  fallback path picks up additional synonyms surfaced by users
+  during the 0.6.1 cycle, narrowing the gap between AI-eligible
+  and non-AI-eligible devices.
+- **TTFF: cold-start improved by TBDms** — measured via the 0.6.1
+  `OSSignposter` instrument on `com.reolens.streaming` / `TTFF`.
+  See [docs/perf-baselines/README.md](docs/perf-baselines/README.md).
+- **Coverage baselines ratcheted** — AppShared TBD% → TBD%, ReolinkAPI
+  TBD% → TBD%, ReolinkStreaming TBD% → TBD%. Total test count TBD
+  (up from 354 in 0.6.1).
+- macOS `CFBundleVersion` 16 → 17, iOS 11 → 12.
+
+### Fixed
+
+- TBD — populate from the cycle's bug-fix work as it lands.
+
+### Accessibility
+
+- **Full Dynamic Type sweep on player chrome** — controls, time
+  labels, and overlay text honor the user's content-size category
+  end-to-end.
+- **Focus order on `RecordingsView`** — VoiceOver / Full Keyboard
+  Access traversal lands on the day picker → filter chips → list
+  in the order a sighted user reads them.
+- **VoiceOver labels on the scrubber** — the recording scrubber
+  thumb now announces position + duration; the rail announces total
+  duration.
+- **Contrast pass on macOS sidebar** — selection / hover / disabled
+  states meet WCAG AA against both system appearances.
+
+### Internal
+
+- **View decompositions complete** — `AllRecordingsView`,
+  `RecordingsView` (macOS), and `RecordingsView` (iOS) all decompose
+  under the 800-LOC repo guideline. Snapshot tests cover the carved-
+  up pieces — the safety net the 0.6.1 notes called out as the
+  blocker for landing the split.
+- **Typed-throws migration: top-30** — 30 additional `try?` sites
+  migrate to typed `throws AppError`. Storyline-touched sites get
+  full test coverage; the rest ride the opportunistic migration
+  pattern from 0.6.1.
+- **Reorganized-Settings flag removed** — `AppPreferences.useReorganized
+  Settings` and the legacy Settings layout are deleted. The new IA
+  has been default-on since 0.6.1 with no regressions reported.
+- **HomeKit prep flag** — `HomeKitBridge.fullIntegrationEnabled`
+  ships dark in 0.6.2; 0.7.0 flips it on if MFi certification lands.
+  No user-facing change in this release.
+- **CI: iOS build job and coverage gate promoted to required** —
+  both were informational in 0.6.1; a failure now blocks release.
+- New tests: `ClipExporterTests` (Photos / share-sheet / drag-out
+  paths), view-decomposition snapshot suite, accessibility-focus
+  ordering coverage.
+
 ## [0.6.1] — 2026-05-14
 
 A hardening release. No new storylines — every surface 0.6.0 shipped

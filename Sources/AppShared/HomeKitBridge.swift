@@ -76,6 +76,14 @@ public final class HomeKitBridge {
     /// it as an alert, then clears the value.
     public var lastError: String?
 
+    /// 0.6.2 — dark prep flag for the full HomeKit integration. Stays
+    /// `false` in 0.6.2 so the existing stubbed `registerAccessoryIfNeeded`
+    /// path keeps no-opping; 0.7.0 flips this to `true` if Apple MFi
+    /// certification lands and the entitlement merges in. Centralized
+    /// here so every gated code path can guard on a single constant
+    /// instead of scattering build-flag checks across the bridge.
+    public static let fullIntegrationEnabled: Bool = false
+
     public init() {
         availability = .frameworkUnavailable
         refreshAvailability()
@@ -140,7 +148,13 @@ public final class HomeKitBridge {
     ///    rich-notification stack picks them up.
     public func registerAccessoryIfNeeded(for entry: CameraEntry) async {
         guard case .ready = availability, entry.homeKitEnabled else { return }
-        log.info("HomeKit accessory registration is stubbed — MFi certification + the com.apple.developer.homekit entitlement are required to expose Reolink cameras through HMCameraProfile. See HomeKitBridge.swift comments for the full plan.")
+        guard Self.fullIntegrationEnabled else {
+            log.info("HomeKit accessory registration is stubbed — MFi certification + the com.apple.developer.homekit entitlement are required to expose Reolink cameras through HMCameraProfile. See HomeKitBridge.swift comments for the full plan.")
+            return
+        }
+        // 0.7.0 — real HMCameraProfile registration lands here when
+        // `fullIntegrationEnabled` flips. The behavior the stub above
+        // describes is what runs in the meantime.
     }
 
     // MARK: - Internals
