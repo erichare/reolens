@@ -199,16 +199,42 @@ public actor NotificationHistory {
     /// Lazy-read on first access. Keeps construction cheap (no disk IO
     /// in `init`) and lets the actor adopt the storeURL after init for
     /// tests.
+    ///
+    /// 0.6.2 — read / decode failures now route through
+    /// `AppErrorRecorder` (category `.persistence`) so a corrupted
+    /// notification log shows up in Diagnostics Center rather than
+    /// presenting as a mysteriously-empty history when the user is
+    /// trying to assemble a support thread.
     private func ensureLoaded() {
         guard !loaded else { return }
         loaded = true
-        guard let url = storeURL,
-              FileManager.default.fileExists(atPath: url.path),
-              let data = try? Data(contentsOf: url) else {
+        guard let url = storeURL, FileManager.default.fileExists(atPath: url.path) else {
             return
         }
-        guard let file = try? Self.decoder.decode(NotificationHistoryFile.self, from: data) else {
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            log.error("Failed to read notification history: \(error.localizedDescription, privacy: .public)")
+            Task {
+                await AppErrorRecorder.shared.record(
+                    .persistence(.read(path: url.lastPathComponent)),
+                    context: "notificationHistory.read"
+                )
+            }
+            return
+        }
+        let file: NotificationHistoryFile
+        do {
+            file = try Self.decoder.decode(NotificationHistoryFile.self, from: data)
+        } catch {
             log.warning("Failed to decode notification history; starting fresh")
+            Task {
+                await AppErrorRecorder.shared.record(
+                    .persistence(.decode(reason: String(describing: error))),
+                    context: "notificationHistory.decode"
+                )
+            }
             return
         }
         guard file.version == NotificationHistoryFile.currentVersion else {

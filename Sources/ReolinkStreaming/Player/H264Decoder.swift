@@ -31,6 +31,8 @@ public final class H264SampleBufferAssembler: @unchecked Sendable {
         self.pps = initialPPS
         self.clockRate = clockRate
         if let sps = initialSPS, let pps = initialPPS {
+            // safe: format-descriptor bring-up; failure here means the
+            // next IDR will retry — we don't emit frames until success.
             self.formatDescription = try? Self.makeFormatDescription(sps: sps, pps: pps)
         }
     }
@@ -91,6 +93,7 @@ public final class H264SampleBufferAssembler: @unchecked Sendable {
 
     private func tryRebuildFormat() {
         guard let sps, let pps else { return }
+        // safe: rebuild retry — failure → next IDR triggers another attempt.
         formatDescription = try? Self.makeFormatDescription(sps: sps, pps: pps)
     }
 

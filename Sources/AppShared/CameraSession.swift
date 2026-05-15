@@ -244,6 +244,7 @@ public final class CameraSession {
                 let effective = max(0, min(backoff, remaining))
                 if effective <= 0 { break }
                 connectionStage = .retrying(after: effective, reason: error.localizedDescription)
+                // safe: cancellation throw is the intended exit path.
                 try? await Task.sleep(for: .seconds(effective))
             }
         }
@@ -377,6 +378,7 @@ public final class CameraSession {
                 // session has since been disconnected.
                 await client.close()
                 if self.status != .connected || Task.isCancelled { break }
+                // safe: cancellation throw is the intended exit path.
                 try? await Task.sleep(for: .seconds(Double(backoffSeconds)))
                 backoffSeconds = min(maxBackoffSeconds, backoffSeconds * 2)
             }
@@ -538,10 +540,15 @@ public final class CameraSession {
 
     private func pollOnce() async {
         for ch in liveChannels where ch.isOnline && !Task.isCancelled {
+            // safe: best-effort capability probe. Failure → keep the
+            // last-known state for this channel; the next poll retries
+            // and a persistent failure is already surfaced by the
+            // session's connection-stage machinery.
             if let md = try? await client.send(Commands.getMdState(channel: ch.channel), as: MotionStateValue.self) {
                 motionState[ch.channel] = md.isTriggered
             }
             guard !Task.isCancelled else { return }
+            // safe: same as above for AI state.
             if let ai = try? await client.send(Commands.getAiState(channel: ch.channel), as: AIStateValue.self) {
                 aiTriggered[ch.channel] = ai.anyTriggered
             }

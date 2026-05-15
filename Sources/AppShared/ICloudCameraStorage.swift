@@ -47,15 +47,44 @@ package final class ICloudCameraStorage {
     /// exist (first-ever launch) or if the read errored. The coordinator
     /// blocks while another device is mid-write, so we get a consistent
     /// snapshot rather than a partial file.
+    ///
+    /// 0.6.2 — read failures on a file that exists (the second-device
+    /// "iCloud download corrupt" case) now surface in Diagnostics
+    /// Center via `AppErrorRecorder`. The first-launch nil case
+    /// stays silent — that's the empty-by-design state, not an error.
     package func read() -> Data? {
         let coordinator = NSFileCoordinator(filePresenter: nil)
         var coordError: NSError?
         var data: Data?
+        var readError: (any Error)?
         coordinator.coordinate(readingItemAt: currentURL, options: [], error: &coordError) { url in
-            data = try? Data(contentsOf: url)
+            do {
+                data = try Data(contentsOf: url)
+            } catch CocoaError.fileReadNoSuchFile {
+                // First-launch path; not an error worth recording.
+            } catch {
+                readError = error
+            }
         }
         if let coordError {
             log.error("Read coord error: \(coordError.localizedDescription, privacy: .public)")
+            let path = currentURL.lastPathComponent
+            Task {
+                await AppErrorRecorder.shared.record(
+                    .persistence(.read(path: path)),
+                    context: "iCloudStorage.coordinator"
+                )
+            }
+        }
+        if let readError {
+            log.error("Read failed: \(readError.localizedDescription, privacy: .public)")
+            let path = currentURL.lastPathComponent
+            Task {
+                await AppErrorRecorder.shared.record(
+                    .persistence(.read(path: path)),
+                    context: "iCloudStorage.read"
+                )
+            }
         }
         return data
     }
@@ -120,8 +149,10 @@ package final class ICloudCameraStorage {
     /// it, in case the user disables iCloud later.
     package func migrateLegacyLocalIfNeeded() {
         guard isUsingICloud else { return }
+        // safe: reachability probe — already-migrated is the common case.
         if (try? currentURL.checkResourceIsReachable()) == true { return }
         let legacy = Self.localFallbackURL()
+        // safe: missing legacy is the common case (fresh install).
         guard let data = try? Data(contentsOf: legacy) else { return }
         write(data)
         log.info("Migrated legacy cameras.json into iCloud Documents")
@@ -129,6 +160,9 @@ package final class ICloudCameraStorage {
 
     private static func localFallbackURL() -> URL {
         let fm = FileManager.default
+        // safe: fallback URL builder; Application Support is always
+        // available on supported platforms — the `??` below covers the
+        // unreachable sandboxed-test case.
         let appSupport = try? fm.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
@@ -137,6 +171,7 @@ package final class ICloudCameraStorage {
         )
         let dir = appSupport?.appendingPathComponent("Reolens", isDirectory: true)
             ?? URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("Reolens", isDirectory: true)
+        // safe: idempotent makeDir; existing-dir is the common case.
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent(fileName)
     }

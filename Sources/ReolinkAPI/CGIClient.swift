@@ -279,6 +279,8 @@ public actor CGIClient {
             return try decoder.decode([CGIResponse<T>].self, from: data)
         } catch {
             // Some firmware return a single object instead of an array when only one command was sent.
+            // safe: probe — if neither shape matches we throw the
+            // original decoding error below for the precise reason.
             if let single = try? decoder.decode(CGIResponse<T>.self, from: data) {
                 return [single]
             }

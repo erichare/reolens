@@ -114,14 +114,78 @@ Each new version, walk this list. It takes about 10 minutes.
   ```
 - [ ] **Commit the bumps** as a single `chore(release): vX.Y.Z` commit
 
+### 0.6.2-specific verification
+
+Walk these on macOS and on iPhone + iPad simulators (iOS 26) before
+tagging. The 0.6.2 storyline is `ClipExporter`, so the export routes
+get the lion's share of the manual coverage.
+
+- [ ] **Clip export to Photos (iOS / iPadOS)** — bookmark or open a
+  recording, choose Export → Save to Photos. Confirm the clip lands
+  in the Photos library with the expected duration and that the
+  first Photos-permission prompt is the system one (not a Reolens
+  custom modal).
+- [ ] **Clip export to Files / share-sheet (both platforms)** — same
+  source clip, Export → share-sheet. Save to iCloud Drive / a local
+  folder; confirm the file opens in QuickTime / Files with the
+  expected duration.
+- [ ] **macOS Finder drag-out** — drag a bookmark row out of the
+  Bookmarks sheet onto the Finder; the dropped file opens cleanly.
+- [ ] **Diagnostics bundle export** — Settings → Advanced →
+  Diagnostics → Export. The redacted bundle reaches Files /
+  share-sheet with the same header + ISO8601 + category + detail
+  shape the 0.6.1 copy-to-clipboard path produced.
+- [ ] **NL Search regex fallback** — on a non-AI-eligible device (or
+  with Apple Intelligence disabled), type the newly-supported
+  synonym phrases; results should match. Run on an AI-eligible
+  device too to confirm the FoundationModels path still wins.
+- [ ] **macOS keyboard shortcuts (expanded)** — verify the
+  newly-added shortcuts fire from the Camera / View menus. The
+  existing ⌘R and ⌘1–⌘9 from 0.6.1 still work.
+- [ ] **TTFF instrument still wired** — open Instruments with the
+  os_signpost instrument on `com.reolens.streaming` / `TTFF`, do a
+  cold-start live view, confirm the interval fires. The actual
+  measured-improvement target deferred from 0.6.2 to 0.6.3 — see
+  docs/ROADMAP.md. This step only verifies the 0.6.1-shipped
+  instrument hasn't regressed.
+- [ ] **Accessibility — Dynamic Type on player chrome** — bump
+  content size to AX5 in Settings → Accessibility. Open a live view
+  and a recording; chrome adapts without clipping.
+- [ ] **Accessibility — focus order on `RecordingsView`** — with
+  VoiceOver on iOS and Full Keyboard Access on macOS, tab through
+  the screen. Order: day picker → filter chips → list.
+- [ ] **Accessibility — scrubber VoiceOver** — focus the recording
+  scrubber thumb; it announces position + duration. The rail
+  announces total duration.
+- [ ] **Accessibility — macOS sidebar contrast** — toggle between
+  light / dark / increase-contrast modes. Selection, hover, and
+  disabled states stay legible.
+- [ ] **Decomposed views render unchanged** — open
+  `AllRecordingsView`, macOS `RecordingsView`, iOS `RecordingsView`
+  and confirm no visual regressions vs. the 0.6.1 build. Snapshot
+  suite is the primary guard; this is the visual spot-check.
+- [ ] **Reorganized-Settings flag removed** — confirm the legacy
+  Settings layout is gone and there's no longer a way to flip back
+  to it via `defaults write com.reolens.useReorganizedSettings false`.
+- [ ] **HomeKit prep flag dark** — confirm
+  `HomeKitBridge.fullIntegrationEnabled` is `false` in the shipped
+  binary; the existing scaffolded surface in
+  Settings → Privacy & Sync → HomeKit (iOS) still shows the MFi
+  explainer rather than attempting registration.
+- [ ] **CI gates** — confirm the coverage regression gate is a
+  required check on `main` in repo Settings → Branches (enforced
+  since 0.6.0). The iOS build job stays informational this cycle
+  pending the runner-image fix tracked in docs/ROADMAP.md.
+
 ### 0.6.1-specific verification
 
 Run the full journey checklist at
 [docs/audit-0.6.1-journey.md](audit-0.6.1-journey.md) on macOS and on
 iPhone + iPad simulators (iOS 26). Highlights to spot-check:
 
-- [ ] **Settings redesign** — 7 buckets across both platforms; legacy
-  layout still flips on via `AppPreferences.useReorganizedSettings`.
+- [ ] **Settings redesign** — 7 buckets across both platforms. The
+  0.6.1 emergency-revert flag (`useReorganizedSettings`) was deleted
+  in 0.6.2 along with the legacy layout; there's only the new IA now.
 - [ ] **Diagnostics Center** — Settings → Advanced → opens; clear
   button works; copy-to-clipboard emits the redacted bundle format
   (header line + ISO8601 timestamp + category + detail).

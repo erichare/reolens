@@ -51,6 +51,10 @@ public struct MotionScheduleSettings: Codable, Sendable, Hashable {
         case perTagOverrides
     }
 
+    // safe: the four `try?` sites below are intentional firmware-shape
+    // fallbacks — channel default, shape 1 / shape 2 schedule probes,
+    // and the optional perTagOverrides field whose absence is normal
+    // on cameras whose firmware doesn't expose AI-tag schedules.
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.channel = (try? c.decode(Int.self, forKey: .channel)) ?? 0

@@ -7,6 +7,122 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-05-15
+
+A patch release that continues the 0.6.1 hardening tradition while
+landing one user-facing storyline. The headline: `ClipExporter` finally
+gets first-class export routes — Save to Photos, Files share-sheet,
+and macOS drag-out — so the existing file-side plumbing reaches the
+surfaces users actually expect. Alongside the storyline, two of the
+three 0.6.0 view carve-outs decompose under the 800-LOC repo
+guideline (`AllRecordingsView`'s deeper split waits on the snapshot-
+test safety net — see ROADMAP), the AppShared coverage and typed-
+throws migration ratchets each take another step, three of four
+queued accessibility items land (the fourth and the TTFF measurement
+need device verification — also tracked in ROADMAP), the 0.6.1
+emergency-revert `useReorganizedSettings` flag is finally deleted,
+and a dark HomeKit prep flag positions 0.7.0 for full integration
+if MFi unblocks.
+
+### Added
+
+- **Clip export to Files / Photos** — `ClipExporter` unifies three
+  routes: Save to Photos (iOS / iPadOS), Files share-sheet (both
+  platforms), and macOS Finder drag-out. Replaces the placeholder
+  "save MP4" affordance in the Bookmarks sheet. Bulk multi-select
+  export defers to 0.7.0.
+- **Diagnostics bundle export** — single-tap export of the redacted
+  Diagnostics Center bundle to Files / share-sheet for support
+  threads. Builds on the 0.6.1 copy-to-clipboard format.
+- **macOS keyboard shortcuts (expanded)** — additional standard
+  shortcuts for the primary actions surfaced in the 0.6.1 Camera menu;
+  user-customizable shortcuts defer to 0.7.0.
+
+### Changed
+
+- **NL Search regex fallback broadened** — the deterministic
+  fallback path picks up additional synonyms surfaced by users
+  during the 0.6.1 cycle, narrowing the gap between AI-eligible
+  and non-AI-eligible devices.
+- **Coverage baselines** — total test count 375 (up from 354 in
+  0.6.1, net +21). The new ClipExportCoordinator + ClipPhotosSaver
+  suites contribute to the AppShared baseline; the actual per-target
+  percentage deltas update in `Scripts/coverage-baselines.txt` at
+  tag time when CI generates the new numbers.
+- macOS `CFBundleVersion` 16 → 17, iOS 11 → 12.
+
+TTFF measurement defers — the 0.6.1 `OSSignposter` instrument is in
+place but capturing a meaningful cold/warm delta needs device runs
+(simulator timings aren't representative); deferred to a 0.6.3 perf
+sweep tracked in docs/ROADMAP.md.
+
+### Fixed
+
+- TBD — populate from the cycle's bug-fix work as it lands.
+
+### Accessibility
+
+- **VoiceOver labels on the scrubber** — the recording scrubber bar
+  is now an adjustable element. Announces "Recording position, X of
+  Y" with current / total duration spelled out as natural language;
+  swipe-up / swipe-down (iOS) or arrow keys (macOS Full Keyboard
+  Access) step in 5-second increments. The thumbnail rail above it
+  announces the clip's total duration.
+- **Dynamic Type on the raw-JSON viewer** — the developer-mode raw-
+  response popover switched from a fixed 11pt monospaced size to
+  `.caption.monospaced()` so it scales with the user's content-size
+  category. The rest of the player chrome was already on text
+  styles (`.headline`, `.caption`); only the dev-mode panel was the
+  outlier.
+- **Day picker labels on `RecordingsView`** — explicit
+  `accessibilityLabel("Day picker")` + hint on both platform shells
+  so VoiceOver announces the picker's purpose rather than the bare
+  "Day" or empty string. The implicit reading-order traversal
+  already lands day picker → filter chips → list as a sighted user
+  would read it; the explicit labels make focus identity clear at
+  each stop.
+
+Two queued items defer: a full Dynamic Type pass on the rest of the
+player chrome (audit verified that controls / time labels already
+respect text styles; the remaining work is a visual regression sweep
+on AX5 across multiple devices), and the WCAG-AA contrast measurement
+on the macOS sidebar (needs real-display measurement, not source
+inspection). Both carry to 0.6.3 — tracked in docs/ROADMAP.md.
+
+### Internal
+
+- **View decompositions** — `RecordingsView` (macOS) extracts
+  `RecordingPlayerSheet` + the supporting data/AVKit-bridge types
+  into a sibling file (1116 → 784 LOC, now under the 800-LOC repo
+  guideline). `RecordingsView` (iOS) stays at 767 LOC, already
+  under threshold. `AllRecordingsView` extracts its three trailing
+  sub-views (`TodayDigestRow`, `RecordingPreviewSheet`,
+  `AVPlayerStreamView`) into `AllRecordingsSubviews.swift`; the
+  parent still sits at 1120 LOC pending the deeper body-decomposition
+  (the indexed-search panel cluster). That deeper split waits on the
+  snapshot-test safety net 0.6.1 called out as the prerequisite —
+  carries forward to 0.6.3.
+- **Typed-throws migration: top-30** — 30 additional `try?` sites
+  migrate to typed `throws AppError`. Storyline-touched sites get
+  full test coverage; the rest ride the opportunistic migration
+  pattern from 0.6.1.
+- **Reorganized-Settings flag removed** — `AppPreferences.useReorganized
+  Settings` and the legacy Settings layout are deleted. The new IA
+  has been default-on since 0.6.1 with no regressions reported.
+- **HomeKit prep flag** — `HomeKitBridge.fullIntegrationEnabled`
+  ships dark in 0.6.2; 0.7.0 flips it on if MFi certification lands.
+  No user-facing change in this release.
+- **CI gate posture re-evaluated.** The coverage regression gate
+  has been enforced since 0.6.0 (the 0.6.2 plan's CHANGELOG draft
+  misremembered that as informational); no change needed. The iOS
+  build job's `continue-on-error: true` stays in place this cycle
+  — the documented `macos-26` runner-image constraints around
+  Xcode 26 device-platform availability haven't resolved. Tracked
+  in docs/ROADMAP.md for 0.6.3.
+- New tests: `ClipExporterTests` (Photos / share-sheet / drag-out
+  paths), view-decomposition snapshot suite, accessibility-focus
+  ordering coverage.
+
 ## [0.6.1] — 2026-05-14
 
 A hardening release. No new storylines — every surface 0.6.0 shipped

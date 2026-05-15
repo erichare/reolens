@@ -99,6 +99,13 @@ public struct ScrubberView: View {
         }
         .frame(height: 48)
         .clipShape(.rect(cornerRadius: 6))
+        // 0.6.2 a11y — VoiceOver announces total duration so users
+        // know how long a clip runs without sighted scanning. The
+        // rail itself isn't interactive; the scrubberBar carries
+        // the adjustable trait below.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Thumbnail preview rail")
+        .accessibilityValue("Total duration \(accessibleTimeLabel(durationSeconds))")
     }
 
     private func thumbnailTile(at index: Int, width: CGFloat) -> some View {
@@ -138,6 +145,50 @@ public struct ScrubberView: View {
             .gesture(scrubGesture(width: proxy.size.width))
         }
         .frame(height: 14)
+        // 0.6.2 a11y — the scrubber thumb is the primary interaction.
+        // VoiceOver announces current position + total duration; the
+        // adjustable trait lets the user step via single-finger
+        // swipe-up / swipe-down (iOS) or arrow keys (macOS Full
+        // Keyboard Access) in 5-second increments.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Recording position")
+        .accessibilityValue("\(accessibleTimeLabel(currentSeconds)) of \(accessibleTimeLabel(durationSeconds))")
+        .accessibilityAddTraits(.isAdjustable)
+        .accessibilityAdjustableAction { direction in
+            guard durationSeconds > 0 else { return }
+            let step: TimeInterval = 5
+            let target: TimeInterval
+            switch direction {
+            case .increment:
+                target = min(durationSeconds, currentSeconds + step)
+            case .decrement:
+                target = max(0, currentSeconds - step)
+            @unknown default:
+                return
+            }
+            player.seek(
+                to: CMTime(seconds: target, preferredTimescale: 600),
+                toleranceBefore: .zero,
+                toleranceAfter: .zero
+            )
+            currentSeconds = target
+        }
+    }
+
+    /// VoiceOver-friendly time string. `formatTime` produces "1:23"
+    /// (concise visual); this expands to "1 minute 23 seconds" so
+    /// screen readers announce the position naturally.
+    private func accessibleTimeLabel(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds.rounded())
+        let m = total / 60
+        let s = total % 60
+        if m == 0 {
+            return "\(s) seconds"
+        }
+        if s == 0 {
+            return "\(m) minute\(m == 1 ? "" : "s")"
+        }
+        return "\(m) minute\(m == 1 ? "" : "s") \(s) seconds"
     }
 
     private func scrubGesture(width: CGFloat) -> some Gesture {

@@ -51,6 +51,9 @@ public enum VersionedDecoder {
         decoder: JSONDecoder = VersionedDecoder.iso8601
     ) -> Int? {
         struct Peek: Decodable { let version: Int? }
+        // safe: peek is the API contract — pre-versioning archives
+        // legitimately decode as nil and the caller treats that as the
+        // baseline schema version.
         let peek = try? decoder.decode(Peek.self, from: data)
         return peek?.version
     }

@@ -313,6 +313,11 @@ jobs:
         run: xcodegen generate
 
       # 0.5.0 — the iOS-build job is INFORMATIONAL on CI.
+      # 0.6.2 — re-evaluated, still informational. The runner-image
+      # constraints below haven't resolved on GitHub's macos-26
+      # image yet. Promoting this step to required (the original
+      # 0.6.2 plan) is deferred to 0.6.3; docs/ROADMAP.md tracks the
+      # dependency.
       #
       # macos-26 image quirks pile up:
       #   * Stable Xcode 26.3 lacks the iOS 26.5 device-platform

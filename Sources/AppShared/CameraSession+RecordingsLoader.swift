@@ -132,6 +132,8 @@ extension CameraSession: RecordingsDataSource {
         let cmd = Commands.getEvents(channel: channel, start: start, end: end)
         do {
             let raw = try await client.sendCapturingRaw(cmd)
+            // safe: legacy firmware can echo non-events envelopes here;
+            // fall back to empty list rather than failing the whole load.
             let envelopes = (try? JSONDecoder().decode([CGIResponse<HubEventEnvelope>].self, from: raw)) ?? []
             if let firstError = envelopes.first?.error,
                firstError.rspCode == CGIErrorCode.notSupport.rawValue {
@@ -147,7 +149,10 @@ extension CameraSession: RecordingsDataSource {
     // MARK: - Diagnostic helpers (moved from view)
 
     private static func prettyPrint(_ data: Data) -> String? {
+        // safe: log-only prettification; unparseable input → nil and
+        // the caller falls back to the raw bytes.
         guard let obj = try? JSONSerialization.jsonObject(with: data, options: .allowFragments) else { return nil }
+        // safe: same — re-serialization failure leaves the log raw.
         guard let pretty = try? JSONSerialization.data(
             withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]
         ) else { return nil }

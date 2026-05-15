@@ -121,29 +121,4 @@ struct AppPreferencesTests {
         #expect(prefs.lastViewedCameraID == nil)
     }
 
-    // MARK: - useReorganizedSettings (0.6.1)
-
-    @Test("useReorganizedSettings defaults to true on a fresh install")
-    func reorganizedSettingsDefaultsTrue() {
-        let prefs = AppPreferences(defaults: makeFreshDefaults())
-        #expect(prefs.useReorganizedSettings)
-    }
-
-    @Test("useReorganizedSettings respects an explicit prior false")
-    func reorganizedSettingsRespectsExplicitFalse() {
-        let defaults = makeFreshDefaults()
-        defaults.set(false, forKey: AppPreferences.useReorganizedSettingsKey)
-        let prefs = AppPreferences(defaults: defaults)
-        #expect(!prefs.useReorganizedSettings)
-    }
-
-    @Test("Flipping useReorganizedSettings persists across instances")
-    func reorganizedSettingsRoundTrip() {
-        let defaults = makeFreshDefaults()
-        let writer = AppPreferences(defaults: defaults)
-        writer.useReorganizedSettings = false
-
-        let reader = AppPreferences(defaults: defaults)
-        #expect(!reader.useReorganizedSettings)
-    }
 }

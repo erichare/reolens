@@ -1,5 +1,6 @@
 import SwiftUI
 import ReolinkAPI
+import UniformTypeIdentifiers
 
 /// 0.5.0 Theme C1 — bookmark list + delete + export. Presented from
 /// `RecordingsView`, `ChannelDetailContent`, and `SingleChannelView`;
@@ -23,15 +24,36 @@ public struct BookmarksSheet: View {
     @Binding public var bookmarks: [RecordingBookmark]
     public let onPlay: (RecordingBookmark) -> Void
     /// 0.5.0 Theme C1 — export-trimmed-MP4 callback. Routed to
-    /// `RecordingsView.exportBookmark(_:)` which knows about the
-    /// matching `SearchFile` and the camera's CGI client. Optional so
-    /// the sheet can render in contexts (iOS, previews, tests)
+    /// `RecordingsView.exportBookmark(_:to:)` which knows about the
+    /// matching `SearchFile` and the camera's CGI client.
+    ///
+    /// 0.6.2 — the callback now carries a `ClipExportDestination` so
+    /// the same Export Menu surfaces Save to Photos / Share / drag-out
+    /// / Save As… without each platform inventing its own routing.
+    /// Optional so the sheet can render in contexts (previews, tests)
     /// without an export pipeline.
-    public let onExport: ((RecordingBookmark) -> Void)?
+    public let onExport: ((RecordingBookmark, ClipExportDestination) -> Void)?
+    /// 0.6.2 — share-sheet route. The parent builds a
+    /// `BookmarkClipTransferable` (or returns nil if the bookmark
+    /// can't be shared yet — usually because the local clip is still
+    /// downloading or the source recording isn't loaded). The sheet
+    /// renders a `ShareLink` for non-nil results.
+    ///
+    /// Separate closure from `onExport` because `ShareLink` consumes
+    /// a `Transferable` directly — the system drives the staging via
+    /// the Transferable's `FileRepresentation` rather than the parent
+    /// having to react to a destination tap. Cleaner UX (no extra tap
+    /// to confirm; the system's own "Preparing…" UI runs).
+    public let transferable: ((RecordingBookmark) -> BookmarkClipTransferable?)?
+    /// 0.6.2 — status banner shown below the bookmark list. The parent
+    /// view's `onExport` closure is the producer ("Preparing…",
+    /// "Saved to Photos", "Permission denied", …); the sheet just
+    /// renders. Binding rather than internal `@State` because the
+    /// work happens outside the sheet's body and the consumer (the
+    /// parent's destination router) needs to set it.
+    @Binding public var exportStatus: String?
 
     @Environment(\.dismiss) private var dismiss
-    @State private var exporting = false
-    @State private var exportStatus: String?
     /// 0.6.0 — confirmation prompt before an explicit Delete-button
     /// tap removes a bookmark. Swipe-to-delete on iOS still works
     /// without a prompt (the swipe gesture itself is the
@@ -46,7 +68,9 @@ public struct BookmarksSheet: View {
         channel: Int? = nil,
         bookmarks: Binding<[RecordingBookmark]>,
         onPlay: @escaping (RecordingBookmark) -> Void,
-        onExport: ((RecordingBookmark) -> Void)? = nil
+        onExport: ((RecordingBookmark, ClipExportDestination) -> Void)? = nil,
+        transferable: ((RecordingBookmark) -> BookmarkClipTransferable?)? = nil,
+        exportStatus: Binding<String?> = .constant(nil)
     ) {
         self.cameraID = cameraID
         self.cameraName = cameraName
@@ -54,6 +78,8 @@ public struct BookmarksSheet: View {
         self._bookmarks = bookmarks
         self.onPlay = onPlay
         self.onExport = onExport
+        self.transferable = transferable
+        self._exportStatus = exportStatus
     }
 
     /// 0.5.1 — Honor the optional `channel` filter and the user's
@@ -181,15 +207,8 @@ public struct BookmarksSheet: View {
                 }
             }
             Spacer()
-            if let onExport {
-                Button {
-                    onExport(bookmark)
-                } label: {
-                    Label("Export…", systemImage: "square.and.arrow.up")
-                        .labelStyle(.iconOnly)
-                }
-                .buttonStyle(.plain)
-                .help("Export this bookmarked clip to a MP4 file.")
+            if onExport != nil || transferable != nil {
+                exportMenu(for: bookmark)
             }
             Button {
                 onPlay(bookmark)
@@ -213,6 +232,84 @@ public struct BookmarksSheet: View {
             .help("Remove this bookmark and its downloaded clip from this device.")
         }
         .padding(.vertical, 4)
+        #if os(macOS)
+        // 0.6.2 — Finder drag-out. The provider's file representation
+        // runs `ClipExportCoordinator.stage` lazily, so the user just
+        // grabs the row and drops it on Finder / Mail / Messages and
+        // the system handles the trim + composition while showing its
+        // own "Preparing…" indicator over the drag image.
+        .onDrag {
+            guard let transferable, let item = transferable(bookmark) else {
+                return NSItemProvider()
+            }
+            let provider = NSItemProvider()
+            provider.suggestedName = item.suggestedFilename + ".mp4"
+            provider.registerFileRepresentation(
+                forTypeIdentifier: UTType.mpeg4Movie.identifier,
+                fileOptions: [],
+                visibility: .all
+            ) { completion in
+                Task {
+                    do {
+                        let staged = try await ClipExportCoordinator.stage(item.request)
+                        completion(staged.stagedURL, false, nil)
+                    } catch {
+                        completion(nil, false, error)
+                    }
+                }
+                // We don't surface granular progress — the system shows
+                // its own indeterminate spinner while awaiting the
+                // completion handler, which is the standard pattern.
+                return nil
+            }
+            return provider
+        }
+        #endif
+    }
+
+    /// 0.6.2 — the per-row Export menu. Hosts the platform-appropriate
+    /// destinations: iOS / iPadOS gets Save to Photos; macOS keeps the
+    /// Save As… NSSavePanel route. Both platforms get Share… when the
+    /// parent supplies a `transferable` closure that returns non-nil
+    /// (typically gated on the bookmark having a fully-downloaded
+    /// local clip). The macOS Finder drag-out destination lands in a
+    /// subsequent 0.6.2 slice.
+    @ViewBuilder
+    private func exportMenu(for bookmark: RecordingBookmark) -> some View {
+        Menu {
+            if let onExport {
+                #if os(iOS) || os(visionOS)
+                Button {
+                    onExport(bookmark, .photos)
+                } label: {
+                    Label("Save to Photos", systemImage: "photo.on.rectangle.angled")
+                }
+                #else
+                Button {
+                    onExport(bookmark, .savePanel)
+                } label: {
+                    Label("Save as MP4…", systemImage: "arrow.down.doc")
+                }
+                #endif
+            }
+            if let transferable, let item = transferable(bookmark) {
+                ShareLink(item: item, preview: SharePreview(item.suggestedFilename)) {
+                    Label("Share…", systemImage: "square.and.arrow.up.on.square")
+                }
+            }
+        } label: {
+            Label("Export…", systemImage: "square.and.arrow.up")
+                .labelStyle(.iconOnly)
+        }
+        #if os(macOS)
+        // Strip the default macOS Menu chrome (chevron + button bezel)
+        // so the Export affordance aligns visually with the sibling
+        // Play / Delete icon-only buttons in the row.
+        .menuStyle(.borderlessButton)
+        #endif
+        .buttonStyle(.plain)
+        .help("Export this bookmarked clip.")
+        .accessibilityLabel("Export bookmarked clip")
     }
 
     private func durationLabel(for bookmark: RecordingBookmark) -> String {
