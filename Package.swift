@@ -20,6 +20,10 @@ let package = Package(
         // sit on top in later phases. See
         // `docs/remote-connectivity.md`.
         .library(name: "ReolinkBcUdp", targets: ["ReolinkBcUdp"]),
+        // 0.7.0 Phase 2 — discovery client + transport surface
+        // for the Reolink P2P service. Depends on ReolinkBcUdp
+        // for the wire codec.
+        .library(name: "ReolinkP2P", targets: ["ReolinkP2P"]),
         .library(name: "AppShared", targets: ["AppShared"]),
         .executable(name: "Reolens", targets: ["Reolens"])
     ],
@@ -75,6 +79,23 @@ let package = Package(
             // See `docs/remote-connectivity.md`.
             name: "ReolinkBcUdp",
             path: "Sources/ReolinkBcUdp",
+            swiftSettings: [
+                .enableUpcomingFeature("ExistentialAny")
+            ]
+        ),
+        .target(
+            // 0.7.0 Phase 2 (remote connectivity) — discovery
+            // client + BcUdp transport protocol. Depends on the
+            // pure-codec ReolinkBcUdp module for the wire shapes;
+            // adds the actor + state machine that looks a camera
+            // up by UID via the `p2p*.reolink.com` cluster.
+            // Concrete NWConnection-backed transport lands in a
+            // follow-up; this phase ships the actor with a stub-
+            // able transport surface so the fallback / retry
+            // logic is fully testable today.
+            name: "ReolinkP2P",
+            dependencies: ["ReolinkBcUdp"],
+            path: "Sources/ReolinkP2P",
             swiftSettings: [
                 .enableUpcomingFeature("ExistentialAny")
             ]
@@ -143,6 +164,14 @@ let package = Package(
             name: "ReolinkBcUdpTests",
             dependencies: ["ReolinkBcUdp"],
             path: "Tests/ReolinkBcUdpTests"
+        ),
+        .testTarget(
+            // 0.7.0 Phase 2 — discovery client fallback /
+            // redirect / timeout behavior, driven by a stub
+            // transport so the suite runs offline.
+            name: "ReolinkP2PTests",
+            dependencies: ["ReolinkP2P", "ReolinkBcUdp"],
+            path: "Tests/ReolinkP2PTests"
         ),
         // End-to-end integration test target. Drives the full
         // ReolinkAPI client through a mocked Reolink device using
