@@ -32,19 +32,27 @@ Status keys:
   explainer in the UI.
 - **What 0.6.1 adds:** clearer MFi explainer copy in the HomeKit
   Settings section.
+- **What 0.6.2 adds:** dark `HomeKitBridge.fullIntegrationEnabled`
+  prep flag. Centralizes the gate so 0.7.0 can light up the real
+  `HMCameraProfile` registration from one place if MFi resolves.
+- **0.7.0 plan:** if the cert lands, flip the prep flag and implement
+  the real `HMCameraProfile` registration + RTSP-to-HKSV piping +
+  Baichuan-tag-to-HMCharacteristicEvent translation. If MFi doesn't
+  resolve, the flag stays dark and the integration defers further.
 
-## Live Activity push relay server
+## Live Activity push relay (peer-device)
 
-- **Status:** Scaffolded (0.5.1 token persistence; 0.6.0 unchanged).
-- **Blocker:** No server-side sender yet. The current local
-  Baichuan-event-driven path is the only updater — push wiring is
-  purely additive.
-- **Code:** [Sources/AppShared/LiveActivityPushTokenRegistry.swift](../Sources/AppShared/LiveActivityPushTokenRegistry.swift),
-  `live-activity-tokens_v1.json` in iCloud Drive.
-- **Considering:** a peer-Apple-device relay (one Mac acts as sender
-  for other devices on the same iCloud account, similar to the
-  existing motion-event relay) before standing up dedicated server
-  infrastructure.
+- **Status:** Planned (0.7.0).
+- **Blocker:** No sender yet. The current local Baichuan-event-driven
+  path is the only updater — push wiring is purely additive. Reolens
+  has no servers and isn't standing any up, so the relay rides peer
+  Apple devices on the same iCloud account.
+- **Approach:** a peer-Apple-device relay (one Mac acts as sender for
+  other devices on the same iCloud account, similar to the existing
+  motion-event relay). Token persistence already lives in
+  [Sources/AppShared/LiveActivityPushTokenRegistry.swift](../Sources/AppShared/LiveActivityPushTokenRegistry.swift)
+  / `live-activity-tokens_v1.json`; 0.7.0 wires the sender.
+- **Code:** [Sources/AppShared/LiveActivityPushTokenRegistry.swift](../Sources/AppShared/LiveActivityPushTokenRegistry.swift).
 
 ## Coverage ratchet toward 80%
 
@@ -54,53 +62,45 @@ Status keys:
 - **0.6.0 baseline:** AppShared 13.81%, ReolinkAPI 56.47%,
   ReolinkStreaming 23.70%, ReolinkBaichuan 32.70%. ~340 tests across
   68 suites.
-- **0.6.1 target:** raise AppShared baseline by ≥10pp by targeting
-  `EventNotifier`, `RecordingsLoader`, `RecordingIndex`, `PollManager`,
-  `BookmarkAutoDownloader`, and the new `AppErrorRecorder`.
+- **0.6.1 actuals:** AppShared 13.81% → 14.31%, ReolinkAPI 56.47% →
+  58.82%, ReolinkStreaming 23.70% → 23.82%. 354 tests.
+- **0.6.2 target:** ratchet AppShared via the new `ClipExporter`
+  export surfaces (Photos / share-sheet / drag-out unit + XCUITest
+  coverage) and the view-decomposition snapshot suite.
+- **0.6.2 CI:** coverage gate promoted from informational → required.
 
 ## Long-tail `try?` migration
 
-- **Status:** Planned.
+- **Status:** In progress.
 - **Driver:** Release-plan WS7. Top-10 worst offenders fixed in 0.6.1
   (see [docs/audit-0.6.1-error-sites.md](audit-0.6.1-error-sites.md));
-  the remaining ~176 sites migrate incrementally as `AppError`
-  adoption widens.
+  0.6.2 takes the next 30 sites, with tests covering the ones the
+  ClipExporter storyline naturally touches. The remaining ~150 sites
+  migrate incrementally as `AppError` adoption widens.
 - **Approach:** opportunistic. Every PR that touches an error-prone
   call site should route the failure through `AppErrorRecorder` if it
   matters to the user.
 
-## Settings redesign rollout
-
-- **Status:** In progress (0.6.1).
-- **Driver:** Release-plan WS3. New 7-bucket IA lands behind a DEBUG
-  flag, validated by simulator click-through, then flipped default-on
-  before tag.
-
-## Larger view-file decomposition
-
-- **Status:** In progress (0.6.1).
-- **Driver:** Release-plan WS5. `AllRecordingsView` (1140 LOC) and per-
-  platform `RecordingsView` shells (1086 / 670 LOC) decompose into
-  files under 800 LOC.
-
 ## Privacy-zone editor cross-platform parity
 
-- **Status:** Considering.
+- **Status:** Planned (0.7.0).
 - **Note:** privacy zones currently edit on macOS; iOS has a thinner
-  surface. Bring iOS to parity in a future release.
+  surface. 0.7.0 brings iOS to parity.
 
-## Recordings export to Files / Photos
+## Bulk multi-select export
 
-- **Status:** Considering (0.6.1 candidate small feature).
-- **Note:** `ClipExporter` already handles the file-side work; the
-  Settings flag and share-sheet wiring are the missing pieces.
+- **Status:** Planned (0.7.0).
+- **Driver:** follow-up to the 0.6.2 `ClipExporter` storyline. 0.6.2
+  ships single-clip export through Files / Photos / drag-out; 0.7.0
+  layers a multi-select picker on top so users can export a day's
+  worth of clips in one action.
 
-## Keyboard shortcuts on macOS
+## User-customizable macOS keyboard shortcuts
 
-- **Status:** Considering (0.6.1 candidate small feature).
-- **Note:** primary actions (camera switch, play/pause, scrub) would
-  benefit from `.keyboardShortcut(...)`. Track which actions are
-  candidates in a follow-up.
+- **Status:** Planned (0.7.0).
+- **Note:** 0.6.1 added the Camera menu (⌘R, ⌘1–⌘9). 0.6.2 expands the
+  standard set. 0.7.0 makes the bindings user-customizable via a
+  Keyboard Shortcuts pane in Settings.
 
 ## Won't do
 
