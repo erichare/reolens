@@ -81,6 +81,19 @@ Status keys:
   call site should route the failure through `AppErrorRecorder` if it
   matters to the user.
 
+## Larger view-file decomposition
+
+- **Status:** Partial (0.6.2) — carries to 0.6.3.
+- **Driver:** AGENTS.md / repo 800-LOC view-file guideline.
+- **0.6.2 progress:** macOS `RecordingsView` 1116 → 784 LOC via
+  `RecordingPlayerSheet` extract. iOS `RecordingsView` 767 LOC,
+  already under threshold. `AllRecordingsView` 1282 → 1120 LOC via
+  the three trailing sub-views extract.
+- **0.6.3 plan:** `AllRecordingsView` indexed-search panel cluster
+  (~230 LOC) lifts into a dedicated view struct, which needs the
+  snapshot-test safety net to land confidently. Brings the parent
+  under 800 LOC.
+
 ## Privacy-zone editor cross-platform parity
 
 - **Status:** Planned (0.7.0).

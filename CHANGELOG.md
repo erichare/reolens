@@ -69,11 +69,17 @@ prep flag positions 0.7.0 for full integration if MFi unblocks.
 
 ### Internal
 
-- **View decompositions complete** — `AllRecordingsView`,
-  `RecordingsView` (macOS), and `RecordingsView` (iOS) all decompose
-  under the 800-LOC repo guideline. Snapshot tests cover the carved-
-  up pieces — the safety net the 0.6.1 notes called out as the
-  blocker for landing the split.
+- **View decompositions** — `RecordingsView` (macOS) extracts
+  `RecordingPlayerSheet` + the supporting data/AVKit-bridge types
+  into a sibling file (1116 → 784 LOC, now under the 800-LOC repo
+  guideline). `RecordingsView` (iOS) stays at 767 LOC, already
+  under threshold. `AllRecordingsView` extracts its three trailing
+  sub-views (`TodayDigestRow`, `RecordingPreviewSheet`,
+  `AVPlayerStreamView`) into `AllRecordingsSubviews.swift`; the
+  parent still sits at 1120 LOC pending the deeper body-decomposition
+  (the indexed-search panel cluster). That deeper split waits on the
+  snapshot-test safety net 0.6.1 called out as the prerequisite —
+  carries forward to 0.6.3.
 - **Typed-throws migration: top-30** — 30 additional `try?` sites
   migrate to typed `throws AppError`. Storyline-touched sites get
   full test coverage; the rest ride the opportunistic migration
