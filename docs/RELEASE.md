@@ -89,9 +89,9 @@ Each new version, walk this list. It takes about 10 minutes.
 
 - [ ] **Tests green on `main`** — check the [CI badge](https://github.com/jestatsio/reolens/actions/workflows/ci.yml). Local sanity:
   ```sh
-  swift test                       # 183 tests, 49 suites at 0.5.1 baseline
+  swift test                       # 361 tests, 71 suites at 0.6.1 baseline
   bash Scripts/check-versions.sh   # macOS + iOS marketing versions match (AGENTS.md §13)
-  bash Scripts/coverage-gate.sh    # ≥ 80% coverage on AppShared + Reolink* (AGENTS.md §12)
+  bash Scripts/coverage-gate.sh    # baselines in Scripts/coverage-baselines.txt; long-term goal 80% (AGENTS.md §12)
   ```
 - [ ] **Smoke launch passes** locally:
   ```sh
@@ -113,6 +113,44 @@ Each new version, walk this list. It takes about 10 minutes.
   cd AppiOS && xcodegen generate
   ```
 - [ ] **Commit the bumps** as a single `chore(release): vX.Y.Z` commit
+
+### 0.6.1-specific verification
+
+Run the full journey checklist at
+[docs/audit-0.6.1-journey.md](audit-0.6.1-journey.md) on macOS and on
+iPhone + iPad simulators (iOS 26). Highlights to spot-check:
+
+- [ ] **Settings redesign** — 7 buckets across both platforms; legacy
+  layout still flips on via `AppPreferences.useReorganizedSettings`.
+- [ ] **Diagnostics Center** — Settings → Advanced → opens; clear
+  button works; copy-to-clipboard emits the redacted bundle format
+  (header line + ISO8601 timestamp + category + detail).
+- [ ] **NL Search** — search field on All Recordings is reachable; a
+  successful query stores in Recent; "Clear" wipes Recent.
+- [ ] **macOS keyboard shortcuts** — ⌘R refreshes tiles; ⌘1–⌘9 switch
+  cameras; out-of-range indices are no-ops.
+- [ ] **PTZ + schedule-grid VoiceOver labels** — VoiceOver announces
+  "Pan up" / "Zoom in" / day-hour-state on each cell.
+- [ ] **Battery wake / permission request paths** — verify a forced
+  failure shows up in Diagnostics Center with the right category.
+
+### 0.6.0-specific verification (still applies)
+
+- [ ] **Notification Diagnostics screen** renders all rows green or
+  explains failures.
+- [ ] **Notification log** captures outcomes and deep-links to the
+  matching recording on tap.
+- [ ] **Cross-day NL Search** — both the FoundationModels path
+  (Apple Intelligence devices) and the deterministic regex fallback.
+- [ ] **Recording schedule editor** round-trips via `GetRec` /
+  `SetRec`; `-9 notSupport` firmware degrades to read-only.
+- [ ] **Motion schedule + per-AI-tag overrides** save correctly.
+- [ ] **Battery camera auto-wake** on single-camera detail-view appear.
+- [ ] **Last-camera-on-launch** restores on iOS / iPadOS.
+- [ ] **BookmarkAutoDownloader.reconcile** re-enqueues missing clips.
+- [ ] **Bookmark delete** removes both entry + local file.
+- [ ] **XCUITest harness** passes on iPhone simulator.
+- [ ] **HomeKit section** renders on iOS only.
 
 ### 0.5.1-specific verification
 
