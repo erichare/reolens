@@ -27,7 +27,7 @@ extension BaichuanClient {
     public func login(maxEncryption: BcEncryptionLevel = .fullAes) async throws -> String {
         log.info("Baichuan login phase 1: legacy upgrade (max enc=\(String(maxEncryption.rawValue, radix: 16, uppercase: true), privacy: .public))")
 
-        let msgNum = nextMessageNumber()
+        let msgNum = await nextMessageNumber()
         let upgradeHeader = BcHeader(
             msgID: BcMessageID.login,
             bodyLength: 0,
@@ -60,11 +60,11 @@ extension BaichuanClient {
 
         // Pick the cipher for subsequent messages.
         switch negotiated {
-        case .unencrypted: setCipher(.unencrypted)
-        case .bcEncrypt: setCipher(.bcEncrypt)
+        case .unencrypted: await setCipher(.unencrypted)
+        case .bcEncrypt: await setCipher(.bcEncrypt)
         case .aes, .fullAes:
             let key = BcCipher.deriveAESKey(nonce: nonce, password: credentials.password)
-            setCipher(.aes(key: key))
+            await setCipher(.aes(key: key))
         }
 
         // Modern login.
@@ -72,7 +72,7 @@ extension BaichuanClient {
         let passHash = BcMD5.reolinkHash(credentials.password + nonce)
         let xml = BcXmlBody.loginUserAndNet(usernameHash: userHash, passwordHash: passHash)
 
-        let modernMsgNum = nextMessageNumber()
+        let modernMsgNum = await nextMessageNumber()
         let modernHeader = BcHeader(
             msgID: BcMessageID.login,
             bodyLength: 0,                                          // overwritten in BcMessage.encode
@@ -107,12 +107,13 @@ extension BaichuanClient {
     }
 
     private func runAESSanityProbe() async {
+        let probeMsgNum = await nextMessageNumber()
         let header = BcHeader(
             msgID: BcMessageID.version,
             bodyLength: 0,
             channelID: 0,
             streamType: 0,
-            msgNum: nextMessageNumber(),
+            msgNum: probeMsgNum,
             responseCode: 0,
             msgClass: BcConstants.classModernWithOffset,
             payloadOffset: 0

@@ -180,12 +180,13 @@ extension BaichuanClient {
         stage: String,
         timeout: TimeInterval = 8
     ) async throws -> BcMessage {
+        let msgNum = await nextMessageNumber()
         let header = BcHeader(
             msgID: cmdID,
             bodyLength: 0,
             channelID: channelID,
             streamType: 0,
-            msgNum: nextMessageNumber(),
+            msgNum: msgNum,
             responseCode: 0,
             msgClass: BcConstants.classModernWithOffset,
             payloadOffset: 0

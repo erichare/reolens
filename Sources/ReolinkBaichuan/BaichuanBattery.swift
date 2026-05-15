@@ -46,12 +46,13 @@ extension BaichuanClient {
         </BatteryInfo>
         </body>
         """
+        let msgNum = await nextMessageNumber()
         let header = BcHeader(
             msgID: BcMessageID.batteryInfo,
             bodyLength: 0,
             channelID: channelID,
             streamType: 0,
-            msgNum: nextMessageNumber(),
+            msgNum: msgNum,
             responseCode: 0,
             msgClass: BcConstants.classModernWithOffset,
             payloadOffset: 0
@@ -66,8 +67,8 @@ extension BaichuanClient {
     /// camera updates its state. Each push covers ALL paired battery cams
     /// in one frame, so the returned stream yields one `BaichuanBatteryInfo`
     /// per camera per push.
-    public func subscribeToBatteryInfo() -> AsyncStream<BaichuanBatteryInfo> {
-        let raw = subscribe()
+    public func subscribeToBatteryInfo() async -> AsyncStream<BaichuanBatteryInfo> {
+        let raw = await subscribe()
         let (stream, continuation) = AsyncStream<BaichuanBatteryInfo>.makeStream(bufferingPolicy: .bufferingNewest(256))
         let bridge = Task {
             for await msg in raw {
