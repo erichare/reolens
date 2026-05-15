@@ -94,7 +94,14 @@ let package = Package(
             // able transport surface so the fallback / retry
             // logic is fully testable today.
             name: "ReolinkP2P",
-            dependencies: ["ReolinkBcUdp"],
+            // 0.7.0 Phase 3d — `RemoteTransport` conforms to
+            // `BcMessageTransport` from ReolinkBaichuan, so the
+            // P2P module gains a Baichuan dependency. The
+            // direction is "Baichuan defines the control-plane
+            // protocol; P2P provides a transport that satisfies
+            // it" — kept acyclic by leaving Baichuan unaware of
+            // the concrete remote-transport type.
+            dependencies: ["ReolinkBcUdp", "ReolinkBaichuan"],
             path: "Sources/ReolinkP2P",
             swiftSettings: [
                 .enableUpcomingFeature("ExistentialAny")
