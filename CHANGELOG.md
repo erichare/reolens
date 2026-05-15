@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — 0.7.0 remote-connectivity work in progress
+
+- **BcUdp wire codec** (`Sources/ReolinkBcUdp/`) — pure value-type
+  encode/decode of the three Reolink P2P packet kinds (Disc /
+  Data / Ack). Round-trip tests pin the documented byte layout;
+  the magic constants and discovery XML tag names are cited
+  against neolink and marked pending validation against captured
+  packets from a real device.
+- **Discovery client** (`Sources/ReolinkP2P/`) — `P2PDiscovery`
+  actor walks the `p2p*.reolink.com` server pool by UID and
+  returns the first non-empty `LookupResponse`. Falls through on
+  per-host timeout / unreachable / malformed / empty responses;
+  throws `.exhausted` with per-server outcomes when the whole
+  pool is dry.
+- **Concrete UDP transport** — `NWConnectionBcUdpTransport`
+  backs the abstract `BcUdpTransport` protocol with
+  `Network.framework`. One-shot send-and-await per call; fresh
+  connection per server to keep pool-fallback semantics clean.
+- **UID capture** — `CameraEntry.uid` now persists the Reolink
+  P2P identifier fetched on first successful Baichuan login
+  (msg_id=114). Never shown to the user — exists to keep the
+  zero-config remote-access UX promise. Forward-compatible
+  decode-and-ignore for older Reolens builds reading a newer
+  `cameras.json`. Idempotent re-fetch through
+  `CameraStore.recordUID(_:for:)`.
+- **Design doc** (`docs/remote-connectivity.md`) — phased plan,
+  privacy-stance edit, threat model, and open questions.
+
+Remote access does not yet reach users in this slice: the
+discovery client and the transport exist, and `CameraEntry`
+captures the UID needed to look the camera up, but
+`BaichuanClient` still holds its own TCP `NWConnection` and the
+Phase 4 video pipeline (Baichuan msg_id=3 → VideoToolbox,
+bypassing RTSP) hasn't been written yet. Phases 3 + 4 + 5 land
+in subsequent slices.
+
 ## [0.6.2] — 2026-05-15
 
 A patch release that continues the 0.6.1 hardening tradition while

@@ -188,7 +188,7 @@ Each phase is independently shippable as a no-op once
 gated behind a kill switch. Full remote parity arrives at
 Phase 4; before that, every phase is dark code with tests.
 
-### Phase 1: BcUdp packet codec + tests (3–5 days)
+### Phase 1: BcUdp packet codec + tests (3–5 days) — ✅ landed
 
 A new `Sources/ReolinkBcUdp/` module that knows nothing about
 networking — just packet encode/decode.
@@ -212,7 +212,7 @@ Tests/ReolinkBcUdpTests/  // round-trip vectors, captured from a
 **Risk:** Low. This is parser-grade work and is the layer
 neolink has the cleanest public reference for.
 
-### Phase 2: Discovery client (3–5 days)
+### Phase 2: Discovery client (3–5 days) — ✅ landed (offline tests)
 
 A `P2PDiscovery` actor that, given a UID, queries the
 `p2p*.reolink.com` cluster (UDP/9999, BcUdp Disc packets) and
@@ -220,16 +220,42 @@ returns a `Candidates` struct: `{ wanV4, wanV6, lanV4, relayHint }`.
 
 **Acceptance:**
 - Given a known-good UID and an internet connection, returns at
-  least one candidate within 3 s.
-- Falls through across the `p2p*` cluster on per-host timeout.
+  least one candidate within 3 s. **Pending real-device
+  validation** — the offline test suite proves the fallback /
+  empty-response / unexpected-kind paths but the actual XML tag
+  names and packet magics need a tcpdump capture against a real
+  Reolink server to lock in.
+- Falls through across the `p2p*` cluster on per-host timeout. ✅
 - Survives the discovery server replying with a "try this other
-  server" redirect (Reolink balances load this way).
+  server" redirect — **pending** redirect-handling logic; today
+  the actor just retries the next pool entry, which works for
+  per-server failover but not for explicit redirects.
 
-**Risk:** Medium. Server pool composition can change. Mitigated
-by treating the bootstrap list as data, not hard-coded constants
-— shipped in
-`Sources/AppShared/Resources/p2p-bootstrap.json` so we can update
-without an app release.
+**Risk:** Medium. Server pool composition can change. The
+bootstrap list ships as Swift constants for now (the "JSON
+resource" option is still open per § "Open questions" below) —
+swapping the source is mechanical because the actor consumes a
+`DiscoveryServerPool` value either way.
+
+### Phase 2b: Concrete UDP transport — ✅ landed
+
+`NWConnectionBcUdpTransport` backs the abstract
+[`BcUdpTransport`](../Sources/ReolinkP2P/BcUdpTransport.swift)
+protocol with `Network.framework`. One-shot send-and-await per
+call, fresh UDP `NWConnection` per server, mirrors the
+`ContinuationBox` idempotency pattern from
+[`BaichuanClient`](../Sources/ReolinkBaichuan/BaichuanClient.swift)
+to keep behavior under cancellation predictable.
+
+**Acceptance:**
+- Wall-clock timeout honored end-to-end ✅
+- DNS-resolution failures surface as `.unreachable` so the
+  actor's fallback fires ✅
+- No connection reuse across attempts — fresh socket per call
+  keeps pool-fallback semantics clean ✅
+- Real-device validation: **pending** (needs a router + real
+  Reolink camera; the offline tests use a `ScriptedTransport`
+  actor stub).
 
 ### Phase 3: NAT traversal + transport (1–2 weeks)
 
@@ -274,7 +300,7 @@ the existing `VideoDecoder` (VideoToolbox wrapper).
 codec edge cases on battery cameras (whose sub-stream timing
 differs).
 
-### Phase 4b: UID capture in the existing flow (½ day)
+### Phase 4b: UID capture in the existing flow (½ day) — ✅ landed
 
 Tiny but important. After Phase 1–4 land but before remote
 becomes user-visible, we need every newly-added (and previously-
@@ -282,14 +308,19 @@ added) camera to have a UID stored.
 
 - On first successful LAN login (existing `BaichuanLogin`
   path), call `fetchUID(channelID:)` and persist the result to
-  `CameraEntry.uid` (new optional field).
-- Add an opportunistic background pass that fetches UID for
-  cameras still missing one whenever LAN is up.
-- No UI — the user never sees the UID.
-
-Without this, the P2P path has no key to look the camera up
-by. This phase is small enough that it could ship with Phase 1
-to start populating UIDs early, even before remote works.
+  `CameraEntry.uid`. ✅
+- Background re-attempt: handled by the existing Baichuan retry
+  loop in
+  [`CameraSession.startBaichuanEvents`](../Sources/AppShared/CameraSession.swift)
+  — if the first fetch fails (e.g. on older firmware where the
+  hub takes a moment to settle after login), the next reconnect
+  retries opportunistically. A session-local
+  `uidCapturedThisSession` flag prevents redundant fetches
+  inside a single app run once the UID lands. ✅
+- No UI — the user never sees the UID. ✅
+- Idempotent persistence via
+  [`CameraStore.recordUID(_:for:)`](../Sources/AppShared/CameraStore.swift)
+  so the iCloud sync stays clean. ✅
 
 ### Phase 5: UI surfacing (1–2 days)
 
@@ -406,14 +437,25 @@ when they happen to be awake. Worth a Settings note.
 
 ## What to do next
 
-This doc is the gate. The next PR is Phase 1 — the BcUdp packet
-codec — because every later phase depends on it and it lands as
-pure value-type code with unit tests, no network behavior, no
-risk to the existing app.
+Phases 1, 2, 2b, and 4b are landed (offline-tested). The next
+piece of work is **Phase 3** — refactor `BaichuanClient` to
+accept a `Transport` protocol so the existing TCP-via-
+`NWConnection` path becomes one of two interchangeable backends,
+with a new `RemoteTransport` built on
+[`P2PDiscovery`](../Sources/ReolinkP2P/P2PDiscovery.swift) +
+[`NWConnectionBcUdpTransport`](../Sources/ReolinkP2P/NWConnectionBcUdpTransport.swift)
+as the other.
 
-Phases 2–4 are gated on whether we're willing to commit ~5 weeks
-to a single feature and accept the privacy-stance edit to
-`README.md` / About screen.
+This refactor is intentionally deferred until a Swift compiler
+is available locally — it touches the most heavily-exercised
+file in the project and a subtle isolation / Sendable mistake
+would surface only at runtime. Phase 4 (Baichuan video pipeline)
+follows the same logic — VideoToolbox + NALU parsing want a
+compile-test-iterate loop, not a cold-write pass.
+
+Phase 5 (UI surfacing) and Phase 6 (release docs) are
+straightforward and land last, once Phases 3 + 4 have shaken
+out against real devices.
 
 ## References
 
