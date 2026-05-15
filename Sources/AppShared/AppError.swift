@@ -68,7 +68,7 @@ public enum AppError: Error, Sendable, CustomStringConvertible {
     /// descriptions verbatim, and those frequently include LAN IP /
     /// hostname material — which AGENTS.md §11 forbids logging. This
     /// helper drops the payload string and keeps only the case label.
-    public static func categorizeBaichuanFailure(_ error: Error) -> AppError {
+    public static func categorizeBaichuanFailure(_ error: any Error) -> AppError {
         if let baichuan = error as? BaichuanError {
             switch baichuan {
             case .connectionFailed: return .other("baichuan: connection failed")

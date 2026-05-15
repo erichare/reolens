@@ -21,6 +21,7 @@ public struct RecordingScheduleView: View {
         self.channel = channel
     }
 
+    @Environment(\.dismiss) private var dismiss
     @State private var working: WeeklySchedule = WeeklySchedule()
     @State private var original: WeeklySchedule = WeeklySchedule()
     @State private var loadPhase: SchedulePhase = .loading
@@ -45,9 +46,18 @@ public struct RecordingScheduleView: View {
                 ContentUnavailableView {
                     Label("Couldn't read schedule", systemImage: "exclamationmark.triangle")
                 } description: {
-                    Text(msg).font(.caption).textSelection(.enabled)
+                    VStack(spacing: 8) {
+                        Text(msg).font(.caption).textSelection(.enabled)
+                        Text("This usually means the camera or hub didn't answer the request. Try again, or check the camera is reachable on the live tab.")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
                 } actions: {
-                    Button("Retry") { Task { await load() } }
+                    HStack(spacing: 12) {
+                        Button("Retry") { Task { await load() } }
+                            .buttonStyle(.borderedProminent)
+                        Button("Go back") { dismiss() }
+                    }
                 }
             }
         }
@@ -111,29 +121,54 @@ public struct RecordingScheduleView: View {
         do {
             let envelope = try await session.client.send(cmd, as: RecordingScheduleEnvelope.self)
             guard let parsed = WeeklySchedule(scheduleString: envelope.Rec.scheduleTable.mainStream) else {
-                loadPhase = .error("Camera returned a schedule we couldn't parse.")
+                // 0.6.1 — degrade to read-only rather than stuck-error,
+                // matching MotionScheduleView's behavior.
+                AppErrorRecorder.recordAsync(
+                    .schedule(.loadFailed(reason: "bitmap shape unparseable")),
+                    context: "recordingSchedule.load"
+                )
+                degradeToUnsupported()
                 return
             }
             original = parsed
             working = parsed
             loadPhase = .ready
         } catch let cgi as CGIError where cgi.rspCode == CGIErrorCode.notSupport.rawValue {
-            // -9 → firmware doesn't expose the schedule. Show a
-            // placeholder so the user understands what they're seeing.
-            original = WeeklySchedule()
-            working = original
-            loadPhase = .unsupported
+            degradeToUnsupported()
+        } catch is DecodingError {
+            // 0.6.1 — Firmware returned a payload that doesn't fit
+            // either documented `Rec` shape. Per AGENTS.md §7 this is
+            // a firmware variance, not a network problem — degrade to
+            // read-only rather than leaving the user stuck.
+            AppErrorRecorder.recordAsync(
+                .schedule(.loadFailed(reason: "undocumented Rec wire shape")),
+                context: "recordingSchedule.load"
+            )
+            degradeToUnsupported()
         } catch let reolink as ReolinkClientError {
-            // 0.6.0 — `ReolinkClientError`'s default `localizedDescription`
-            // is Swift's opaque "(Domain error N.)" bridge string, which
-            // told the user nothing. Render the actual case + payload
-            // via `CustomStringConvertible.description` instead.
             log.error("GetRec failed: \(String(describing: reolink), privacy: .public)")
+            AppErrorRecorder.recordAsync(
+                .schedule(.loadFailed(reason: String(reolink.description.prefix(120)))),
+                context: "recordingSchedule.load"
+            )
             loadPhase = .error(reolink.description)
         } catch {
             log.error("GetRec failed: \(String(describing: error), privacy: .public)")
+            AppErrorRecorder.recordAsync(
+                .schedule(.loadFailed(reason: "\(type(of: error))")),
+                context: "recordingSchedule.load"
+            )
             loadPhase = .error(String(describing: error))
         }
+    }
+
+    /// Reset state to an empty schedule and flag the view read-only.
+    /// Used for both the explicit Reolink `-9 notSupport` path and
+    /// the 0.6.1 firmware-shape-mismatch fallback.
+    private func degradeToUnsupported() {
+        original = WeeklySchedule()
+        working = original
+        loadPhase = .unsupported
     }
 
     private func apply() async {

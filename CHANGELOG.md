@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.6.1] — 2026-05-?? (pending journey sweep)
+## [0.6.1] — 2026-05-14
 
 A hardening release. No new storylines — every surface 0.6.0 shipped
 got a careful second look. Settings is reorganized from the ground up,
@@ -61,6 +61,17 @@ handful of small features.
 
 ### Fixed
 
+- **Schedule editors no longer get stuck on "Couldn't read schedule"** —
+  surfaced during the 0.6.1 journey sweep. The motion + recording
+  schedule editors used to crash into a dead-end error screen when the
+  camera firmware returned an undocumented wire shape; the only escape
+  was the navigation back button. Now firmware-shape mismatches
+  (`DecodingError`) degrade gracefully to the same read-only state
+  used for the explicit Reolink `-9 notSupport` response. Network /
+  auth errors still show the error state, but with a "Go back" button
+  alongside Retry so users are never stuck. All failure modes record
+  to `AppErrorRecorder` so support can see which firmware variant
+  needs decoder coverage.
 - **Battery camera wake failures now logged** — five sites
   (`ChannelSettingsView`, `LiveCameraTile`, `LiveTileView`) used to
   swallow `wakeBatteryCamera` errors silently, leaving snap endpoints
