@@ -229,9 +229,12 @@ public actor NotificationHistory {
             file = try Self.decoder.decode(NotificationHistoryFile.self, from: data)
         } catch {
             log.warning("Failed to decode notification history; starting fresh")
+            // Pre-compute the Sendable string so the Task body doesn't
+            // capture the non-Sendable `any Error` binding.
+            let reason = String(describing: error)
             Task {
                 await AppErrorRecorder.shared.record(
-                    .persistence(.decode(reason: String(describing: error))),
+                    .persistence(.decode(reason: reason)),
                     context: "notificationHistory.decode"
                 )
             }

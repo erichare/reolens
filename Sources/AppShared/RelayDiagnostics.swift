@@ -134,9 +134,12 @@ public actor RelayDiagnostics {
             do {
                 self.state = try JSONDecoder.iso8601.decode(RelayDiagnosticsState.self, from: data)
             } catch {
+                // Pre-compute the Sendable string so the Task body
+                // doesn't capture the non-Sendable `any Error` binding.
+                let reason = String(describing: error)
                 Task {
                     await AppErrorRecorder.shared.record(
-                        .persistence(.decode(reason: String(describing: error))),
+                        .persistence(.decode(reason: reason)),
                         context: "relayDiagnostics.decode"
                     )
                 }
