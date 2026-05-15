@@ -96,7 +96,11 @@ public protocol BcMessageTransport: Sendable {
     /// when the transport closes. Multiple subscribers are
     /// allowed and each receives every message; the transport
     /// fan-outs internally.
-    func subscribe() -> AsyncStream<BcMessage>
+    ///
+    /// `async` because actor conformers register the
+    /// subscription in their own isolation domain; the call
+    /// suspends just long enough to enter the actor.
+    func subscribe() async -> AsyncStream<BcMessage>
 
     /// Allocate the next 16-bit message-num value for this
     /// transport. Wraps at `UInt16.max`. Callers stamp the
