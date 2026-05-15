@@ -32,6 +32,18 @@ public struct BookmarksSheet: View {
     /// Optional so the sheet can render in contexts (previews, tests)
     /// without an export pipeline.
     public let onExport: ((RecordingBookmark, ClipExportDestination) -> Void)?
+    /// 0.6.2 — share-sheet route. The parent builds a
+    /// `BookmarkClipTransferable` (or returns nil if the bookmark
+    /// can't be shared yet — usually because the local clip is still
+    /// downloading or the source recording isn't loaded). The sheet
+    /// renders a `ShareLink` for non-nil results.
+    ///
+    /// Separate closure from `onExport` because `ShareLink` consumes
+    /// a `Transferable` directly — the system drives the staging via
+    /// the Transferable's `FileRepresentation` rather than the parent
+    /// having to react to a destination tap. Cleaner UX (no extra tap
+    /// to confirm; the system's own "Preparing…" UI runs).
+    public let transferable: ((RecordingBookmark) -> BookmarkClipTransferable?)?
     /// 0.6.2 — status banner shown below the bookmark list. The parent
     /// view's `onExport` closure is the producer ("Preparing…",
     /// "Saved to Photos", "Permission denied", …); the sheet just
@@ -56,6 +68,7 @@ public struct BookmarksSheet: View {
         bookmarks: Binding<[RecordingBookmark]>,
         onPlay: @escaping (RecordingBookmark) -> Void,
         onExport: ((RecordingBookmark, ClipExportDestination) -> Void)? = nil,
+        transferable: ((RecordingBookmark) -> BookmarkClipTransferable?)? = nil,
         exportStatus: Binding<String?> = .constant(nil)
     ) {
         self.cameraID = cameraID
@@ -64,6 +77,7 @@ public struct BookmarksSheet: View {
         self._bookmarks = bookmarks
         self.onPlay = onPlay
         self.onExport = onExport
+        self.transferable = transferable
         self._exportStatus = exportStatus
     }
 
@@ -192,8 +206,8 @@ public struct BookmarksSheet: View {
                 }
             }
             Spacer()
-            if let onExport {
-                exportMenu(for: bookmark, onExport: onExport)
+            if onExport != nil || transferable != nil {
+                exportMenu(for: bookmark)
             }
             Button {
                 onPlay(bookmark)
@@ -221,28 +235,34 @@ public struct BookmarksSheet: View {
 
     /// 0.6.2 — the per-row Export menu. Hosts the platform-appropriate
     /// destinations: iOS / iPadOS gets Save to Photos; macOS keeps the
-    /// Save As… NSSavePanel route. Share-sheet + macOS drag-out
-    /// destinations land in subsequent 0.6.2 slices. The caller's
-    /// `onExport` closure dispatches on the destination.
+    /// Save As… NSSavePanel route. Both platforms get Share… when the
+    /// parent supplies a `transferable` closure that returns non-nil
+    /// (typically gated on the bookmark having a fully-downloaded
+    /// local clip). The macOS Finder drag-out destination lands in a
+    /// subsequent 0.6.2 slice.
     @ViewBuilder
-    private func exportMenu(
-        for bookmark: RecordingBookmark,
-        onExport: @escaping (RecordingBookmark, ClipExportDestination) -> Void
-    ) -> some View {
+    private func exportMenu(for bookmark: RecordingBookmark) -> some View {
         Menu {
-            #if os(iOS) || os(visionOS)
-            Button {
-                onExport(bookmark, .photos)
-            } label: {
-                Label("Save to Photos", systemImage: "photo.on.rectangle.angled")
+            if let onExport {
+                #if os(iOS) || os(visionOS)
+                Button {
+                    onExport(bookmark, .photos)
+                } label: {
+                    Label("Save to Photos", systemImage: "photo.on.rectangle.angled")
+                }
+                #else
+                Button {
+                    onExport(bookmark, .savePanel)
+                } label: {
+                    Label("Save as MP4…", systemImage: "arrow.down.doc")
+                }
+                #endif
             }
-            #else
-            Button {
-                onExport(bookmark, .savePanel)
-            } label: {
-                Label("Save as MP4…", systemImage: "arrow.down.doc")
+            if let transferable, let item = transferable(bookmark) {
+                ShareLink(item: item, preview: SharePreview(item.suggestedFilename)) {
+                    Label("Share…", systemImage: "square.and.arrow.up.on.square")
+                }
             }
-            #endif
         } label: {
             Label("Export…", systemImage: "square.and.arrow.up")
                 .labelStyle(.iconOnly)

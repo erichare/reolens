@@ -183,14 +183,29 @@ struct RecordingsView: View {
                 onExport: { bookmark, destination in
                     // 0.6.2 — destination-aware export. macOS surfaces
                     // .savePanel (the existing NSSavePanel + trimmed-
-                    // download flow). Other destinations are wired in
-                    // subsequent 0.6.2 slices.
+                    // download flow). Share is driven by the
+                    // `transferable` closure below, not by this
+                    // dispatch. Drag-out lands in a subsequent slice.
                     switch destination {
                     case .savePanel:
                         exportBookmark(bookmark)
                     case .photos, .shareSheet, .dragOut:
                         log.warning("Unsupported export destination on macOS slice: \(String(describing: destination), privacy: .public)")
                     }
+                },
+                transferable: { bookmark in
+                    guard let source = loader.files.first(where: {
+                        guard let s = $0.startDate, let e = $0.endDate else { return false }
+                        return s <= bookmark.startDate && bookmark.startDate <= e
+                    }) ?? loader.files.first(where: {
+                        guard let s = $0.startDate else { return false }
+                        return abs(s.timeIntervalSince(bookmark.startDate)) < 90
+                    }) else { return nil }
+                    return BookmarkClipTransferable.make(
+                        bookmark: bookmark,
+                        sourceFile: source,
+                        cameraName: session.entry.displayName
+                    )
                 },
                 exportStatus: $bookmarksExportStatus
             )

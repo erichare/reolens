@@ -158,16 +158,25 @@ struct RecordingsView: View {
                 },
                 onExport: { bookmark, destination in
                     // 0.6.2 — destination-aware export. iOS surfaces
-                    // .photos in this slice; .shareSheet wires in a
-                    // follow-up slice; .savePanel / .dragOut are macOS
-                    // routes that the sheet's per-platform Menu hides
-                    // here so they should never reach this dispatch.
+                    // .photos via this dispatch. Share is driven by
+                    // the `transferable` closure below, not by this
+                    // switch. .savePanel / .dragOut are macOS routes
+                    // the sheet's per-platform Menu hides on iOS so
+                    // they should never reach this dispatch.
                     switch destination {
                     case .photos:
                         savePhotosClip(for: bookmark)
                     case .shareSheet, .savePanel, .dragOut:
                         log.warning("Unsupported export destination on iOS slice: \(String(describing: destination), privacy: .public)")
                     }
+                },
+                transferable: { bookmark in
+                    guard let source = matchingSourceFile(for: bookmark) else { return nil }
+                    return BookmarkClipTransferable.make(
+                        bookmark: bookmark,
+                        sourceFile: source,
+                        cameraName: session.entry.displayName
+                    )
                 },
                 exportStatus: $bookmarksExportStatus
             )
