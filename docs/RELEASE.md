@@ -181,8 +181,9 @@ Run the full journey checklist at
 [docs/audit-0.6.1-journey.md](audit-0.6.1-journey.md) on macOS and on
 iPhone + iPad simulators (iOS 26). Highlights to spot-check:
 
-- [ ] **Settings redesign** — 7 buckets across both platforms; legacy
-  layout still flips on via `AppPreferences.useReorganizedSettings`.
+- [ ] **Settings redesign** — 7 buckets across both platforms. The
+  0.6.1 emergency-revert flag (`useReorganizedSettings`) was deleted
+  in 0.6.2 along with the legacy layout; there's only the new IA now.
 - [ ] **Diagnostics Center** — Settings → Advanced → opens; clear
   button works; copy-to-clipboard emits the redacted bundle format
   (header line + ISO8601 timestamp + category + detail).
