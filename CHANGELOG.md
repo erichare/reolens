@@ -55,17 +55,32 @@ prep flag positions 0.7.0 for full integration if MFi unblocks.
 
 ### Accessibility
 
-- **Full Dynamic Type sweep on player chrome** — controls, time
-  labels, and overlay text honor the user's content-size category
-  end-to-end.
-- **Focus order on `RecordingsView`** — VoiceOver / Full Keyboard
-  Access traversal lands on the day picker → filter chips → list
-  in the order a sighted user reads them.
-- **VoiceOver labels on the scrubber** — the recording scrubber
-  thumb now announces position + duration; the rail announces total
-  duration.
-- **Contrast pass on macOS sidebar** — selection / hover / disabled
-  states meet WCAG AA against both system appearances.
+- **VoiceOver labels on the scrubber** — the recording scrubber bar
+  is now an adjustable element. Announces "Recording position, X of
+  Y" with current / total duration spelled out as natural language;
+  swipe-up / swipe-down (iOS) or arrow keys (macOS Full Keyboard
+  Access) step in 5-second increments. The thumbnail rail above it
+  announces the clip's total duration.
+- **Dynamic Type on the raw-JSON viewer** — the developer-mode raw-
+  response popover switched from a fixed 11pt monospaced size to
+  `.caption.monospaced()` so it scales with the user's content-size
+  category. The rest of the player chrome was already on text
+  styles (`.headline`, `.caption`); only the dev-mode panel was the
+  outlier.
+- **Day picker labels on `RecordingsView`** — explicit
+  `accessibilityLabel("Day picker")` + hint on both platform shells
+  so VoiceOver announces the picker's purpose rather than the bare
+  "Day" or empty string. The implicit reading-order traversal
+  already lands day picker → filter chips → list as a sighted user
+  would read it; the explicit labels make focus identity clear at
+  each stop.
+
+Two queued items defer: a full Dynamic Type pass on the rest of the
+player chrome (audit verified that controls / time labels already
+respect text styles; the remaining work is a visual regression sweep
+on AX5 across multiple devices), and the WCAG-AA contrast measurement
+on the macOS sidebar (needs real-display measurement, not source
+inspection). Both carry to 0.6.3 — tracked in docs/ROADMAP.md.
 
 ### Internal
 

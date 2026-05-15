@@ -81,6 +81,20 @@ Status keys:
   call site should route the failure through `AppErrorRecorder` if it
   matters to the user.
 
+## Accessibility follow-ups
+
+- **Status:** Planned (0.6.3).
+- **Driver:** items 1 and 4 of the 0.6.2 a11y batch deferred because
+  both require device verification rather than source-only review.
+- **Items:**
+  - Full Dynamic Type pass on the player chrome at AX5 / AX5+ across
+    iPhone / iPad / macOS. The 0.6.2 audit confirmed text styles are
+    in use on the chrome; this is the visual regression sweep.
+  - WCAG-AA contrast measurement on the macOS sidebar selection /
+    hover / disabled states in light / dark / increase-contrast
+    modes. Source uses semantic colors that adapt; the sweep
+    confirms the rendered output clears the AA threshold.
+
 ## Larger view-file decomposition
 
 - **Status:** Partial (0.6.2) — carries to 0.6.3.

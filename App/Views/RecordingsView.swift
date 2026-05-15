@@ -384,6 +384,12 @@ struct RecordingsView: View {
                 .labelsHidden()
                 .datePickerStyle(.field)
                 .frame(minWidth: 170, idealWidth: 200)
+                // 0.6.2 a11y — the visual `labelsHidden()` strips the
+                // text label, but Full Keyboard Access / VoiceOver
+                // still need an identity. Match the iOS shell's
+                // wording for cross-platform consistency.
+                .accessibilityLabel("Day picker")
+                .accessibilityHint("Selects which day's recordings to show.")
             Spacer()
             if loader.isLoading {
                 ProgressView().controlSize(.small)

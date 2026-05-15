@@ -84,6 +84,12 @@ struct RecordingsView: View {
             .padding(.horizontal)
             .padding(.vertical, 8)
             .reolensGlassToolbar()
+            // 0.6.2 a11y — explicit label so VoiceOver announces the
+            // picker's role rather than the bare "Day" string. Matches
+            // the day picker → filter chips → list focus order the
+            // 0.6.2 CHANGELOG promises.
+            .accessibilityLabel("Day picker")
+            .accessibilityHint("Selects which day's recordings to show.")
             RecordingsScreenHeader(
                 loader: loader,
                 aiFilter: $aiFilter,

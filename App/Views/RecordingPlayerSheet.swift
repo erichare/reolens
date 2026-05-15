@@ -294,7 +294,10 @@ struct RawResponseView: View {
             }
             ScrollView([.vertical, .horizontal]) {
                 Text(text)
-                    .font(.system(size: 11, design: .monospaced))
+                    // 0.6.2 a11y — switched from a fixed 11pt size
+                    // so the raw-JSON viewer respects Dynamic Type.
+                    // Still monospaced for code-like readability.
+                    .font(.caption.monospaced())
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
