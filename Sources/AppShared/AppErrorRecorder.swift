@@ -210,6 +210,13 @@ public extension AppErrorRecorder {
     /// a detached task so the call site doesn't pay for actor hop +
     /// disk write. Use when the call site can't `await` directly —
     /// e.g. a view body, a non-async delegate.
+    ///
+    /// **Ordering caveat (0.6.1 L-1):** two concurrent `recordAsync`
+    /// calls from different call sites can arrive at the actor in a
+    /// different order than they were fired. Acceptable for an audit
+    /// log (timestamps still come from the underlying `record(_:)`
+    /// at insertion time, so cross-record ordering is preserved by
+    /// `timestamp`, just not by insertion position in `cache`).
     nonisolated static func recordAsync(_ error: AppError, context: String? = nil) {
         Task.detached(priority: .utility) {
             await AppErrorRecorder.shared.record(error, context: context)

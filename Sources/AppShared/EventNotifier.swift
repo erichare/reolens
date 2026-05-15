@@ -209,8 +209,12 @@ public final class EventNotifier {
             // false. Previously both collapsed into `granted = false`,
             // making the difference between "user said no" and
             // "system request errored" invisible from the UI.
+            // 0.6.1 H-1/M-1 follow-up — route to the typed
+            // `permissionDenied` case (semantically correct for this
+            // local UN call) rather than `publishFailed`, which is
+            // documented as an iCloud-relay failure.
             AppErrorRecorder.recordAsync(
-                .notification(.publishFailed(reason: "requestAuthorization: \(error.localizedDescription)")),
+                .notification(.permissionDenied),
                 context: "eventNotifier.requestPermission"
             )
             granted = false

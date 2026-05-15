@@ -258,12 +258,11 @@ public struct ChannelSettingsView: View {
             do {
                 _ = try await baichuan.wakeBatteryCamera(channelID: UInt8(channel.channel))
             } catch {
-                // 0.6.1 — surfaced as a diagnostic so a chronically-
-                // failing wake doesn't silently leave the snap endpoint
-                // returning stale frames. The snap itself can still
-                // succeed if the camera was already awake.
+                // 0.6.1 H-1 — categorize through AppError so the
+                // BaichuanError(NWError(...)) chain's LAN-IP-bearing
+                // string never reaches `AppErrorRecord.detail`.
                 AppErrorRecorder.recordAsync(
-                    .other("batteryWakeFailed: \(error.localizedDescription)"),
+                    AppError.categorizeBaichuanFailure(error),
                     context: "channelSettings.snapshotRefresh"
                 )
             }

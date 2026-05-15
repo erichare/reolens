@@ -92,8 +92,10 @@ struct LiveTileView: View {
                         do {
                             _ = try await baichuan.wakeBatteryCamera(channelID: UInt8(channelID))
                         } catch {
+                            // 0.6.1 H-1 — categorize so NWError descriptions don't
+                            // bleed LAN-fingerprint material into the diagnostics log.
                             AppErrorRecorder.recordAsync(
-                                .other("batteryWakeFailed: \(error.localizedDescription)"),
+                                AppError.categorizeBaichuanFailure(error),
                                 context: "liveTileView.sleepingOverlayTap"
                             )
                         }
@@ -468,8 +470,10 @@ struct LiveTileView: View {
             do {
                 _ = try await baichuan.wakeBatteryCamera(channelID: UInt8(channel.channel))
             } catch {
+                // 0.6.1 H-1 — categorize so NWError descriptions don't
+                // bleed LAN-fingerprint material into the diagnostics log.
                 AppErrorRecorder.recordAsync(
-                    .other("batteryWakeFailed: \(error.localizedDescription)"),
+                    AppError.categorizeBaichuanFailure(error),
                     context: "liveTileView.startPlayer"
                 )
             }

@@ -1,5 +1,6 @@
 import Foundation
 import ReolinkAPI
+import ReolinkBaichuan
 import ReolinkStreaming
 
 /// Typed error surface for failures the app wants to track, surface to
@@ -58,6 +59,32 @@ public enum AppError: Error, Sendable, CustomStringConvertible {
     /// Untyped fallback for failures that don't fit a category yet.
     /// Reach for a typed case before this — `.other` is a smell.
     case other(String)
+
+    // MARK: - Redacting factories
+
+    /// 0.6.1 H-1 fix — Categorize a `BaichuanError` into a typed
+    /// `AppError` *without* embedding the underlying message string.
+    /// `BaichuanError.connectionFailed(String)` wraps `NWError`
+    /// descriptions verbatim, and those frequently include LAN IP /
+    /// hostname material — which AGENTS.md §11 forbids logging. This
+    /// helper drops the payload string and keeps only the case label.
+    public static func categorizeBaichuanFailure(_ error: Error) -> AppError {
+        if let baichuan = error as? BaichuanError {
+            switch baichuan {
+            case .connectionFailed: return .other("baichuan: connection failed")
+            case .loginFailed:      return .auth(.invalidCredentials)
+            case .unexpectedReply:  return .other("baichuan: unexpected reply")
+            case .timedOut:         return .playback(.timeout)
+            case .notLoggedIn:      return .auth(.tokenExpired)
+            case .malformed:        return .other("baichuan: malformed message")
+            case .cancelled:        return .playback(.interrupted)
+            }
+        }
+        // Unknown error type — record only the type name, not the
+        // localized description, so an `NWError` or similar that fell
+        // outside `BaichuanError` can't leak endpoint info either.
+        return .other("\(type(of: error))")
+    }
 
     // MARK: - Sub-categories
 

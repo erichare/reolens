@@ -158,4 +158,24 @@ struct AppErrorRecorderTests {
         #expect(AppError.schedule(.notSupported).errorDescription != nil)
         #expect(AppError.bookmark(.fileMissing).errorDescription != nil)
     }
+
+    // MARK: - H-1 redaction guard
+
+    /// 0.6.1 H-1 — `categorizeBaichuanFailure(_:)` must never embed
+    /// the raw error description (which can contain LAN IP /
+    /// hostname material from `NWError`) in the resulting
+    /// `AppError`'s `description`. Regression guard: feed a synthetic
+    /// error whose description is a fake LAN endpoint and verify the
+    /// IP doesn't survive the categorization.
+    @Test("categorizeBaichuanFailure strips raw NWError-shaped strings")
+    func categorizeStripsRawErrorString() {
+        struct FakeNWError: Error, CustomStringConvertible {
+            var description: String { "connection refused — 192.168.1.105:9000" }
+            var localizedDescription: String { description }
+        }
+        let categorized = AppError.categorizeBaichuanFailure(FakeNWError())
+        let detail = categorized.description
+        #expect(!detail.contains("192.168.1.105"))
+        #expect(!detail.contains("9000"))
+    }
 }

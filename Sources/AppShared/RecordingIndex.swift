@@ -335,8 +335,12 @@ public actor RecordingIndex {
             // 0.6.1 — surface index corruption through AppErrorRecorder
             // so the user can discover from Diagnostics Center why
             // their recordings disappeared briefly after launch.
+            // 0.6.1 M-2 — cap the decoder description at 120 chars so
+            // a malformed file with very long key paths doesn't bloat
+            // a single log record.
+            let reason = String(error.localizedDescription.prefix(120))
             AppErrorRecorder.recordAsync(
-                .persistence(.decode(reason: "recording-index.v1.json: \(error.localizedDescription)")),
+                .persistence(.decode(reason: "recording-index.v1.json: \(reason)")),
                 context: "recordingIndex.load"
             )
             return

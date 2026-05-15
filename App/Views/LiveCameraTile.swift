@@ -108,11 +108,11 @@ struct LiveCameraTile: View {
                         do {
                             _ = try await baichuan.wakeBatteryCamera(channelID: UInt8(channelID))
                         } catch {
-                            // 0.6.1 — log so a flapping battery camera
-                            // is discoverable from the Diagnostics
-                            // Center instead of silently failing.
+                            // 0.6.1 H-1 — categorize through AppError so the
+                            // BaichuanError(NWError(...)) chain's LAN-IP-bearing
+                            // string never reaches `AppErrorRecord.detail`.
                             AppErrorRecorder.recordAsync(
-                                .other("batteryWakeFailed: \(error.localizedDescription)"),
+                                AppError.categorizeBaichuanFailure(error),
                                 context: "liveCameraTile.sleepingOverlayTap"
                             )
                         }
@@ -577,8 +577,10 @@ struct LiveCameraTile: View {
             do {
                 _ = try await baichuan.wakeBatteryCamera(channelID: UInt8(channel.channel))
             } catch {
+                // 0.6.1 H-1 — categorize so NWError descriptions don't
+                // bleed LAN-fingerprint material into the diagnostics log.
                 AppErrorRecorder.recordAsync(
-                    .other("batteryWakeFailed: \(error.localizedDescription)"),
+                    AppError.categorizeBaichuanFailure(error),
                     context: "liveCameraTile.startPlayer"
                 )
             }
