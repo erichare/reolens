@@ -59,6 +59,10 @@ public indirect enum AbilityNode: Sendable, Codable {
         if case let .list(a) = self { return a } else { return nil }
     }
 
+    // safe: the two `try?` sites below are intentional polymorphic
+    // probes — the Ability node accepts three shapes (capability,
+    // array of children, dict of named children) and we fall through
+    // to the dict branch which `try`s and throws if none matched.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.singleValueContainer()
         // Try capability first (a strict {ver, permit} shape).

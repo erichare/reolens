@@ -87,6 +87,7 @@ public enum ClipExporter {
 
         // Remove a stale output file at the target path (the
         // exporter refuses to overwrite).
+        // safe: missing-file is the common case (first export to this URL).
         try? FileManager.default.removeItem(at: outputURL)
 
         guard let exporter = AVAssetExportSession(asset: composition, presetName: preset) else {

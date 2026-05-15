@@ -582,6 +582,8 @@ private actor OffsetWriter {
     }
 
     func close() {
+        // safe: close-on-deinit best-effort; OS reclaims the descriptor
+        // regardless and double-close throws are harmless here.
         try? handle?.close()
         handle = nil
     }

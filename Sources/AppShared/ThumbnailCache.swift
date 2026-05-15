@@ -27,6 +27,7 @@ public actor ThumbnailCache {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         let dir = caches.appending(path: "Reolens/thumbs")
+        // safe: idempotent makeDir; existing-dir is the common case.
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         self.directory = dir
     }
@@ -52,7 +53,10 @@ public actor ThumbnailCache {
         let path = url(segmentID: segmentID, offsetSeconds: offsetSeconds).path
         if FileManager.default.fileExists(atPath: path) {
             // Touch the file so LRU eviction sees it as recently used.
+            // safe: mtime touch is cosmetic; eviction still works on stale mtime.
             try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: path)
+            // safe: cache miss on read-failure is correct — the caller will
+            // re-extract the thumbnail from the source.
             return try? Data(contentsOf: URL(fileURLWithPath: path))
         }
         return nil
@@ -71,6 +75,8 @@ public actor ThumbnailCache {
 
     public func evictIfNeeded() {
         let fm = FileManager.default
+        // safe: best-effort eviction. Unreadable directory → skip; the
+        // next write retries and `purgeAll()` is the user-driven escape.
         guard let urls = try? fm.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey]
@@ -78,6 +84,8 @@ public actor ThumbnailCache {
         var entries: [(url: URL, size: UInt64, modified: Date)] = []
         var total: UInt64 = 0
         for url in urls {
+            // safe: skip entries whose attributes can't be read; they
+            // get evicted on a future sweep when filesystem state recovers.
             guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]) else { continue }
             let size = UInt64(values.fileSize ?? 0)
             let modified = values.contentModificationDate ?? Date.distantPast
@@ -88,6 +96,7 @@ public actor ThumbnailCache {
         entries.sort { $0.modified < $1.modified }  // oldest first
         for entry in entries {
             if total <= capacityBytes { break }
+            // safe: remove-failure leaves the file; next eviction tries again.
             try? fm.removeItem(at: entry.url)
             total = total > entry.size ? total - entry.size : 0
         }
@@ -95,8 +104,10 @@ public actor ThumbnailCache {
 
     public func purgeAll() {
         let fm = FileManager.default
+        // safe: empty / unreadable directory → nothing to purge.
         let urls = (try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
         for url in urls {
+            // safe: remove-failure leaves the file; the next purge retries.
             try? fm.removeItem(at: url)
         }
     }

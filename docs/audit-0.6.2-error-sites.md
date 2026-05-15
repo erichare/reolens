@@ -26,13 +26,16 @@ already correctly written but trigger every audit grep).
 | 4 | [Sources/AppShared/NotificationHistory.swift:207,210](../Sources/AppShared/NotificationHistory.swift) | `try? Data(contentsOf: url)` + `try? Self.decoder.decode(...)` | Notification log unreadable → Diagnostics Center shows empty history, can't help support thread |
 | 5 | [Sources/AppShared/RelayDiagnostics.swift:130](../Sources/AppShared/RelayDiagnostics.swift) | `try? JSONDecoder.iso8601.decode(RelayDiagnosticsState.self, ...)` | Relay diag state unreadable → Notification Diagnostics screen shows initial values, can't help support thread |
 
-### LOG (3 sites — record without UI; user-visible surface is read-only)
+### LOG → folded into SAFE
 
-| # | Location | Pattern | Why log only |
-|---|----------|---------|--------------|
-| 6 | [Sources/AppShared/SharedContainer.swift:146](../Sources/AppShared/SharedContainer.swift) | `(try? Self.plistDecoder.decode([LatestSnapshot].self, from: data)) ?? []` | Widget read path; falling back to empty array is the right UX, but a corrupt write should be visible in Diagnostics |
-| 7 | [Sources/AppShared/SharedContainer.swift:168,178](../Sources/AppShared/SharedContainer.swift) | `(try? Self.plistDecoder.decode([RecentMotionEvent].self, ...)) ?? []` | Same as above — widget data |
-| 8 | [Sources/AppShared/ICloudCameraStorage.swift:125](../Sources/AppShared/ICloudCameraStorage.swift) | `try? Data(contentsOf: legacy)` in legacy migration | Migration is one-shot; record if it fails so we know whether to attempt again |
+The three sites originally bucketed LOG were re-classified to SAFE
+after second look. SharedContainer's widget reads (`readLatestSnapshots`,
+`readRecentMotionEvents`, the `appendMotionEvent` internal read) are
+deliberately tolerant — the empty-fallback IS the correct UX, the
+widget itself is the visibility surface for stale data, and recorder
+records would be noisier than useful. `ICloudCameraStorage.migrate
+LegacyLocalIfNeeded`'s legacy-load is one-shot and the missing-legacy
+case is the common path (fresh install). All four annotated SAFE.
 
 ### SAFE (22 sites — annotate `// safe:` so future grep counts drop)
 

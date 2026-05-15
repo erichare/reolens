@@ -142,6 +142,8 @@ public enum SharedContainer {
     }
 
     public static func readLatestSnapshots() -> [LatestSnapshot] {
+        // safe: widget surface — empty fallback is the right UX. Bad
+        // bytes get overwritten by the next successful main-app write.
         guard let url = snapshotsURL, let data = try? Data(contentsOf: url) else { return [] }
         return (try? Self.plistDecoder.decode([LatestSnapshot].self, from: data)) ?? []
     }
@@ -164,6 +166,8 @@ public enum SharedContainer {
         guard let url = eventsURL else { return }
         try ensureContainerLayout()
         var existing: [RecentMotionEvent] = []
+        // safe: append path — corrupt prior contents are implicitly
+        // recovered by the next write (we re-emit the full array).
         if let data = try? Data(contentsOf: url) {
             existing = (try? Self.plistDecoder.decode([RecentMotionEvent].self, from: data)) ?? []
         }
@@ -174,6 +178,8 @@ public enum SharedContainer {
     }
 
     public static func readRecentMotionEvents() -> [RecentMotionEvent] {
+        // safe: widget surface — empty fallback is the right UX. Bad
+        // bytes get overwritten by the next successful main-app write.
         guard let url = eventsURL, let data = try? Data(contentsOf: url) else { return [] }
         return (try? Self.plistDecoder.decode([RecentMotionEvent].self, from: data)) ?? []
     }

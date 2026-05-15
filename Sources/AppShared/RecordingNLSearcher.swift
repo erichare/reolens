@@ -210,6 +210,7 @@ public struct RecordingNLSearcher: Sendable {
     private static func extractLastNDays(from prompt: String) -> Int? {
         // Minimal pattern: (last|past) <number> days
         let pattern = #/(last|past)\s+(\d+)\s+days?/#
+        // safe: regex over user input; no-match is the common path.
         guard let match = try? pattern.firstMatch(in: prompt) else { return nil }
         return Int(match.output.2)
     }

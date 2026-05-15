@@ -37,6 +37,10 @@ public struct RecordingScheduleSettings: Codable, Sendable, Hashable {
         case scheduleTable  // Shape 2 — `Rec.scheduleTable.mainStream`
     }
 
+    // safe: the three `try?` sites below are intentional firmware-shape
+    // fallbacks — `channel` defaults to 0 when missing, and the two
+    // schedule probes try shape 1 then shape 2 before throwing a
+    // precise dataCorrupted error if neither matched.
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.channel = (try? c.decode(Int.self, forKey: .channel)) ?? 0

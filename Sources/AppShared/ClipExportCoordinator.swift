@@ -227,6 +227,8 @@ public enum ClipExportCoordinator {
     public static func pruneStaging(olderThan seconds: TimeInterval = 3600) -> Int {
         let dir = stagingDirectory
         guard FileManager.default.fileExists(atPath: dir.path) else { return 0 }
+        // safe: best-effort prune. Unreadable directory → skip and let
+        // the next sweep retry; we never block staging on cleanup.
         guard let entries = try? FileManager.default.contentsOfDirectory(
             at: dir,
             includingPropertiesForKeys: [.contentModificationDateKey],
@@ -237,6 +239,8 @@ public enum ClipExportCoordinator {
         let cutoff = Date().addingTimeInterval(-seconds)
         var removed = 0
         for entry in entries {
+            // safe: missing mtime → treat as ancient (.distantPast falls
+            // through the cutoff check below).
             let values = try? entry.resourceValues(forKeys: [.contentModificationDateKey])
             let modified = values?.contentModificationDate ?? .distantPast
             guard modified < cutoff else { continue }

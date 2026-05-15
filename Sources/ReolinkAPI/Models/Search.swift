@@ -77,6 +77,10 @@ public struct SearchFile: Decodable, Sendable, Hashable, Identifiable {
         case trigger, Trigger      // Reolink firmware uses one or the other
     }
 
+    // safe: the four `try?` sites below cover firmware-tolerance —
+    // `size` arrives as int OR string depending on Reolink build,
+    // and `trigger` / `Trigger` differ in capitalization across
+    // older hubs and newer Home Hub Pro.
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.name = try c.decode(String.self, forKey: .name)

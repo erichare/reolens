@@ -293,6 +293,9 @@ public final class LiveVideoPlayer {
             guard case .rtp(_, let packet) = message else { continue }
             let nals = depacketizer.depacketize(packet.payload)
             for nal in nals {
+                // safe: per-NAL ingest — a malformed NAL drops one frame
+                // but the next IDR re-syncs the decoder. Surfacing each
+                // bad NAL would flood the user-visible error stream.
                 if let sample = try? assembler.ingest(nalType: nal.nalType, bytes: nal.bytes, rtpTimestamp: packet.timestamp) {
                     enqueue(sample)
                 }

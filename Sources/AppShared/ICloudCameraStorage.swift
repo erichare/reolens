@@ -149,8 +149,10 @@ package final class ICloudCameraStorage {
     /// it, in case the user disables iCloud later.
     package func migrateLegacyLocalIfNeeded() {
         guard isUsingICloud else { return }
+        // safe: reachability probe — already-migrated is the common case.
         if (try? currentURL.checkResourceIsReachable()) == true { return }
         let legacy = Self.localFallbackURL()
+        // safe: missing legacy is the common case (fresh install).
         guard let data = try? Data(contentsOf: legacy) else { return }
         write(data)
         log.info("Migrated legacy cameras.json into iCloud Documents")
@@ -158,6 +160,9 @@ package final class ICloudCameraStorage {
 
     private static func localFallbackURL() -> URL {
         let fm = FileManager.default
+        // safe: fallback URL builder; Application Support is always
+        // available on supported platforms — the `??` below covers the
+        // unreachable sandboxed-test case.
         let appSupport = try? fm.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
@@ -166,6 +171,7 @@ package final class ICloudCameraStorage {
         )
         let dir = appSupport?.appendingPathComponent("Reolens", isDirectory: true)
             ?? URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("Reolens", isDirectory: true)
+        // safe: idempotent makeDir; existing-dir is the common case.
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent(fileName)
     }
