@@ -81,6 +81,27 @@ Status keys:
   call site should route the failure through `AppErrorRecorder` if it
   matters to the user.
 
+## iOS-build CI gate promotion
+
+- **Status:** Planned (0.6.3) — was originally planned for 0.6.2,
+  deferred because GitHub's `macos-26` runner image still ships
+  Xcode 26 variants that can't resolve `generic/platform=iOS`
+  (stable 26.3 lacks the device-platform component; beta 26.5
+  lacks matching simulator runtimes).
+- **Workflow change required:** drop the `continue-on-error: true`
+  on the three iOS-build steps in `.github/workflows/ci.yml` once
+  the runner image carries a non-beta Xcode 26.x with both the
+  device-platform bits and matching simulator runtimes.
+- **Why deferred:** the iOS code is already covered by the
+  required `swift build` job via `.iOS(.v26)` in Package.swift,
+  and the real iOS build (`release.yml`) runs end-to-end on tag
+  push with maintainer certs. Promoting CI's xcodebuild-iOS step
+  is for catching regressions earlier, not for shipping safety.
+
+Update the RELEASE.md 0.6.2 verification step that pins both CI
+gates as required — only the coverage gate is required (already
+since 0.6.0); the iOS build job stays informational this cycle.
+
 ## Accessibility follow-ups
 
 - **Status:** Planned (0.6.3).

@@ -170,10 +170,10 @@ get the lion's share of the manual coverage.
   binary; the existing scaffolded surface in
   Settings → Privacy & Sync → HomeKit (iOS) still shows the MFi
   explainer rather than attempting registration.
-- [ ] **CI gates required** — confirm the iOS build job and the
-  coverage gate are both required checks on `main` in repo
-  Settings → Branches. A simulated failure on either should block
-  merge.
+- [ ] **CI gates** — confirm the coverage regression gate is a
+  required check on `main` in repo Settings → Branches (enforced
+  since 0.6.0). The iOS build job stays informational this cycle
+  pending the runner-image fix tracked in docs/ROADMAP.md.
 
 ### 0.6.1-specific verification
 

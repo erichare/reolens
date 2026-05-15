@@ -105,8 +105,13 @@ inspection). Both carry to 0.6.3 — tracked in docs/ROADMAP.md.
 - **HomeKit prep flag** — `HomeKitBridge.fullIntegrationEnabled`
   ships dark in 0.6.2; 0.7.0 flips it on if MFi certification lands.
   No user-facing change in this release.
-- **CI: iOS build job and coverage gate promoted to required** —
-  both were informational in 0.6.1; a failure now blocks release.
+- **CI gate posture re-evaluated.** The coverage regression gate
+  has been enforced since 0.6.0 (the 0.6.2 plan's CHANGELOG draft
+  misremembered that as informational); no change needed. The iOS
+  build job's `continue-on-error: true` stays in place this cycle
+  — the documented `macos-26` runner-image constraints around
+  Xcode 26 device-platform availability haven't resolved. Tracked
+  in docs/ROADMAP.md for 0.6.3.
 - New tests: `ClipExporterTests` (Photos / share-sheet / drag-out
   paths), view-decomposition snapshot suite, accessibility-focus
   ordering coverage.
