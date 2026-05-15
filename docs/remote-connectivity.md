@@ -154,33 +154,39 @@ packets:
 This is the single largest piece of the project: a second
 "recorder" path that consumes msg_id=3 frames instead of RTP/AVP.
 
+## UX contract: zero-config
+
+Remote access must be **invisible** to the user. There is no
+"Remote address" field, no port-forwarding instructions, no
+DDNS setup. The flow is:
+
+1. User adds a camera on the local network (existing
+   `AddCameraSheet` flow — unchanged).
+2. Reolens fetches the camera's UID on first successful LAN
+   login (the Baichuan `msg_id=114` exchange we already
+   implement in
+   [`Sources/ReolinkBaichuan/BaichuanUID.swift`](../Sources/ReolinkBaichuan/BaichuanUID.swift)).
+3. The UID is persisted to `cameras.json` alongside the other
+   per-camera fields.
+4. When the LAN endpoint isn't reachable (user is away, or
+   they're on cellular), reachability silently fails over to
+   P2P keyed on the stored UID. No prompt, no setting.
+
+A user who never leaves their home network never knows the
+P2P stack exists. A user who *does* leave just sees their
+cameras keep working.
+
+Manual remote-address entry (DDNS / port-forward) is
+**explicitly out of scope** — it was considered as a
+ships-immediately fallback but rejected on UX grounds. We're
+committing to the full P2P implementation as the only remote
+path.
+
 ## Phased plan
 
-Each phase is independently shippable. The user gets *some*
-remote access at the end of Phase 0; full P2P parity arrives at
-Phase 4.
-
-### Phase 0: Manual remote address (1–2 days)
-
-Add a "Remote address (DDNS / WAN)" optional field next to the
-LAN address. If the LAN probe fails, fall through to the remote
-address. No protocol work — just routing the existing CGI/RTSP
-clients at a different hostname.
-
-Ships immediately for users willing to port-forward or run
-DDNS. Documented in a "Remote access" section of `README.md`
-with the Tailscale recommendation up top.
-
-**Files touched:**
-- `Sources/ReolinkAPI/Camera.swift` — add `remoteHost`,
-  `remotePort` to `CameraCredentials`.
-- `App/Views/AddCamera*.swift` — second host field, collapsed
-  behind a disclosure.
-- `App/State/CameraReachability.swift` (new) — "is LAN
-  reachable? if not, try remote" state machine.
-
-**Risk:** Low. The CGI and RTSP clients don't care about the
-hostname; they take whatever they're given.
+Each phase is independently shippable as a no-op once
+gated behind a kill switch. Full remote parity arrives at
+Phase 4; before that, every phase is dark code with tests.
 
 ### Phase 1: BcUdp packet codec + tests (3–5 days)
 
@@ -268,22 +274,45 @@ the existing `VideoDecoder` (VideoToolbox wrapper).
 codec edge cases on battery cameras (whose sub-stream timing
 differs).
 
+### Phase 4b: UID capture in the existing flow (½ day)
+
+Tiny but important. After Phase 1–4 land but before remote
+becomes user-visible, we need every newly-added (and previously-
+added) camera to have a UID stored.
+
+- On first successful LAN login (existing `BaichuanLogin`
+  path), call `fetchUID(channelID:)` and persist the result to
+  `CameraEntry.uid` (new optional field).
+- Add an opportunistic background pass that fetches UID for
+  cameras still missing one whenever LAN is up.
+- No UI — the user never sees the UID.
+
+Without this, the P2P path has no key to look the camera up
+by. This phase is small enough that it could ship with Phase 1
+to start populating UIDs early, even before remote works.
+
 ### Phase 5: UI surfacing (1–2 days)
 
-- Connection-mode indicator on each camera tile: "LAN" (green),
-  "P2P direct" (yellow), "P2P relayed" (orange). Tap → details
-  sheet.
-- Settings → Privacy & Sync → "Remote access" section explaining
-  that P2P routes through Reolink's servers and that the LAN
-  mode stays fully offline.
-- Per-camera toggle: "Allow remote access (P2P)". Default off
-  until the user opts in.
+The user-visible surface is deliberately tiny — zero-config
+means nothing for the user to configure.
+
+- Connection-mode indicator on each camera tile: "LAN" (green
+  pip), "Remote" (amber pip), "Relayed" (orange pip). Tap → a
+  small details popover that explains the three states. No
+  settings, no toggles.
+- Settings → Privacy & Sync → short "Remote access" paragraph
+  explaining that when the user is away from home, the app
+  reaches the camera through Reolink's discovery / relay
+  servers. **One** opt-out toggle: "Allow remote access"
+  (default on). When off, off-LAN cameras simply show the
+  existing unreachable state.
+- About screen note matching the README copy below.
 
 ### Phase 6: Documentation + release (1 day)
 
-- `README.md`: new "Remote access" section above "What you get".
-  Lead with Tailscale (still the safest); document P2P as the
-  zero-setup option.
+- `README.md`: replace the "no third-party servers" line with
+  the honest framing below. No setup instructions because there
+  *is* no setup.
 - `SECURITY.md`: P2P threat model. Reolink's servers learn that
   *some* client reached *this* UID; they do not learn the
   credentials (we still log in to the camera ourselves once the
@@ -298,13 +327,13 @@ differs).
 
 | Phase | Effort | Cumulative |
 |-------|--------|------------|
-| 0     | 2 d    | 2 d        |
-| 1     | 5 d    | 7 d        |
-| 2     | 5 d    | 12 d       |
-| 3     | 10 d   | 22 d       |
-| 4     | 10 d   | 32 d       |
-| 5     | 2 d    | 34 d       |
-| 6     | 1 d    | 35 d       |
+| 1     | 5 d    | 5 d        |
+| 2     | 5 d    | 10 d       |
+| 3     | 10 d   | 20 d       |
+| 4     | 10 d   | 30 d       |
+| 4b    | 0.5 d  | 30.5 d     |
+| 5     | 2 d    | 32.5 d     |
+| 6     | 1 d    | 33.5 d     |
 
 ## Risks worth re-stating before we commit
 
@@ -329,10 +358,12 @@ Call it "remote access" in the UI.
 The README's "no third-party servers" line stops being literally
 true once P2P is on. The honest framing:
 
-> **LAN mode** routes only between your devices and your
-> cameras. **Remote mode** additionally uses Reolink's discovery
-> and (if hole-punching fails) relay servers to reach the camera
-> when you're away from home. Remote mode is opt-in per camera.
+> **At home**, Reolens talks only to your cameras on your local
+> network. **Away from home**, Reolens uses Reolink's discovery
+> servers (and, if direct hole-punching fails, their relay
+> servers) to reach your camera. There is still no Reolens
+> server. You can disable remote access in Settings if you
+> only want LAN-mode behavior.
 
 That edit needs to land in both `README.md` and the in-app
 About screen.
@@ -375,10 +406,10 @@ when they happen to be awake. Worth a Settings note.
 
 ## What to do next
 
-This doc is the gate. If we agree on the phased plan, the next
-PR is Phase 0 — the manual remote-address field — because it
-ships value to users in a day and is independent of every later
-phase. Phase 1 (BcUdp codec) follows in the same release cycle.
+This doc is the gate. The next PR is Phase 1 — the BcUdp packet
+codec — because every later phase depends on it and it lands as
+pure value-type code with unit tests, no network behavior, no
+risk to the existing app.
 
 Phases 2–4 are gated on whether we're willing to commit ~5 weeks
 to a single feature and accept the privacy-stance edit to

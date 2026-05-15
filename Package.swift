@@ -15,6 +15,11 @@ let package = Package(
         .library(name: "ReolinkAPI", targets: ["ReolinkAPI"]),
         .library(name: "ReolinkStreaming", targets: ["ReolinkStreaming"]),
         .library(name: "ReolinkBaichuan", targets: ["ReolinkBaichuan"]),
+        // 0.7.0 — Reolink UDP P2P wire format. Pure value-type
+        // codec; transport / discovery / NAT-traversal layers
+        // sit on top in later phases. See
+        // `docs/remote-connectivity.md`.
+        .library(name: "ReolinkBcUdp", targets: ["ReolinkBcUdp"]),
         .library(name: "AppShared", targets: ["AppShared"]),
         .executable(name: "Reolens", targets: ["Reolens"])
     ],
@@ -58,6 +63,19 @@ let package = Package(
                 // enabling it explicitly is rejected by the toolchain.
                 // Keep ExistentialAny as an opt-in until the codebase is
                 // fully migrated.
+                .enableUpcomingFeature("ExistentialAny")
+            ]
+        ),
+        .target(
+            // 0.7.0 Phase 1 (remote connectivity) — BcUdp wire
+            // codec. Pure value-type encode/decode of the three
+            // packet kinds (Disc / Data / Ack) Reolink uses when
+            // the camera is reached over UDP via their P2P
+            // service. No networking, no actors, no transport.
+            // See `docs/remote-connectivity.md`.
+            name: "ReolinkBcUdp",
+            path: "Sources/ReolinkBcUdp",
+            swiftSettings: [
                 .enableUpcomingFeature("ExistentialAny")
             ]
         ),
@@ -116,6 +134,15 @@ let package = Package(
             name: "ReolinkBaichuanTests",
             dependencies: ["ReolinkBaichuan", "ReolinkAPI"],
             path: "Tests/ReolinkBaichuanTests"
+        ),
+        .testTarget(
+            // 0.7.0 Phase 1 — BcUdp codec round-trips. Pinned
+            // by structural property tests (encode → decode is
+            // identity) plus byte-layout tests that assert each
+            // field lives at the documented offset.
+            name: "ReolinkBcUdpTests",
+            dependencies: ["ReolinkBcUdp"],
+            path: "Tests/ReolinkBcUdpTests"
         ),
         // End-to-end integration test target. Drives the full
         // ReolinkAPI client through a mocked Reolink device using
