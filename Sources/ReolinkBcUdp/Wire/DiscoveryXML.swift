@@ -182,7 +182,12 @@ public enum DiscoveryXML {
             guard let text = String(data: payload, encoding: .utf8) else { return nil }
             guard let uid = TagScan.firstTagContent(in: text, tag: Tag.uid) else { return nil }
             let wanV4 = makeEndpoint(in: text, hostTag: Tag.wanIPv4, portTag: Tag.wanPort)
-            let wanV6 = makeEndpoint(in: text, hostTag: Tag.wanIPv6, portTag: Tag.wanPort)
+            // v6 host has no paired port tag in the wire format —
+            // Reolink reuses the v4 socket on a dual-stack bind, so
+            // the same `wanPort` applies to both candidates. The
+            // caller (`RemoteTransport`) substitutes v4's port for
+            // v6; the v6 candidate carries port 0 in the model.
+            let wanV6 = makeEndpoint(in: text, hostTag: Tag.wanIPv6, portTag: nil)
             let lanV4 = makeEndpoint(in: text, hostTag: Tag.lanIPv4, portTag: Tag.lanPort)
             let relay = makeEndpoint(in: text, hostTag: Tag.relayHost, portTag: Tag.relayPort)
             return LookupResponse(
@@ -194,13 +199,19 @@ public enum DiscoveryXML {
             )
         }
 
-        private static func makeEndpoint(in text: String, hostTag: String, portTag: String) -> Endpoint? {
+        private static func makeEndpoint(in text: String, hostTag: String, portTag: String?) -> Endpoint? {
             guard let host = TagScan.firstTagContent(in: text, tag: hostTag),
                   !host.isEmpty else { return nil }
             // Port is optional: some firmware emits an address
-            // tag without a paired port and expects the client to
-            // use the default 9000. Caller can substitute.
-            let port = TagScan.firstTagContent(in: text, tag: portTag).flatMap(UInt16.init) ?? 0
+            // tag without a paired port (and expects the client to
+            // substitute), and the v6 candidate shares the v4
+            // port-tag entirely (`portTag == nil`).
+            let port: UInt16
+            if let portTag {
+                port = TagScan.firstTagContent(in: text, tag: portTag).flatMap(UInt16.init) ?? 0
+            } else {
+                port = 0
+            }
             return Endpoint(host: host, port: port)
         }
     }

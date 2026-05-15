@@ -86,7 +86,7 @@ public actor P2PDiscovery {
     public init(
         transport: any BcUdpTransport,
         pool: DiscoveryServerPool = .default,
-        clientIDProvider: @escaping @Sendable () -> String = Self.defaultClientID
+        clientIDProvider: @escaping @Sendable () -> String = P2PDiscovery.defaultClientID
     ) {
         self.transport = transport
         self.pool = pool
