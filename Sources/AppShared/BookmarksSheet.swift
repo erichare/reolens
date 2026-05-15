@@ -249,6 +249,11 @@ public struct BookmarksSheet: View {
                 fileOptions: [],
                 visibility: .all
             ) { completion in
+                // NSItemProvider's loadHandler completion isn't
+                // typed @Sendable in the SDK; wrap it in a thin
+                // Sendable shim so the Task body can capture it
+                // safely under Swift 6 strict concurrency.
+                nonisolated(unsafe) let completion = completion
                 Task {
                     do {
                         let staged = try await ClipExportCoordinator.stage(item.request)

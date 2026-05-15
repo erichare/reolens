@@ -61,9 +61,12 @@ public struct CameraListPersistence {
             return try JSONDecoder().decode([CameraEntry].self, from: data)
         } catch {
             log.error("Failed to decode camera list: \(error.localizedDescription, privacy: .public)")
+            // Pre-compute the Sendable string so the Task body doesn't
+            // capture the non-Sendable `any Error` binding.
+            let reason = String(describing: error)
             Task {
                 await AppErrorRecorder.shared.record(
-                    .persistence(.decode(reason: String(describing: error))),
+                    .persistence(.decode(reason: reason)),
                     context: "cameraList.load"
                 )
             }

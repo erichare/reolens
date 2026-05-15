@@ -68,6 +68,8 @@ package final class ICloudCameraStorage {
         }
         if let coordError {
             log.error("Read coord error: \(coordError.localizedDescription, privacy: .public)")
+            // Pre-compute the Sendable path so the Task body doesn't
+            // need to reach back into MainActor for it.
             let path = currentURL.lastPathComponent
             Task {
                 await AppErrorRecorder.shared.record(
