@@ -147,13 +147,15 @@ public struct ScrubberView: View {
         .frame(height: 14)
         // 0.6.2 a11y — the scrubber thumb is the primary interaction.
         // VoiceOver announces current position + total duration; the
-        // adjustable trait lets the user step via single-finger
-        // swipe-up / swipe-down (iOS) or arrow keys (macOS Full
-        // Keyboard Access) in 5-second increments.
+        // adjustable trait is conferred by `accessibilityAdjustable
+        // Action` itself (no separate `.accessibilityAddTraits`
+        // needed — `AccessibilityTraits.isAdjustable` doesn't exist).
+        // Lets the user step via single-finger swipe-up / swipe-down
+        // (iOS) or arrow keys (macOS Full Keyboard Access) in 5-second
+        // increments.
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Recording position")
         .accessibilityValue("\(accessibleTimeLabel(currentSeconds)) of \(accessibleTimeLabel(durationSeconds))")
-        .accessibilityAddTraits(.isAdjustable)
         .accessibilityAdjustableAction { direction in
             guard durationSeconds > 0 else { return }
             let step: TimeInterval = 5
