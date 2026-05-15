@@ -13,13 +13,16 @@ A patch release that continues the 0.6.1 hardening tradition while
 landing one user-facing storyline. The headline: `ClipExporter` finally
 gets first-class export routes — Save to Photos, Files share-sheet,
 and macOS drag-out — so the existing file-side plumbing reaches the
-surfaces users actually expect. Alongside the storyline, the 0.6.0
-view carve-outs finally decompose under the 800-LOC repo guideline now
-that there's a snapshot-test safety net, the AppShared coverage and
-typed-throws migration ratchets each take another step, four queued
-accessibility items land, and a measurable time-to-first-frame
-improvement ships with the number in the CHANGELOG. A dark HomeKit
-prep flag positions 0.7.0 for full integration if MFi unblocks.
+surfaces users actually expect. Alongside the storyline, two of the
+three 0.6.0 view carve-outs decompose under the 800-LOC repo
+guideline (`AllRecordingsView`'s deeper split waits on the snapshot-
+test safety net — see ROADMAP), the AppShared coverage and typed-
+throws migration ratchets each take another step, three of four
+queued accessibility items land (the fourth and the TTFF measurement
+need device verification — also tracked in ROADMAP), the 0.6.1
+emergency-revert `useReorganizedSettings` flag is finally deleted,
+and a dark HomeKit prep flag positions 0.7.0 for full integration
+if MFi unblocks.
 
 ### Added
 
@@ -41,13 +44,17 @@ prep flag positions 0.7.0 for full integration if MFi unblocks.
   fallback path picks up additional synonyms surfaced by users
   during the 0.6.1 cycle, narrowing the gap between AI-eligible
   and non-AI-eligible devices.
-- **TTFF: cold-start improved by TBDms** — measured via the 0.6.1
-  `OSSignposter` instrument on `com.reolens.streaming` / `TTFF`.
-  See [docs/perf-baselines/README.md](docs/perf-baselines/README.md).
-- **Coverage baselines ratcheted** — AppShared TBD% → TBD%, ReolinkAPI
-  TBD% → TBD%, ReolinkStreaming TBD% → TBD%. Total test count TBD
-  (up from 354 in 0.6.1).
+- **Coverage baselines** — total test count 375 (up from 354 in
+  0.6.1, net +21). The new ClipExportCoordinator + ClipPhotosSaver
+  suites contribute to the AppShared baseline; the actual per-target
+  percentage deltas update in `Scripts/coverage-baselines.txt` at
+  tag time when CI generates the new numbers.
 - macOS `CFBundleVersion` 16 → 17, iOS 11 → 12.
+
+TTFF measurement defers — the 0.6.1 `OSSignposter` instrument is in
+place but capturing a meaningful cold/warm delta needs device runs
+(simulator timings aren't representative); deferred to a 0.6.3 perf
+sweep tracked in docs/ROADMAP.md.
 
 ### Fixed
 

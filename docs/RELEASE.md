@@ -142,10 +142,12 @@ get the lion's share of the manual coverage.
 - [ ] **macOS keyboard shortcuts (expanded)** — verify the
   newly-added shortcuts fire from the Camera / View menus. The
   existing ⌘R and ⌘1–⌘9 from 0.6.1 still work.
-- [ ] **TTFF improvement** — open Instruments with the os_signpost
-  instrument on `com.reolens.streaming` / `TTFF`, do a cold-start
-  live view, capture the interval. Record the number; it should
-  improve against the 0.6.1 baseline in `docs/perf-baselines/`.
+- [ ] **TTFF instrument still wired** — open Instruments with the
+  os_signpost instrument on `com.reolens.streaming` / `TTFF`, do a
+  cold-start live view, confirm the interval fires. The actual
+  measured-improvement target deferred from 0.6.2 to 0.6.3 — see
+  docs/ROADMAP.md. This step only verifies the 0.6.1-shipped
+  instrument hasn't regressed.
 - [ ] **Accessibility — Dynamic Type on player chrome** — bump
   content size to AX5 in Settings → Accessibility. Open a live view
   and a recording; chrome adapts without clipping.

@@ -81,6 +81,21 @@ Status keys:
   call site should route the failure through `AppErrorRecorder` if it
   matters to the user.
 
+## TTFF perf measurement
+
+- **Status:** Planned (0.6.3).
+- **Why deferred:** the 0.6.1 OSSignposter instrument on
+  `com.reolens.streaming` / `TTFF` is in place and the live-video
+  cold-start path emits the interval correctly. Capturing a
+  meaningful delta against the 0.6.1 baseline needs device runs
+  rather than simulator timings, and the 0.6.2 CHANGELOG entry that
+  promised "one measurable improvement with a number" can't be
+  honestly filled without that capture.
+- **0.6.3 plan:** capture cold-start TTFF on iPhone + Mac across
+  H.264 and H.265 paths; record the number in `docs/perf-baselines/`
+  and CHANGELOG; ship a targeted improvement (likely on the RTSP
+  handshake → first IDR path) backed by the measurement.
+
 ## iOS-build CI gate promotion
 
 - **Status:** Planned (0.6.3) — was originally planned for 0.6.2,
