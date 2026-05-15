@@ -166,10 +166,13 @@ Once a fix is released:
 
 | Release | Platform floors                | Status                                                                                  |
 |---------|--------------------------------|-----------------------------------------------------------------------------------------|
-| 0.5.x   | macOS 26 / iOS 26 / iPadOS 26  | **Current.** Receives all security fixes and feature work.                              |
+| 0.6.x   | macOS 26 / iOS 26 / iPadOS 26  | **Current.** Receives all security fixes and feature work.                              |
+| 0.5.x   | macOS 26 / iOS 26 / iPadOS 26  | **Maintenance.** Security fixes only, through ~6 months after 0.6.0 release.            |
 | 0.4.x   | macOS 14 / iOS 18 / iPadOS 18  | **Security backports only**, through the end of the 0.5 cycle (~6 months after 0.5.0). |
 | ≤ 0.3.x | various                        | End of life. No backports.                                                              |
 
-The 0.5.0 deployment-floor bump exists so the app can adopt Liquid Glass plus the ActivityKit / WidgetKit / ControlWidget APIs Apple shipped in iOS 26 / macOS 26. Users who can't upgrade their OS should stay on the 0.4.x track. Any security fix that applies to both tracks will land on `main` (which targets 0.5.x) and be cherry-picked to the `release/0.4.x` branch for backport.
+The 0.5.0 deployment-floor bump exists so the app can adopt Liquid Glass plus the ActivityKit / WidgetKit / ControlWidget APIs Apple shipped in iOS 26 / macOS 26. Users who can't upgrade their OS should stay on the 0.4.x track. Any security fix that applies to both tracks will land on `main` (which targets 0.6.x) and be cherry-picked to the `release/0.4.x` branch for backport.
+
+**HomeKit bridge (added in 0.6.0):** the bridge is scaffolding pending Apple MFi certification — the stub `registerAccessoryIfNeeded(for:)` has no live attack surface today. Any security finding would apply to the completed implementation; report it the same way regardless.
 
 Outside this support matrix, we will not backport.

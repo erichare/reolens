@@ -2,7 +2,164 @@ import SwiftUI
 import UserNotifications
 import AppShared
 
+/// macOS Settings window. 0.6.1 — reorganized to share the seven
+/// `Settings*Bucket` views with iOS so the platforms can't drift apart
+/// again. The TabView shell is kept because macOS Settings idiom is
+/// tabs; each tab maps onto one (or two) buckets:
+///
+/// - **Cameras** — `SettingsCamerasBucket` + `SettingsDisplayBucket`
+/// - **Notifications** — `SettingsNotificationsBucket`
+/// - **Background** — `SettingsBackgroundBucket` + menu-bar mode
+/// - **Privacy & Sync** — `SettingsPrivacyBucket`
+/// - **Advanced** — `SettingsAdvancedBucket`
+/// - **About** — `SettingsAboutBucket`
+///
+/// The legacy 5-tab layout is preserved behind
+/// `preferences.useReorganizedSettings` as an emergency revert; remove
+/// in 0.7.x.
 struct SettingsView: View {
+    @Environment(CameraStore.self) private var store
+
+    var body: some View {
+        if store.preferences.useReorganizedSettings {
+            ReorganizedSettingsView()
+        } else {
+            LegacySettingsView()
+        }
+    }
+}
+
+// MARK: - Reorganized (0.6.1) layout
+
+private struct ReorganizedSettingsView: View {
+    @State private var showingLog: Bool = false
+    @State private var showingDiagnostics: Bool = false
+    @AppStorage(MenuBarController.menuBarModeKey) private var menuBarMode: Bool = false
+    @AppStorage(MenuBarController.launchAtLoginKey) private var launchAtLogin: Bool = false
+    @Environment(CameraStore.self) private var store
+
+    var body: some View {
+        TabView {
+            camerasTab
+                .tabItem { Label("Cameras", systemImage: "video") }
+            notificationsTab
+                .tabItem { Label("Notifications", systemImage: "bell") }
+            backgroundTab
+                .tabItem { Label("Background", systemImage: "moon") }
+            privacyTab
+                .tabItem { Label("Privacy & Sync", systemImage: "lock.shield") }
+            advancedTab
+                .tabItem { Label("Advanced", systemImage: "hammer") }
+            aboutTab
+                .tabItem { Label("About", systemImage: "info.circle") }
+        }
+        .padding()
+        .sheet(isPresented: $showingLog) {
+            NavigationStack {
+                NotificationLogView()
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") { showingLog = false }
+                        }
+                    }
+            }
+            .frame(minWidth: 520, minHeight: 600)
+        }
+        .sheet(isPresented: $showingDiagnostics) {
+            NavigationStack {
+                DiagnosticsCenterView()
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") { showingDiagnostics = false }
+                        }
+                    }
+            }
+            .frame(minWidth: 520, minHeight: 600)
+        }
+    }
+
+    private var camerasTab: some View {
+        Form {
+            SettingsCamerasBucket()
+            SettingsDisplayBucket()
+        }
+        .formStyle(.grouped)
+    }
+
+    private var notificationsTab: some View {
+        Form {
+            SettingsNotificationsBucket(showingLog: $showingLog)
+        }
+        .formStyle(.grouped)
+    }
+
+    private var backgroundTab: some View {
+        Form {
+            SettingsBackgroundBucket()
+            menuBarSection
+        }
+        .formStyle(.grouped)
+    }
+
+    private var privacyTab: some View {
+        Form {
+            SettingsPrivacyBucket()
+        }
+        .formStyle(.grouped)
+    }
+
+    private var advancedTab: some View {
+        Form {
+            SettingsAdvancedBucket(showingDiagnostics: $showingDiagnostics)
+        }
+        .formStyle(.grouped)
+    }
+
+    private var aboutTab: some View {
+        Form {
+            SettingsAboutBucket()
+        }
+        .formStyle(.grouped)
+    }
+
+    /// macOS-only section, kept distinct from the cross-platform
+    /// buckets because no iOS analog exists.
+    private var menuBarSection: some View {
+        Section("Run in the menu bar") {
+            Toggle("Run in the menu bar when closed", isOn: $menuBarMode)
+                .onChange(of: menuBarMode) { _, newValue in
+                    if newValue {
+                        MenuBarController.shared.install(store: store)
+                    } else {
+                        MenuBarController.shared.uninstall()
+                        if launchAtLogin {
+                            launchAtLogin = false
+                            if #available(macOS 13.0, *) {
+                                MenuBarController.shared.setLaunchAtLogin(false)
+                            }
+                        }
+                    }
+                }
+            Text("New in 0.4.0. Closing the window keeps Reolens running in the menu bar so motion notifications keep firing. Quit from the menu bar item to fully stop the app.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if #available(macOS 13.0, *) {
+                Toggle("Launch at login", isOn: $launchAtLogin)
+                    .disabled(!menuBarMode)
+                    .onChange(of: launchAtLogin) { _, newValue in
+                        MenuBarController.shared.setLaunchAtLogin(newValue)
+                    }
+                Text("Reolens starts in the menu bar at login so events from the moment you sit down at the Mac aren't missed.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+}
+
+// MARK: - Legacy (≤ 0.6.0) layout — kept behind a flag for emergency revert
+
+private struct LegacySettingsView: View {
     @Environment(CameraStore.self) private var store
     @State private var notifier = EventNotifier.shared
     @State private var showingNotificationLog: Bool = false
@@ -52,8 +209,6 @@ struct SettingsView: View {
                             MenuBarController.shared.install(store: store)
                         } else {
                             MenuBarController.shared.uninstall()
-                            // Launch-at-login without menu-bar mode is
-                            // surprising — disable it together.
                             if launchAtLogin {
                                 launchAtLogin = false
                                 if #available(macOS 13.0, *) {
@@ -85,12 +240,6 @@ struct SettingsView: View {
             ICloudKeychainSyncSection()
             MotionRelayPublisherSection()
             RelayDiagnosticsSection()
-            // 0.6.0 Slice B2 — HomeKit section is iOS-only. Apple
-            // doesn't ship a public HomeKit framework on macOS for
-            // native apps (only Mac Catalyst), so there's no
-            // meaningful UI to render here. The per-camera
-            // homeKitEnabled flag still rides iCloud so flipping it
-            // on iPhone surfaces correctly across devices.
         }
         .formStyle(.grouped)
     }
@@ -113,7 +262,7 @@ struct SettingsView: View {
             .disabled(!notifier.enabled)
             NotificationCategoriesSection(notifier: notifier)
             PerCameraNotificationsSection()
-            OvernightDigestSection()
+            LegacyOvernightDigestSection()
             Section("System permission") {
                 permissionRow
             }
@@ -206,11 +355,8 @@ struct SettingsView: View {
     }
 }
 
-/// 0.5.0 Theme A5 — overnight digest controls. Edits the
-/// `OvernightDigestSettings` UserDefaults pair; on change, kicks
-/// `DigestScheduler.reconcileSchedule()` so the local notification
-/// trigger matches the new settings.
-private struct OvernightDigestSection: View {
+/// 0.5.0 Theme A5 — overnight digest controls. Legacy layout's copy.
+private struct LegacyOvernightDigestSection: View {
     @State private var enabled: Bool = OvernightDigestSettings.enabled
     @State private var hour: Int = OvernightDigestSettings.hourOfDay
     @State private var showingPreview: Bool = false

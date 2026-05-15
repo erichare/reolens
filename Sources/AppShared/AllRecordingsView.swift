@@ -700,6 +700,12 @@ public struct AllRecordingsView: View {
         defer { isSearching = false }
         let hits = await RecordingIndex.shared.query(query)
         indexedResults = hits
+        // 0.6.1 — Record the query in local history if it produced
+        // at least one result. Misses don't get recorded so the
+        // suggestions list stays signal, not noise.
+        if !hits.isEmpty {
+            NLSearchHistory.shared.record(trimmed)
+        }
     }
 
     @ViewBuilder
@@ -711,20 +717,129 @@ public struct AllRecordingsView: View {
                 Text("Looking across the last 30 days…").font(.caption)
             }
         } else if indexedResults.isEmpty {
+            searchEmptyState
+        } else {
+            List(indexedResults) { hit in
+                Button {
+                    playIndexedHit(hit)
+                } label: {
+                    indexedRow(hit)
+                }
+                .buttonStyle(.plain)
+                .contentShape(.rect)
+                .accessibilityHint("Plays this recording.")
+            }
+            .listStyle(.plain)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                searchPrivacyFooter
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.thinMaterial)
+            }
+        }
+    }
+
+    /// 0.6.1 — Empty / no-match state for NL search. Surfaces three
+    /// concrete example prompts so the user discovers what the search
+    /// understands without having to read the changelog. Mirrors the
+    /// Spotlight pattern: when the search input is the focus, suggest
+    /// shapes rather than leaving the screen blank.
+    ///
+    /// Now also surfaces personal search history (last 10 successful
+    /// queries) above the static suggestions so users don't have to
+    /// retype common searches.
+    @ViewBuilder
+    private var searchEmptyState: some View {
+        VStack(spacing: 16) {
             ContentUnavailableView(
                 "No matches",
                 systemImage: "magnifyingglass",
                 description: Text(
-                    "Nothing in the indexed window matches \"\(searchQuery)\". Try a tag (people, packages, vehicles), a relative date (today, yesterday, this week), or clear the search box."
+                    "Nothing in the indexed window matches \"\(searchQuery)\". Try one of these:"
                 )
             )
-        } else {
-            List(indexedResults) { hit in
-                indexedRow(hit)
-                    .contentShape(.rect)
+            VStack(alignment: .leading, spacing: 12) {
+                if !NLSearchHistory.shared.entries.isEmpty {
+                    HStack {
+                        Text("Recent")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Clear") {
+                            NLSearchHistory.shared.clear()
+                        }
+                        .buttonStyle(.plain)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .accessibilityHint("Clears your recent search history on this device.")
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(NLSearchHistory.shared.entries, id: \.self) { recent in
+                            suggestionRow(prompt: recent, systemImage: "clock.arrow.circlepath")
+                        }
+                    }
+                    Divider()
+                        .padding(.vertical, 4)
+                }
+                Text("Try")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Self.searchSuggestions, id: \.self) { suggestion in
+                        suggestionRow(prompt: suggestion, systemImage: "sparkle")
+                    }
+                }
             }
-            .listStyle(.plain)
+            .padding(.horizontal, 24)
+            searchPrivacyFooter
+                .padding(.horizontal, 24)
         }
+    }
+
+    @ViewBuilder
+    private func suggestionRow(prompt: String, systemImage: String) -> some View {
+        Button {
+            searchQuery = prompt
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: systemImage)
+                    .foregroundStyle(.secondary)
+                Text(prompt)
+                    .font(.body)
+                Spacer()
+                Image(systemName: "arrow.up.left.circle")
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.vertical, 6)
+            .padding(.horizontal, 12)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Replaces your search with this suggestion.")
+    }
+
+    /// 0.6.1 — Static suggestions surfaced when search returns nothing.
+    /// Keep these aligned with what `RecordingNLSearcher` actually
+    /// understands: tag, date, and a camera-ish hint.
+    private static let searchSuggestions: [String] = [
+        "packages this week",
+        "vehicles yesterday",
+        "people today"
+    ]
+
+    /// 0.6.1 — One-line footer explaining where the search runs.
+    /// Reinforces AGENTS.md §5 — no recording data crosses the model
+    /// boundary, the user's prompt is the only thing that does.
+    @ViewBuilder
+    private var searchPrivacyFooter: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "shield.lefthalf.filled")
+                .foregroundStyle(.secondary)
+            Text("Runs on-device when Apple Intelligence is available; falls back to a keyword parser. Recordings never leave the device.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder
@@ -752,6 +867,33 @@ public struct AllRecordingsView: View {
             detectionTags(Array(hit.detectionTags))
         }
         .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityLabel(for: hit))
+    }
+
+    /// 0.6.1 — Tapping a search hit jumps the user to the indexed
+    /// recording's day in the existing per-day flow: switches
+    /// `selectedDate` to the hit's day and clears the search field, so
+    /// the standard list renders with the row visible. If the hit
+    /// already has a bookmark (i.e. the clip is local) it could open
+    /// the bookmark sheet — for 0.6.1 we keep the gesture simple and
+    /// rely on the per-day list's tap-to-play to do the rest.
+    private func playIndexedHit(_ hit: RecordingIndex.IndexedRecording) {
+        selectedDate = Calendar.current.startOfDay(for: hit.start)
+        searchQuery = ""
+        indexedResults = []
+    }
+
+    private func accessibilityLabel(for hit: RecordingIndex.IndexedRecording) -> String {
+        let dateFmt = DateFormatter()
+        dateFmt.dateStyle = .medium
+        dateFmt.timeStyle = .short
+        let when = dateFmt.string(from: hit.start)
+        let tags = hit.detectionTags.isEmpty
+            ? ""
+            : ", tags: \(hit.detectionTags.map(\.rawValue).joined(separator: ", "))"
+        let bookmarkSuffix = hit.hasBookmark ? ", bookmarked" : ""
+        return "\(hit.cameraName) recording at \(when)\(tags)\(bookmarkSuffix). Double-tap to play."
     }
 
     private func refreshDigest(for rows: [ScopedRecording]) {

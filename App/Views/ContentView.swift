@@ -33,6 +33,24 @@ struct ContentView: View {
         .sheet(item: $passwordEntryEntry) { entry in
             EnterPasswordSheet(entry: entry)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .reolensSwitchToCamera)) { note in
+            // 0.6.1 — ⌘1..⌘9 jumps to the n-th camera in the store.
+            // The Camera menu posts this with userInfo["index"] as a
+            // zero-based Int; we bounds-check against the live list
+            // so an out-of-range key is a no-op (better than a beep
+            // and no feedback).
+            guard let index = note.userInfo?["index"] as? Int,
+                  index >= 0, index < store.cameras.count else { return }
+            let camera = store.cameras[index]
+            store.selection = .device(camera.id)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .reolensRefreshLiveTiles)) { _ in
+            // 0.6.1 — ⌘R refreshes every camera's snapshot through the
+            // shared prefetcher. Reuses the existing background sweep
+            // path so this menu item doesn't introduce a parallel
+            // refresh codepath.
+            Task { await CameraPreviewPrefetcher.shared.sweepNow() }
+        }
     }
 
     @ViewBuilder

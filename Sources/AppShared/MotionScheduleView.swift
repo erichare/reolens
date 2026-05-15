@@ -23,6 +23,7 @@ public struct MotionScheduleView: View {
         self.channel = channel
     }
 
+    @Environment(\.dismiss) private var dismiss
     @State private var workingMain: WeeklySchedule = WeeklySchedule()
     @State private var originalMain: WeeklySchedule = WeeklySchedule()
     @State private var workingTagOverrides: [String: WeeklySchedule] = [:]
@@ -52,9 +53,18 @@ public struct MotionScheduleView: View {
                 ContentUnavailableView {
                     Label("Couldn't read motion schedule", systemImage: "exclamationmark.triangle")
                 } description: {
-                    Text(msg).font(.caption).textSelection(.enabled)
+                    VStack(spacing: 8) {
+                        Text(msg).font(.caption).textSelection(.enabled)
+                        Text("This usually means the camera or hub didn't answer the request. Try again, or check the camera is reachable on the live tab.")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
                 } actions: {
-                    Button("Retry") { Task { await load() } }
+                    HStack(spacing: 12) {
+                        Button("Retry") { Task { await load() } }
+                            .buttonStyle(.borderedProminent)
+                        Button("Go back") { dismiss() }
+                    }
                 }
             }
         }
@@ -223,7 +233,16 @@ public struct MotionScheduleView: View {
         do {
             let envelope = try await session.client.send(cmd, as: MotionScheduleEnvelope.self)
             guard let parsed = WeeklySchedule(scheduleString: envelope.MdAlarm.scheduleTable.mainStream) else {
-                loadPhase = .error("Camera returned a schedule we couldn't parse.")
+                // 0.6.1 — the wire decoded fine but the 168-char
+                // bitmap didn't validate. Treat this as unsupported
+                // rather than stuck-error: the user can see + edit
+                // a default schedule and the unsupported notice
+                // explains why writes won't take effect.
+                AppErrorRecorder.recordAsync(
+                    .schedule(.loadFailed(reason: "bitmap shape unparseable")),
+                    context: "motionSchedule.load"
+                )
+                degradeToUnsupported()
                 return
             }
             originalMain = parsed
@@ -242,21 +261,50 @@ public struct MotionScheduleView: View {
 
             loadPhase = .ready
         } catch let cgi as CGIError where cgi.rspCode == CGIErrorCode.notSupport.rawValue {
-            originalMain = WeeklySchedule()
-            workingMain = originalMain
-            originalTagOverrides = [:]
-            workingTagOverrides = [:]
-            loadPhase = .unsupported
+            degradeToUnsupported()
+        } catch is DecodingError {
+            // 0.6.1 — Firmware returned a payload that doesn't fit
+            // either of the two documented `MdAlarm` shapes
+            // (`schedule.table` canonical or `scheduleTable.mainStream`
+            // legacy). Per AGENTS.md §7 this is a firmware variance,
+            // not a network / auth problem — degrade to read-only
+            // rather than leaving the user stuck at an error screen
+            // with no path forward. The recorded AppError lets
+            // support discover which firmware returned the new shape.
+            AppErrorRecorder.recordAsync(
+                .schedule(.loadFailed(reason: "undocumented MdAlarm wire shape")),
+                context: "motionSchedule.load"
+            )
+            degradeToUnsupported()
         } catch let reolink as ReolinkClientError {
             // Same rationale as RecordingScheduleView — render the
             // actual case + payload instead of the opaque NSError
             // bridge string the user would otherwise see.
             log.error("GetMdAlarm failed: \(String(describing: reolink), privacy: .public)")
+            AppErrorRecorder.recordAsync(
+                .schedule(.loadFailed(reason: String(reolink.description.prefix(120)))),
+                context: "motionSchedule.load"
+            )
             loadPhase = .error(reolink.description)
         } catch {
             log.error("GetMdAlarm failed: \(String(describing: error), privacy: .public)")
+            AppErrorRecorder.recordAsync(
+                .schedule(.loadFailed(reason: "\(type(of: error))")),
+                context: "motionSchedule.load"
+            )
             loadPhase = .error(String(describing: error))
         }
+    }
+
+    /// Reset state to an empty schedule and flag the view read-only.
+    /// Used for both the explicit Reolink `-9 notSupport` path and
+    /// the 0.6.1 firmware-shape-mismatch fallback.
+    private func degradeToUnsupported() {
+        originalMain = WeeklySchedule()
+        workingMain = originalMain
+        originalTagOverrides = [:]
+        workingTagOverrides = [:]
+        loadPhase = .unsupported
     }
 
     private func apply() async {

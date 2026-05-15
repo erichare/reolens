@@ -6,18 +6,53 @@ import AppShared
 /// macOS app's TabView-based settings window) because iOS settings
 /// idiom is one long-scroll page per top-level entry point.
 ///
-/// All the configurable state — notification toggles, permission
-/// status, developer mode — comes from `AppShared` types
-/// (`EventNotifier`, `CameraStore`), so this view is purely
-/// presentation. Edits sync to iCloud through the same channels as
-/// the macOS app.
+/// 0.6.1 — reorganized into the seven shared top-level buckets
+/// (`SettingsCamerasBucket`, `SettingsNotificationsBucket`,
+/// `SettingsDisplayBucket`, `SettingsBackgroundBucket`,
+/// `SettingsPrivacyBucket`, `SettingsAdvancedBucket`,
+/// `SettingsAboutBucket`). Each bucket is shared with the macOS
+/// `SettingsView` so the platforms can't drift apart again. The legacy
+/// flat layout is preserved behind `preferences.useReorganizedSettings`
+/// as an emergency revert; remove in 0.7.x once the new IA has been
+/// vetted in the field.
 struct SettingsView: View {
+    @Environment(CameraStore.self) private var store
+
+    var body: some View {
+        if store.preferences.useReorganizedSettings {
+            ReorganizedSettingsView()
+        } else {
+            LegacySettingsView()
+        }
+    }
+}
+
+// MARK: - Reorganized (0.6.1) layout
+
+private struct ReorganizedSettingsView: View {
+    @State private var showingLog: Bool = false
+    @State private var showingDiagnostics: Bool = false
+
+    var body: some View {
+        Form {
+            SettingsCamerasBucket()
+            SettingsNotificationsBucket(showingLog: $showingLog)
+            SettingsDisplayBucket()
+            SettingsBackgroundBucket()
+            SettingsPrivacyBucket()
+            SettingsAdvancedBucket(showingDiagnostics: $showingDiagnostics)
+            SettingsAboutBucket()
+        }
+        .navigationTitle("Settings")
+    }
+}
+
+// MARK: - Legacy (≤ 0.6.0) layout — kept behind a flag for emergency revert
+
+private struct LegacySettingsView: View {
     @Environment(CameraStore.self) private var store
     @State private var notifier = EventNotifier.shared
     @AppStorage(GridPreviewSetting.liveGridDefaultsKey) private var liveGridEnabled: Bool = false
-    /// 0.6.0 Slice B2 — HomeKit bridge instance, owned by the view
-    /// so the @Bindable wrapper in `HomeKitSection` works. Cheap to
-    /// construct — initial availability probe is synchronous.
     @State private var homeKitBridge = HomeKitBridge()
 
     var body: some View {
@@ -42,7 +77,7 @@ struct SettingsView: View {
 
             PerCameraNotificationsSection()
 
-            OvernightDigestSection()
+            LegacyOvernightDigestSection()
 
             Section("System permission") {
                 permissionRow
@@ -100,9 +135,6 @@ struct SettingsView: View {
             }
 
             Section("About") {
-                // Read from Bundle.main so the version reflects whatever
-                // marketing version Xcode shipped — keeps the Settings
-                // tab from drifting out of sync with the actual build.
                 LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—")
                 LabeledContent("Build", value: Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—")
                 Link("Project on GitHub", destination: URL(string: "https://github.com/jestatsio/reolens")!)
@@ -154,15 +186,13 @@ struct SettingsView: View {
         }
     }
 
-    /// `@Bindable` wrapper for the `@Observable` store, so the toggle
-    /// can bind to `store.developerMode` without us needing to thread
-    /// the store down through a custom binding.
     private var bindable: Bindable<CameraStore> { Bindable(store) }
 }
 
-/// 0.5.0 Theme A5 — overnight digest controls. Mirrors the macOS
-/// implementation; AGENTS.md §1 platform parity.
-private struct OvernightDigestSection: View {
+/// 0.5.0 Theme A5 — overnight digest controls. Legacy layout's copy
+/// of `OvernightDigestSettingsSection`. The reorganized layout uses
+/// the shared one in `AppShared`.
+private struct LegacyOvernightDigestSection: View {
     @State private var enabled: Bool = OvernightDigestSettings.enabled
     @State private var hour: Int = OvernightDigestSettings.hourOfDay
     @State private var showingPreview: Bool = false

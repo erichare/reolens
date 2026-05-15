@@ -255,7 +255,17 @@ public struct ChannelSettingsView: View {
         // returns nothing or a long-stale frame.
         if session.isBatteryPoweredOrAsleep(channel: channel.channel),
            let baichuan = session.baichuanClient {
-            _ = try? await baichuan.wakeBatteryCamera(channelID: UInt8(channel.channel))
+            do {
+                _ = try await baichuan.wakeBatteryCamera(channelID: UInt8(channel.channel))
+            } catch {
+                // 0.6.1 H-1 — categorize through AppError so the
+                // BaichuanError(NWError(...)) chain's LAN-IP-bearing
+                // string never reaches `AppErrorRecord.detail`.
+                AppErrorRecorder.recordAsync(
+                    AppError.categorizeBaichuanFailure(error),
+                    context: "channelSettings.snapshotRefresh"
+                )
+            }
         }
         guard let url = await session.snapshotURL(channel: channel.channel) else { return }
         let bytes = await CameraPreviewService.shared.refresh(

@@ -201,7 +201,24 @@ public final class EventNotifier {
     @discardableResult
     public func requestPermission() async -> Bool {
         let center = UNUserNotificationCenter.current()
-        let granted = (try? await center.requestAuthorization(options: [.alert, .sound, .badge])) ?? false
+        let granted: Bool
+        do {
+            granted = try await center.requestAuthorization(options: [.alert, .sound, .badge])
+        } catch {
+            // 0.6.1 — distinguish a thrown error from a user-denied
+            // false. Previously both collapsed into `granted = false`,
+            // making the difference between "user said no" and
+            // "system request errored" invisible from the UI.
+            // 0.6.1 H-1/M-1 follow-up — route to the typed
+            // `permissionDenied` case (semantically correct for this
+            // local UN call) rather than `publishFailed`, which is
+            // documented as an iCloud-relay failure.
+            AppErrorRecorder.recordAsync(
+                .notification(.permissionDenied),
+                context: "eventNotifier.requestPermission"
+            )
+            granted = false
+        }
         await refreshPermissionStatus()
         return granted
     }

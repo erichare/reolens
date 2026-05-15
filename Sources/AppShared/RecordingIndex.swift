@@ -327,8 +327,22 @@ public actor RecordingIndex {
               let data = try? Data(contentsOf: url) else {
             return
         }
-        guard let file = try? Self.decoder.decode(RecordingIndexFile.self, from: data) else {
+        let file: RecordingIndexFile
+        do {
+            file = try Self.decoder.decode(RecordingIndexFile.self, from: data)
+        } catch {
             log.warning("Failed to decode recording index; starting fresh")
+            // 0.6.1 — surface index corruption through AppErrorRecorder
+            // so the user can discover from Diagnostics Center why
+            // their recordings disappeared briefly after launch.
+            // 0.6.1 M-2 — cap the decoder description at 120 chars so
+            // a malformed file with very long key paths doesn't bloat
+            // a single log record.
+            let reason = String(error.localizedDescription.prefix(120))
+            AppErrorRecorder.recordAsync(
+                .persistence(.decode(reason: "recording-index.v1.json: \(reason)")),
+                context: "recordingIndex.load"
+            )
             return
         }
         guard file.version == RecordingIndexFile.currentVersion else {

@@ -97,6 +97,18 @@ public struct WeeklyScheduleEditor: View {
                 schedule.toggle(coord)
             }
             .gesture(dragGesture)
+            // 0.6.1 — Each cell announces day/hour/state so VoiceOver
+            // users can navigate the grid. Without this the 168 cells
+            // are an opaque visual mass. AGENTS.md §9: never convey
+            // info by color alone — the label spells out the on/off
+            // state in addition to the fill colour.
+            .accessibilityElement()
+            .accessibilityLabel("\(Self.weekdayLabel(day)) \(String(format: "%02d:00", hour))")
+            .accessibilityValue(isOn ? "On" : "Off")
+            .accessibilityHint(readOnlyReason == nil
+                               ? "Double-tap to toggle."
+                               : "Read-only on this firmware.")
+            .accessibilityAddTraits(isOn ? [.isButton, .isSelected] : .isButton)
     }
 
     private var dragGesture: some Gesture {
