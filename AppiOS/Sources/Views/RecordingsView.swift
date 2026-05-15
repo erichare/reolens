@@ -42,6 +42,11 @@ struct RecordingsView: View {
     /// sync with the macOS UX automatically.
     @State private var bookmarks: [RecordingBookmark] = []
     @State private var showingBookmarks = false
+    /// 0.6.2 — status banner the BookmarksSheet renders below its
+    /// list. Populated by the destination router as Save-to-Photos
+    /// progresses ("Preparing…", "Saved to Photos.", permission
+    /// denials, failure messages).
+    @State private var bookmarksExportStatus: String?
 
     init(session: CameraSession, channel: ChannelStatus, scrollTarget: Date? = nil) {
         self.session = session
@@ -150,7 +155,21 @@ struct RecordingsView: View {
                 onPlay: { bookmark in
                     showingBookmarks = false
                     playBookmark(bookmark)
-                }
+                },
+                onExport: { bookmark, destination in
+                    // 0.6.2 — destination-aware export. iOS surfaces
+                    // .photos in this slice; .shareSheet wires in a
+                    // follow-up slice; .savePanel / .dragOut are macOS
+                    // routes that the sheet's per-platform Menu hides
+                    // here so they should never reach this dispatch.
+                    switch destination {
+                    case .photos:
+                        savePhotosClip(for: bookmark)
+                    case .shareSheet, .savePanel, .dragOut:
+                        log.warning("Unsupported export destination on iOS slice: \(String(describing: destination), privacy: .public)")
+                    }
+                },
+                exportStatus: $bookmarksExportStatus
             )
         }
     }
@@ -192,15 +211,84 @@ struct RecordingsView: View {
     /// contains the bookmark's start. Reuses `playEntry` so playback
     /// feels identical to a row tap.
     private func playBookmark(_ bookmark: RecordingBookmark) {
-        guard let match = loader.files.first(where: {
+        guard let match = matchingSourceFile(for: bookmark) else { return }
+        let sub = loader.subFileMatch(for: match)
+        playEntry(file: match, sub: sub, preferSub: true)
+    }
+
+    /// Locate the SearchFile whose range contains the bookmark's start
+    /// (preferred) or that's within 90s. Used by both the play and the
+    /// 0.6.2 Save-to-Photos export paths.
+    private func matchingSourceFile(for bookmark: RecordingBookmark) -> SearchFile? {
+        loader.files.first(where: {
             guard let s = $0.startDate, let e = $0.endDate else { return false }
             return s <= bookmark.startDate && bookmark.startDate <= e
         }) ?? loader.files.first(where: {
             guard let s = $0.startDate else { return false }
             return abs(s.timeIntervalSince(bookmark.startDate)) < 90
-        }) else { return }
-        let sub = loader.subFileMatch(for: match)
-        playEntry(file: match, sub: sub, preferSub: true)
+        })
+    }
+
+    /// 0.6.2 — Save-to-Photos route for the unified clip-export
+    /// storyline. Trims the locally-cached source recording to the
+    /// bookmark's range via `ClipExportCoordinator`, then hands the
+    /// staged MP4 to `ClipPhotosSaver`. Status messages render in the
+    /// BookmarksSheet's bottom banner via `bookmarksExportStatus`.
+    ///
+    /// Preconditions surfaced as user-readable errors rather than
+    /// silent fails: matching SearchFile present (open the recording's
+    /// day first), source startDate readable, local clip downloaded.
+    private func savePhotosClip(for bookmark: RecordingBookmark) {
+        guard let source = matchingSourceFile(for: bookmark) else {
+            bookmarksExportStatus = "Open this recording's day in Recordings to export."
+            return
+        }
+        guard let fileStart = source.startDate else {
+            bookmarksExportStatus = "Couldn't read source recording start time."
+            return
+        }
+        let localFile = BookmarkAutoDownloader.localFileURL(for: bookmark)
+        guard FileManager.default.fileExists(atPath: localFile.path) else {
+            bookmarksExportStatus = "Clip is still downloading. Try again in a moment."
+            return
+        }
+        let lo = max(0, bookmark.startEpoch - fileStart.timeIntervalSince1970)
+        let hi = max(lo, bookmark.endEpoch - fileStart.timeIntervalSince1970)
+        let request = ClipExportRequest(
+            sources: [.init(url: localFile, range: lo...hi)],
+            suggestedFilename: ClipExportCoordinator.suggestedFilename(
+                cameraName: session.entry.displayName,
+                start: bookmark.startDate
+            )
+        )
+        bookmarksExportStatus = "Preparing clip…"
+        Task {
+            let outcome: String
+            do {
+                let staged = try await ClipExportCoordinator.stage(request)
+                let result = await ClipPhotosSaver.save(videoFileURL: staged.stagedURL)
+                switch result {
+                case .saved:
+                    outcome = "Saved to Photos."
+                case .denied:
+                    outcome = "Photos access denied. Enable it in Settings to save clips."
+                case .unsupported:
+                    outcome = "Save to Photos isn't supported on this platform."
+                case .noFile:
+                    outcome = "Couldn't prepare the clip file."
+                case .failed(let msg):
+                    outcome = "Couldn't save: \(msg)"
+                }
+            } catch {
+                outcome = "Export failed: \(error.localizedDescription)"
+            }
+            bookmarksExportStatus = outcome
+            // Drop the staging cache promptly after a save attempt so
+            // the user's iOS device doesn't accumulate copies of every
+            // clip they hand off to Photos. Synchronous file IO, but
+            // the directory is small.
+            ClipExportCoordinator.pruneStaging(olderThan: 30)
+        }
     }
 
     /// Locate the file whose time range contains `target` (preferred)

@@ -23,15 +23,24 @@ public struct BookmarksSheet: View {
     @Binding public var bookmarks: [RecordingBookmark]
     public let onPlay: (RecordingBookmark) -> Void
     /// 0.5.0 Theme C1 — export-trimmed-MP4 callback. Routed to
-    /// `RecordingsView.exportBookmark(_:)` which knows about the
-    /// matching `SearchFile` and the camera's CGI client. Optional so
-    /// the sheet can render in contexts (iOS, previews, tests)
+    /// `RecordingsView.exportBookmark(_:to:)` which knows about the
+    /// matching `SearchFile` and the camera's CGI client.
+    ///
+    /// 0.6.2 — the callback now carries a `ClipExportDestination` so
+    /// the same Export Menu surfaces Save to Photos / Share / drag-out
+    /// / Save As… without each platform inventing its own routing.
+    /// Optional so the sheet can render in contexts (previews, tests)
     /// without an export pipeline.
-    public let onExport: ((RecordingBookmark) -> Void)?
+    public let onExport: ((RecordingBookmark, ClipExportDestination) -> Void)?
+    /// 0.6.2 — status banner shown below the bookmark list. The parent
+    /// view's `onExport` closure is the producer ("Preparing…",
+    /// "Saved to Photos", "Permission denied", …); the sheet just
+    /// renders. Binding rather than internal `@State` because the
+    /// work happens outside the sheet's body and the consumer (the
+    /// parent's destination router) needs to set it.
+    @Binding public var exportStatus: String?
 
     @Environment(\.dismiss) private var dismiss
-    @State private var exporting = false
-    @State private var exportStatus: String?
     /// 0.6.0 — confirmation prompt before an explicit Delete-button
     /// tap removes a bookmark. Swipe-to-delete on iOS still works
     /// without a prompt (the swipe gesture itself is the
@@ -46,7 +55,8 @@ public struct BookmarksSheet: View {
         channel: Int? = nil,
         bookmarks: Binding<[RecordingBookmark]>,
         onPlay: @escaping (RecordingBookmark) -> Void,
-        onExport: ((RecordingBookmark) -> Void)? = nil
+        onExport: ((RecordingBookmark, ClipExportDestination) -> Void)? = nil,
+        exportStatus: Binding<String?> = .constant(nil)
     ) {
         self.cameraID = cameraID
         self.cameraName = cameraName
@@ -54,6 +64,7 @@ public struct BookmarksSheet: View {
         self._bookmarks = bookmarks
         self.onPlay = onPlay
         self.onExport = onExport
+        self._exportStatus = exportStatus
     }
 
     /// 0.5.1 — Honor the optional `channel` filter and the user's
@@ -182,14 +193,7 @@ public struct BookmarksSheet: View {
             }
             Spacer()
             if let onExport {
-                Button {
-                    onExport(bookmark)
-                } label: {
-                    Label("Export…", systemImage: "square.and.arrow.up")
-                        .labelStyle(.iconOnly)
-                }
-                .buttonStyle(.plain)
-                .help("Export this bookmarked clip to a MP4 file.")
+                exportMenu(for: bookmark, onExport: onExport)
             }
             Button {
                 onPlay(bookmark)
@@ -213,6 +217,45 @@ public struct BookmarksSheet: View {
             .help("Remove this bookmark and its downloaded clip from this device.")
         }
         .padding(.vertical, 4)
+    }
+
+    /// 0.6.2 — the per-row Export menu. Hosts the platform-appropriate
+    /// destinations: iOS / iPadOS gets Save to Photos; macOS keeps the
+    /// Save As… NSSavePanel route. Share-sheet + macOS drag-out
+    /// destinations land in subsequent 0.6.2 slices. The caller's
+    /// `onExport` closure dispatches on the destination.
+    @ViewBuilder
+    private func exportMenu(
+        for bookmark: RecordingBookmark,
+        onExport: @escaping (RecordingBookmark, ClipExportDestination) -> Void
+    ) -> some View {
+        Menu {
+            #if os(iOS) || os(visionOS)
+            Button {
+                onExport(bookmark, .photos)
+            } label: {
+                Label("Save to Photos", systemImage: "photo.on.rectangle.angled")
+            }
+            #else
+            Button {
+                onExport(bookmark, .savePanel)
+            } label: {
+                Label("Save as MP4…", systemImage: "arrow.down.doc")
+            }
+            #endif
+        } label: {
+            Label("Export…", systemImage: "square.and.arrow.up")
+                .labelStyle(.iconOnly)
+        }
+        #if os(macOS)
+        // Strip the default macOS Menu chrome (chevron + button bezel)
+        // so the Export affordance aligns visually with the sibling
+        // Play / Delete icon-only buttons in the row.
+        .menuStyle(.borderlessButton)
+        #endif
+        .buttonStyle(.plain)
+        .help("Export this bookmarked clip.")
+        .accessibilityLabel("Export bookmarked clip")
     }
 
     private func durationLabel(for bookmark: RecordingBookmark) -> String {

@@ -42,6 +42,11 @@ struct RecordingsView: View {
     /// + the per-row "Bookmark this clip" context-menu item.
     @State private var bookmarks: [RecordingBookmark] = []
     @State private var showingBookmarks = false
+    /// 0.6.2 — status banner the BookmarksSheet renders below its
+    /// list. The destination router (`onExport` closure) populates it
+    /// as the export progresses ("Preparing…", "Saved to disk.",
+    /// failure messages).
+    @State private var bookmarksExportStatus: String?
     @State private var bookmarkExportStatus: String?
 
     init(session: CameraSession, channel: ChannelStatus, scrollTarget: Date? = nil) {
@@ -175,9 +180,19 @@ struct RecordingsView: View {
                     showingBookmarks = false
                     playBookmark(bookmark)
                 },
-                onExport: { bookmark in
-                    exportBookmark(bookmark)
-                }
+                onExport: { bookmark, destination in
+                    // 0.6.2 — destination-aware export. macOS surfaces
+                    // .savePanel (the existing NSSavePanel + trimmed-
+                    // download flow). Other destinations are wired in
+                    // subsequent 0.6.2 slices.
+                    switch destination {
+                    case .savePanel:
+                        exportBookmark(bookmark)
+                    case .photos, .shareSheet, .dragOut:
+                        log.warning("Unsupported export destination on macOS slice: \(String(describing: destination), privacy: .public)")
+                    }
+                },
+                exportStatus: $bookmarksExportStatus
             )
         }
     }
