@@ -45,9 +45,11 @@ public enum DiscoveryXML {
         /// Protocol family. Observed value `6` (likely
         /// "Reolink P2P v6").
         public static let family = "family"
-        /// Client OS / addressing identifier. Observed value
-        /// `MAC` from the macOS app.
-        public static let clientSource = "s"
+        /// Client platform identifier. The wire tag is `<p>`
+        /// (likely "platform"). Observed values: `MAC` from
+        /// the macOS app; presumably `IOS`/`AND`/`WIN` from
+        /// other Reolink clients.
+        public static let clientSource = "p"
 
         // Response children
         /// Camera's current WAN registration — the primary
