@@ -41,10 +41,16 @@ public actor RemoteTransport: BcMessageTransport {
     public let uid: String
 
     private let discovery: P2PDiscovery
+    private let rendezvous: RendezvousClient
     private let probeRunner: any HolePunchProbeRunner
     private let dataConnectionFactory: @Sendable (DiscoveryXML.Endpoint) async throws -> any BcUdpDataConnection
     private let directDeadline: Duration
     private let relayDeadline: Duration
+
+    /// Server-assigned session ID from the rendezvous reply.
+    /// Stored so future commits can stamp it into the
+    /// `C2D_T` punch probe payload (Phase 3d.2 finish).
+    private var sessionID: UInt32?
 
     private var dataConnection: (any BcUdpDataConnection)?
     private var winner: HolePunchResult?
@@ -76,6 +82,7 @@ public actor RemoteTransport: BcMessageTransport {
         credentials: BaichuanCredentials,
         uid: String,
         discovery: P2PDiscovery,
+        rendezvous: RendezvousClient,
         probeRunner: any HolePunchProbeRunner,
         dataConnectionFactory: @escaping @Sendable (DiscoveryXML.Endpoint) async throws -> any BcUdpDataConnection,
         directDeadline: Duration = .seconds(6),
@@ -85,6 +92,7 @@ public actor RemoteTransport: BcMessageTransport {
         self.credentials = credentials
         self.uid = uid
         self.discovery = discovery
+        self.rendezvous = rendezvous
         self.probeRunner = probeRunner
         self.dataConnectionFactory = dataConnectionFactory
         self.directDeadline = directDeadline
@@ -98,21 +106,59 @@ public actor RemoteTransport: BcMessageTransport {
         guard dataConnection == nil else { return }
         log.info("RemoteTransport.connect uid=\(self.uid, privacy: .private)")
 
-        let candidates: DiscoveryXML.LookupResponse
+        // Step 1: Discovery — find the rendezvous server.
+        let lookup: DiscoveryXML.LookupResponse
         do {
-            candidates = try await discovery.lookup(uid: uid)
+            lookup = try await discovery.lookup(uid: uid)
         } catch {
             log.error("Discovery failed: \(error.localizedDescription, privacy: .public)")
             throw error
         }
-        if candidates.isEmpty {
+        if lookup.isEmpty {
+            throw RemoteTransportError.noCandidates(uid: uid)
+        }
+        guard let rendezvousEndpoint = lookup.rendezvous else {
+            // Discovery succeeded but didn't return a
+            // rendezvous endpoint — can't proceed.
+            throw RemoteTransportError.noCandidates(uid: uid)
+        }
+        guard let relayHint = lookup.relay else {
+            // The rendezvous request requires a relay hint;
+            // if discovery omitted one we have no preferred
+            // fallback to advertise. Surface as no-candidates
+            // since the camera is effectively unreachable.
             throw RemoteTransportError.noCandidates(uid: uid)
         }
 
+        // Step 2: Rendezvous — get the camera's `<dmap>`
+        // (NAT'd public address) and a server-assigned
+        // session ID.
+        let rendezvousReply: DiscoveryXML.RendezvousReply
+        do {
+            rendezvousReply = try await rendezvous.rendezvous(
+                uid: uid,
+                rendezvousEndpoint: rendezvousEndpoint,
+                relayHint: relayHint,
+                connectionID: connectionID
+            )
+        } catch RendezvousError.serverRejected(let code) {
+            log.warning("Rendezvous server rejected: code=\(code, privacy: .public)")
+            throw RemoteTransportError.noCandidates(uid: uid)
+        } catch {
+            log.error("Rendezvous failed: \(error.localizedDescription, privacy: .public)")
+            throw error
+        }
+        self.sessionID = rendezvousReply.sessionID
+
+        // Step 3: Hole-punch. Probe the camera's `<dmap>`
+        // (direct path) with the rendezvous reply's relay (or
+        // discovery's relay as backup) as fallback.
+        let punchRelay = rendezvousReply.relay ?? relayHint
         let result: HolePunchResult
         do {
             result = try await HolePunchScheduler.punch(
-                candidates,
+                direct: rendezvousReply.deviceMappedEndpoint,
+                relay: punchRelay,
                 directDeadline: directDeadline,
                 relayDeadline: relayDeadline,
                 runner: probeRunner
@@ -128,8 +174,9 @@ public actor RemoteTransport: BcMessageTransport {
             throw error
         }
 
-        log.info("Hole-punch winner: \(result.endpoint.host, privacy: .private):\(result.endpoint.port, privacy: .public) path=\(String(describing: result.path), privacy: .public)")
+        log.info("Hole-punch winner: \(result.endpoint.host, privacy: .private):\(result.endpoint.port, privacy: .public) path=\(String(describing: result.path), privacy: .public) sid=\(rendezvousReply.sessionID, privacy: .public)")
 
+        // Step 4: Hand off to the data channel.
         let channel = try await dataConnectionFactory(result.endpoint)
         try await channel.connect()
         self.dataConnection = channel
@@ -153,6 +200,7 @@ public actor RemoteTransport: BcMessageTransport {
         winner = nil
         fragmenter = nil
         reassembler = nil
+        sessionID = nil
         readBuffer = Data()
         for (_, cont) in replySlots {
             cont.finish()
@@ -350,6 +398,7 @@ extension RemoteTransport {
             credentials: credentials,
             uid: uid,
             discovery: P2PDiscovery(transport: bcUdpTransport),
+            rendezvous: RendezvousClient(transport: bcUdpTransport),
             probeRunner: engine,
             dataConnectionFactory: { endpoint in
                 guard let conn = await engine.dataConnection(for: endpoint) else {

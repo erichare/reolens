@@ -52,9 +52,11 @@ public enum DiscoveryXML {
         public static let clientSource = "p"
 
         // Response children
-        /// Camera's current WAN registration — the primary
-        /// direct hole-punch target.
-        public static let registration = "reg"
+        /// Rendezvous server endpoint — receives the next step
+        /// of the handshake (`C2R_C`). NOT the camera's direct
+        /// address; the camera's NAT'd public address comes
+        /// back later in the rendezvous reply's `<dmap>`.
+        public static let rendezvous = "reg"
         /// Relay endpoint — TURN-style fallback when direct
         /// punch fails.
         public static let relay = "relay"
@@ -65,6 +67,54 @@ public enum DiscoveryXML {
         /// (observed `-3`) = camera not registered at this
         /// server, try the next pool entry.
         public static let responseCode = "rsp"
+
+        // MARK: Rendezvous (C2R_C → R2C_C_R / R2C_T)
+
+        /// Wrapper for the client-to-rendezvous-server step
+        /// (step 2 of the handshake). Carries the UID plus
+        /// the client's external IP/port hint and the
+        /// connection ID we want to use.
+        public static let rendezvousRequest = "C2R_C"
+        /// Compact rendezvous reply — minimal address payload.
+        public static let rendezvousReplyT = "R2C_T"
+        /// Full rendezvous reply — includes relay paths and
+        /// NAT classification.
+        public static let rendezvousReplyC = "R2C_C_R"
+
+        /// Camera's NAT'd public endpoint — the address we
+        /// actually hole-punch to. Lives inside the rendezvous
+        /// reply.
+        public static let deviceMappedAddress = "dmap"
+        /// Camera's LAN endpoint — useful if we happen to be
+        /// on the same network.
+        public static let deviceLanAddress = "dev"
+        /// Server-assigned session identifier; round-tripped
+        /// into the punch probe.
+        public static let sessionID = "sid"
+        /// Client-minted connection identifier. We pick this
+        /// in `C2R_C` and the server echoes it.
+        public static let connectionID = "cid"
+        /// Client's perceived external IP (rendezvous request).
+        public static let clientHint = "cli"
+        /// Free-form debug counter sent by the Reolink app —
+        /// echoed by us with a stable value so we look like a
+        /// well-behaved client.
+        public static let debug = "debug"
+        /// Retry / round counter the Reolink macOS app sends
+        /// (always `3` in captures).
+        public static let retryCount = "r"
+
+        // MARK: Punch probe (C2D_T)
+
+        /// Wrapper for the final client-to-device hole-punch
+        /// probe (step 3 of the handshake). Carries the
+        /// session + connection IDs from rendezvous.
+        public static let punchProbe = "C2D_T"
+        /// Connection type the client requests. Observed
+        /// value `local` in captures.
+        public static let connectionType = "conn"
+        /// MTU hint the client offers. Observed value `1350`.
+        public static let mtu = "mtu"
     }
 
     // MARK: - Request
@@ -154,33 +204,35 @@ public enum DiscoveryXML {
     ///
     /// The wire reply carries two endpoints of interest:
     ///
-    /// - `registration`: the camera's currently-registered WAN
-    ///   IP:port. This is the primary direct hole-punch target.
-    /// - `relay`: a Reolink-operated relay that brokers traffic
-    ///   when direct punch fails.
+    /// - `rendezvous`: the address of the next step in the
+    ///   handshake — a Reolink-operated server that brokers
+    ///   the actual hole-punch. **Not** the camera's direct
+    ///   address; the camera's NAT'd public address comes
+    ///   back from the rendezvous server in its own reply
+    ///   (`R2C_C_R.dmap`).
+    /// - `relay`: a Reolink-operated TURN-style relay used
+    ///   when direct hole-punch fails.
     ///
-    /// Several diagnostic fields (the `<log>`, `<t>`, `<mtu>`,
-    /// `<debug>`, `<ac>` elements observed on the wire) are
-    /// intentionally NOT modelled here — the hole-punch state
-    /// machine only consumes `registration` + `relay`, and
-    /// surfacing the diagnostic fields would invite premature
-    /// reliance on values that Reolink might silently repurpose.
+    /// Several diagnostic fields (the `<log>`, `<t>`,
+    /// `<mtu>`, `<debug>`, `<ac>` elements observed on the
+    /// wire) are intentionally NOT modelled here — the
+    /// state machine only consumes `rendezvous` + `relay`.
     ///
     /// The `responseCode` field is the server's verdict: `0`
     /// means "candidates included", a non-zero value (`-3`
     /// observed = "not registered at this server") means the
     /// caller should try the next pool entry.
     public struct LookupResponse: Sendable, Hashable {
-        public var registration: Endpoint?
+        public var rendezvous: Endpoint?
         public var relay: Endpoint?
         public var responseCode: Int
 
         public init(
-            registration: Endpoint? = nil,
+            rendezvous: Endpoint? = nil,
             relay: Endpoint? = nil,
             responseCode: Int = 0
         ) {
-            self.registration = registration
+            self.rendezvous = rendezvous
             self.relay = relay
             self.responseCode = responseCode
         }
@@ -189,16 +241,16 @@ public enum DiscoveryXML {
         /// The caller treats this as a soft "not found" and
         /// tries the next discovery server.
         public var isEmpty: Bool {
-            registration == nil && relay == nil
+            rendezvous == nil && relay == nil
         }
 
         public func encode() -> Data {
             var inner = ""
-            if let registration {
-                inner += "<\(Tag.registration)>" +
-                    "<\(Tag.ip)>\(registration.host)</\(Tag.ip)>" +
-                    "<\(Tag.port)>\(registration.port)</\(Tag.port)>" +
-                    "</\(Tag.registration)>"
+            if let rendezvous {
+                inner += "<\(Tag.rendezvous)>" +
+                    "<\(Tag.ip)>\(rendezvous.host)</\(Tag.ip)>" +
+                    "<\(Tag.port)>\(rendezvous.port)</\(Tag.port)>" +
+                    "</\(Tag.rendezvous)>"
             }
             if let relay {
                 inner += "<\(Tag.relay)>" +
@@ -221,11 +273,11 @@ public enum DiscoveryXML {
             // valid discovery response. Anything else is treated as
             // malformed.
             guard text.contains("<\(Tag.serverReply)>") else { return nil }
-            let registration = parseEndpoint(in: text, parentTag: Tag.registration)
+            let rendezvous = parseEndpoint(in: text, parentTag: Tag.rendezvous)
             let relay = parseEndpoint(in: text, parentTag: Tag.relay)
             let responseCode = TagScan.firstTagContent(in: text, tag: Tag.responseCode).flatMap(Int.init) ?? 0
             return LookupResponse(
-                registration: registration,
+                rendezvous: rendezvous,
                 relay: relay,
                 responseCode: responseCode
             )
@@ -241,6 +293,201 @@ public enum DiscoveryXML {
                   !host.isEmpty else { return nil }
             let port = TagScan.firstTagContent(in: inner, tag: Tag.port).flatMap(UInt16.init) ?? 0
             return Endpoint(host: host, port: port)
+        }
+    }
+
+    // MARK: - Rendezvous (step 2)
+
+    /// Client-to-rendezvous-server request (`<C2R_C>`). Sent
+    /// to the endpoint returned in `LookupResponse.rendezvous`.
+    public struct RendezvousRequest: Sendable, Hashable {
+        public var uid: String
+        public var clientHint: Endpoint
+        public var relayHint: Endpoint
+        public var connectionID: UInt32
+        public var debug: Int
+        public var family: Int
+        public var clientSource: String
+        public var retryCount: Int
+
+        public init(
+            uid: String,
+            clientHint: Endpoint,
+            relayHint: Endpoint,
+            connectionID: UInt32,
+            debug: Int = 251_658_240,
+            family: Int = 6,
+            clientSource: String = "MAC",
+            retryCount: Int = 3
+        ) {
+            self.uid = uid
+            self.clientHint = clientHint
+            self.relayHint = relayHint
+            self.connectionID = connectionID
+            self.debug = debug
+            self.family = family
+            self.clientSource = clientSource
+            self.retryCount = retryCount
+        }
+
+        public func encode() -> Data {
+            let xml = "<\(Tag.root)>" +
+                "<\(Tag.rendezvousRequest)>" +
+                "<\(Tag.uid)>\(uid)</\(Tag.uid)>" +
+                "<\(Tag.clientHint)>" +
+                    "<\(Tag.ip)>\(clientHint.host)</\(Tag.ip)>" +
+                    "<\(Tag.port)>\(clientHint.port)</\(Tag.port)>" +
+                    "</\(Tag.clientHint)>" +
+                "<\(Tag.relay)>" +
+                    "<\(Tag.ip)>\(relayHint.host)</\(Tag.ip)>" +
+                    "<\(Tag.port)>\(relayHint.port)</\(Tag.port)>" +
+                    "</\(Tag.relay)>" +
+                "<\(Tag.connectionID)>\(connectionID)</\(Tag.connectionID)>" +
+                "<\(Tag.debug)>\(debug)</\(Tag.debug)>" +
+                "<\(Tag.family)>\(family)</\(Tag.family)>" +
+                "<\(Tag.clientSource)>\(clientSource)</\(Tag.clientSource)>" +
+                "<\(Tag.retryCount)>\(retryCount)</\(Tag.retryCount)>" +
+                "</\(Tag.rendezvousRequest)>" +
+                "</\(Tag.root)>"
+            return Data(xml.utf8)
+        }
+    }
+
+    /// Rendezvous server reply (`<R2C_C_R>` or `<R2C_T>`).
+    /// Both wrappers carry the same core payload — the
+    /// camera's `<dev>` (LAN) and `<dmap>` (NAT'd public)
+    /// endpoints plus the server-assigned session ID. The
+    /// full `R2C_C_R` variant adds relay paths and a NAT
+    /// classification field.
+    public struct RendezvousReply: Sendable, Hashable {
+        /// Camera's LAN IP — useful if we happen to be on
+        /// the same network.
+        public var deviceLanEndpoint: Endpoint?
+        /// Camera's NAT'd public endpoint. **This is the
+        /// hole-punch target.**
+        public var deviceMappedEndpoint: Endpoint?
+        /// Server-side relay endpoint (only in `R2C_C_R`).
+        public var relay: Endpoint?
+        /// Server-assigned session ID. Round-tripped into
+        /// the final punch probe.
+        public var sessionID: UInt32
+        /// Status code (`0` on success).
+        public var responseCode: Int
+
+        public init(
+            deviceLanEndpoint: Endpoint? = nil,
+            deviceMappedEndpoint: Endpoint? = nil,
+            relay: Endpoint? = nil,
+            sessionID: UInt32 = 0,
+            responseCode: Int = 0
+        ) {
+            self.deviceLanEndpoint = deviceLanEndpoint
+            self.deviceMappedEndpoint = deviceMappedEndpoint
+            self.relay = relay
+            self.sessionID = sessionID
+            self.responseCode = responseCode
+        }
+
+        public func encode() -> Data {
+            // Encode as the richer R2C_C_R variant. Decoder
+            // accepts either wrapper.
+            var inner = ""
+            if let dmap = deviceMappedEndpoint {
+                inner += "<\(Tag.deviceMappedAddress)>" +
+                    "<\(Tag.ip)>\(dmap.host)</\(Tag.ip)>" +
+                    "<\(Tag.port)>\(dmap.port)</\(Tag.port)>" +
+                    "</\(Tag.deviceMappedAddress)>"
+            }
+            if let dev = deviceLanEndpoint {
+                inner += "<\(Tag.deviceLanAddress)>" +
+                    "<\(Tag.ip)>\(dev.host)</\(Tag.ip)>" +
+                    "<\(Tag.port)>\(dev.port)</\(Tag.port)>" +
+                    "</\(Tag.deviceLanAddress)>"
+            }
+            if let relay {
+                inner += "<\(Tag.relay)>" +
+                    "<\(Tag.ip)>\(relay.host)</\(Tag.ip)>" +
+                    "<\(Tag.port)>\(relay.port)</\(Tag.port)>" +
+                    "</\(Tag.relay)>"
+            }
+            inner += "<\(Tag.sessionID)>\(sessionID)</\(Tag.sessionID)>"
+            inner += "<\(Tag.responseCode)>\(responseCode)</\(Tag.responseCode)>"
+            let xml = "<\(Tag.root)>" +
+                "<\(Tag.rendezvousReplyC)>" +
+                inner +
+                "</\(Tag.rendezvousReplyC)>" +
+                "</\(Tag.root)>"
+            return Data(xml.utf8)
+        }
+
+        public static func decode(from payload: Data) -> RendezvousReply? {
+            guard let text = String(data: payload, encoding: .utf8) else { return nil }
+            // Accept either wrapper variant — both carry the
+            // same payload elements.
+            guard text.contains("<\(Tag.rendezvousReplyT)>")
+                || text.contains("<\(Tag.rendezvousReplyC)>") else {
+                return nil
+            }
+            let dev = parseEndpoint(in: text, parentTag: Tag.deviceLanAddress)
+            let dmap = parseEndpoint(in: text, parentTag: Tag.deviceMappedAddress)
+            let relay = parseEndpoint(in: text, parentTag: Tag.relay)
+            let sid = TagScan.firstTagContent(in: text, tag: Tag.sessionID).flatMap(UInt32.init) ?? 0
+            let rsp = TagScan.firstTagContent(in: text, tag: Tag.responseCode).flatMap(Int.init) ?? 0
+            return RendezvousReply(
+                deviceLanEndpoint: dev,
+                deviceMappedEndpoint: dmap,
+                relay: relay,
+                sessionID: sid,
+                responseCode: rsp
+            )
+        }
+
+        private static func parseEndpoint(in xml: String, parentTag: String) -> Endpoint? {
+            guard let inner = TagScan.firstTagContent(in: xml, tag: parentTag),
+                  !inner.isEmpty else { return nil }
+            guard let host = TagScan.firstTagContent(in: inner, tag: Tag.ip),
+                  !host.isEmpty else { return nil }
+            let port = TagScan.firstTagContent(in: inner, tag: Tag.port).flatMap(UInt16.init) ?? 0
+            return Endpoint(host: host, port: port)
+        }
+    }
+
+    // MARK: - Punch probe (step 3)
+
+    /// Final client-to-device hole-punch probe (`<C2D_T>`),
+    /// sent to the camera's `<dmap>` address from the
+    /// rendezvous reply. Carries the session + connection
+    /// IDs and an MTU hint.
+    public struct PunchProbe: Sendable, Hashable {
+        public var sessionID: UInt32
+        public var connectionID: UInt32
+        /// Observed value `local`; matches the Reolink macOS
+        /// app's wire bytes.
+        public var connectionType: String
+        public var mtu: Int
+
+        public init(
+            sessionID: UInt32,
+            connectionID: UInt32,
+            connectionType: String = "local",
+            mtu: Int = 1350
+        ) {
+            self.sessionID = sessionID
+            self.connectionID = connectionID
+            self.connectionType = connectionType
+            self.mtu = mtu
+        }
+
+        public func encode() -> Data {
+            let xml = "<\(Tag.root)>" +
+                "<\(Tag.punchProbe)>" +
+                "<\(Tag.sessionID)>\(sessionID)</\(Tag.sessionID)>" +
+                "<\(Tag.connectionType)>\(connectionType)</\(Tag.connectionType)>" +
+                "<\(Tag.connectionID)>\(connectionID)</\(Tag.connectionID)>" +
+                "<\(Tag.mtu)>\(mtu)</\(Tag.mtu)>" +
+                "</\(Tag.punchProbe)>" +
+                "</\(Tag.root)>"
+            return Data(xml.utf8)
         }
     }
 }

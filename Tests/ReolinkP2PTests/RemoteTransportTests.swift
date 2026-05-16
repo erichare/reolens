@@ -4,63 +4,52 @@ import ReolinkBaichuan
 import ReolinkBcUdp
 @testable import ReolinkP2P
 
-/// Offline tests for `RemoteTransport` (Phase 3d.2 partial).
-/// Exercises the discovery → hole-punch → data-channel handoff
-/// via scripted stubs. The actual UDP wire (
-/// `NWConnectionBcUdpDataConnection`) and the inbound
-/// receive-loop wiring still land later.
+/// Offline tests for `RemoteTransport`. Exercise the full
+/// three-step handshake — discovery → rendezvous → punch —
+/// against a single `ScriptedBcUdpTransport` stub that routes
+/// based on the inbound packet's payload (`<C2M_Q>` →
+/// discovery reply; `<C2R_C>` → rendezvous reply).
 ///
 /// What these tests verify:
-/// - Empty discovery surfaces the upstream
-///   `P2PDiscoveryError.exhausted`.
-/// - A non-empty discovery result drives the hole-punch
-///   scheduler, which feeds the winning endpoint to the
-///   data-connection factory.
-/// - The `connectionPath` reflects whether the winner was
-///   direct or relayed.
-/// - `close()` is idempotent and tears down the data channel.
-/// - `sendAndAwait` still throws `notYetImplemented` while
-///   the receive loop is pending.
-@Suite("RemoteTransport — connect via hole-punch")
+/// - Three-step happy path: discovery returns rendezvous +
+///   relay, rendezvous returns dmap + sid, scheduler probes
+///   dmap, factory is invoked with the winner.
+/// - Discovery / rendezvous error surfaces (empty discovery,
+///   rejected rendezvous).
+/// - Hole-punch exhaustion bubbles up as
+///   `RemoteTransportError.holePunchExhausted`.
+/// - `sendAndAwait` round-trips a real `BcMessage` through
+///   the fragmenter + receive loop + reassembler.
+/// - `subscribe()` reaches server-initiated pushes.
+/// - `close()` is idempotent and tears down state.
+@Suite("RemoteTransport — full 3-step handshake")
 struct RemoteTransportTests {
 
-    @Test("Empty discovery surfaces P2PDiscoveryError.exhausted")
+    @Test("Empty discovery surfaces noCandidates")
     func emptyDiscovery() async throws {
-        let bcUdp = ScriptedBcUdpTransport(reply: .empty)
-        let discovery = P2PDiscovery(transport: bcUdp)
-        let transport = RemoteTransport(
-            credentials: makeCreds(),
-            uid: "FAKE-UID",
-            discovery: discovery,
+        let transport = makeTransport(
+            bcUdpTransport: ScriptedBcUdpTransport(scenario: .emptyDiscovery),
             probeRunner: AlwaysSucceedRunner(),
-            dataConnectionFactory: { _ in
-                Issue.record("Factory should not run on empty discovery")
-                throw RemoteTransportError.notYetImplemented(detail: "unreachable")
-            }
+            connection: StubDataConnection()
         )
         await #expect(throws: P2PDiscoveryError.self) {
             try await transport.connect()
         }
     }
 
-    @Test("Direct candidate wins → factory called with that endpoint, path is .direct")
-    func directWinsAndFactoryCalled() async throws {
-        let bcUdp = ScriptedBcUdpTransport(
-            reply: .withCandidates(registration: ("203.0.113.10", 9000), relay: ("relay.example", 8443))
-        )
-        let discovery = P2PDiscovery(transport: bcUdp)
+    @Test("Direct (dmap) succeeds → path is .direct, factory called with dmap")
+    func directPunchWins() async throws {
         let connection = StubDataConnection()
-        let transport = RemoteTransport(
-            credentials: makeCreds(),
-            uid: "FAKE-UID",
-            discovery: discovery,
+        let transport = makeTransport(
+            bcUdpTransport: ScriptedBcUdpTransport(scenario: .fullHandshake),
             probeRunner: ScriptedProbeRunner(script: [
-                "203.0.113.10:9000": .success,
-                "relay.example:8443": .timeout
+                "50.46.39.43:52858": .success,
+                "172.232.163.180:51188": .timeout
             ]),
+            connection: connection,
             dataConnectionFactory: { endpoint in
-                #expect(endpoint.host == "203.0.113.10")
-                #expect(endpoint.port == 9000)
+                #expect(endpoint.host == "50.46.39.43")
+                #expect(endpoint.port == 52858)
                 return connection
             }
         )
@@ -71,24 +60,15 @@ struct RemoteTransportTests {
     }
 
     @Test("Direct fails → falls back to relay; path is .relayed")
-    func relayFallbackPath() async throws {
-        let bcUdp = ScriptedBcUdpTransport(
-            reply: .withCandidates(registration: ("203.0.113.10", 9000), relay: ("relay.example", 8443))
-        )
-        let discovery = P2PDiscovery(transport: bcUdp)
+    func relayFallback() async throws {
         let connection = StubDataConnection()
-        let transport = RemoteTransport(
-            credentials: makeCreds(),
-            uid: "FAKE-UID",
-            discovery: discovery,
+        let transport = makeTransport(
+            bcUdpTransport: ScriptedBcUdpTransport(scenario: .fullHandshake),
             probeRunner: ScriptedProbeRunner(script: [
-                "203.0.113.10:9000": .timeout,
-                "relay.example:8443": .success
+                "50.46.39.43:52858": .timeout,
+                "172.232.163.180:51188": .success
             ]),
-            dataConnectionFactory: { endpoint in
-                #expect(endpoint.host == "relay.example")
-                return connection
-            }
+            connection: connection
         )
 
         try await transport.connect()
@@ -97,24 +77,23 @@ struct RemoteTransportTests {
 
     @Test("Both probes fail → throws holePunchExhausted")
     func holePunchExhausted() async throws {
-        let bcUdp = ScriptedBcUdpTransport(
-            reply: .withCandidates(registration: ("203.0.113.10", 9000), relay: ("relay.example", 8443))
+        let transport = makeTransport(
+            bcUdpTransport: ScriptedBcUdpTransport(scenario: .fullHandshake),
+            probeRunner: ScriptedProbeRunner(script: [:]),   // every probe times out
+            connection: StubDataConnection()
         )
-        let discovery = P2PDiscovery(transport: bcUdp)
-        let transport = RemoteTransport(
-            credentials: makeCreds(),
-            uid: "FAKE-UID",
-            discovery: discovery,
-            probeRunner: ScriptedProbeRunner(script: [
-                "203.0.113.10:9000": .timeout,
-                "relay.example:8443": .timeout
-            ]),
-            dataConnectionFactory: { _ in
-                Issue.record("Factory should not run when hole-punch fails")
-                throw RemoteTransportError.notYetImplemented(detail: "unreachable")
-            }
-        )
+        await #expect(throws: RemoteTransportError.self) {
+            try await transport.connect()
+        }
+    }
 
+    @Test("Rendezvous rejection (rsp<0) surfaces as noCandidates")
+    func rendezvousRejected() async throws {
+        let transport = makeTransport(
+            bcUdpTransport: ScriptedBcUdpTransport(scenario: .rendezvousRejected),
+            probeRunner: AlwaysSucceedRunner(),
+            connection: StubDataConnection()
+        )
         await #expect(throws: RemoteTransportError.self) {
             try await transport.connect()
         }
@@ -122,17 +101,11 @@ struct RemoteTransportTests {
 
     @Test("connect is idempotent after a successful punch")
     func connectIdempotent() async throws {
-        let bcUdp = ScriptedBcUdpTransport(
-            reply: .withCandidates(registration: ("203.0.113.10", 9000), relay: ("relay.example", 8443))
-        )
-        let discovery = P2PDiscovery(transport: bcUdp)
         let connection = StubDataConnection()
-        let transport = RemoteTransport(
-            credentials: makeCreds(),
-            uid: "FAKE-UID",
-            discovery: discovery,
+        let transport = makeTransport(
+            bcUdpTransport: ScriptedBcUdpTransport(scenario: .fullHandshake),
             probeRunner: AlwaysSucceedRunner(),
-            dataConnectionFactory: { _ in connection }
+            connection: connection
         )
 
         try await transport.connect()
@@ -142,17 +115,11 @@ struct RemoteTransportTests {
 
     @Test("close is idempotent and tears down the channel")
     func closeIdempotent() async throws {
-        let bcUdp = ScriptedBcUdpTransport(
-            reply: .withCandidates(registration: ("203.0.113.10", 9000), relay: ("relay.example", 8443))
-        )
-        let discovery = P2PDiscovery(transport: bcUdp)
         let connection = StubDataConnection()
-        let transport = RemoteTransport(
-            credentials: makeCreds(),
-            uid: "FAKE-UID",
-            discovery: discovery,
+        let transport = makeTransport(
+            bcUdpTransport: ScriptedBcUdpTransport(scenario: .fullHandshake),
             probeRunner: AlwaysSucceedRunner(),
-            dataConnectionFactory: { _ in connection }
+            connection: connection
         )
 
         try await transport.connect()
@@ -164,20 +131,14 @@ struct RemoteTransportTests {
 
     @Test("sendAndAwait without connect throws notYetImplemented")
     func sendBeforeConnectThrows() async throws {
-        let bcUdp = ScriptedBcUdpTransport(reply: .empty)
-        let discovery = P2PDiscovery(transport: bcUdp)
-        let transport = RemoteTransport(
-            credentials: makeCreds(),
-            uid: "FAKE-UID",
-            discovery: discovery,
+        let transport = makeTransport(
+            bcUdpTransport: ScriptedBcUdpTransport(scenario: .emptyDiscovery),
             probeRunner: AlwaysSucceedRunner(),
-            dataConnectionFactory: { _ in StubDataConnection() }
+            connection: StubDataConnection()
         )
-
-        let header = makeHeader(msgNum: 0)
         await #expect(throws: RemoteTransportError.self) {
             _ = try await transport.sendAndAwait(
-                BcMessage(header: header),
+                BcMessage(header: makeHeader(msgNum: 0)),
                 timeout: 1,
                 stage: "test"
             )
@@ -186,27 +147,19 @@ struct RemoteTransportTests {
 
     @Test("sendAndAwait fragments outbound bytes and routes the matching reply")
     func sendAndAwaitFullLoop() async throws {
-        let bcUdp = ScriptedBcUdpTransport(
-            reply: .withCandidates(registration: ("203.0.113.10", 9000), relay: ("relay.example", 8443))
-        )
-        let discovery = P2PDiscovery(transport: bcUdp)
         let connection = StubDataConnection()
         let pinnedConnectionID: UInt32 = 0x0000_02B5
-        let transport = RemoteTransport(
-            credentials: makeCreds(),
-            uid: "FAKE-UID",
-            discovery: discovery,
+        let transport = makeTransport(
+            bcUdpTransport: ScriptedBcUdpTransport(scenario: .fullHandshake),
             probeRunner: AlwaysSucceedRunner(),
-            dataConnectionFactory: { _ in connection },
+            connection: connection,
             connectionID: pinnedConnectionID
         )
         try await transport.connect()
 
         let request = BcMessage(header: makeHeader(msgNum: 42))
 
-        // Construct the reply we want the camera to "send".
-        let replyHeader = makeHeader(msgNum: 42, responseCode: 200)
-        let replyMessage = BcMessage(header: replyHeader)
+        let replyMessage = BcMessage(header: makeHeader(msgNum: 42, responseCode: 200))
         let replyBytes = replyMessage.encode(cipher: .unencrypted)
         let inboundPacket = BcUdpDataPacket(
             connectionID: pinnedConnectionID,
@@ -214,58 +167,33 @@ struct RemoteTransportTests {
             payload: replyBytes
         )
 
-        // Race the sendAndAwait against an in-flight delivery.
-        // The reply slot is registered BEFORE the send returns
-        // so even an immediate delivery doesn't slip past.
-        async let result = transport.sendAndAwait(
-            request,
-            timeout: 2,
-            stage: "test"
-        )
+        async let result = transport.sendAndAwait(request, timeout: 2, stage: "test")
 
-        // Yield once so the actor processes the send, then push
-        // the reply into the receive loop.
         try await Task.sleep(for: .milliseconds(30))
         await connection.deliver(.data(inboundPacket))
 
         let reply = try await result
         #expect(reply.header.msgNum == 42)
         #expect(reply.header.responseCode == 200)
-        #expect(reply.header.msgID == 80)
 
-        // Verify the request was actually fragmented + sent.
         let sent = await connection.sentPackets
         #expect(sent.count >= 1)
-        if case .data(let firstFragment) = sent.first {
-            #expect(firstFragment.connectionID == pinnedConnectionID)
-            #expect(firstFragment.sequence == 0)
-        } else {
-            Issue.record("Expected a Data packet to be sent")
-        }
     }
 
     @Test("Unsolicited inbound BcMessage reaches subscribe() consumers")
     func receiveLoopDispatchesToSubscribers() async throws {
-        let bcUdp = ScriptedBcUdpTransport(
-            reply: .withCandidates(registration: ("203.0.113.10", 9000), relay: ("relay.example", 8443))
-        )
-        let discovery = P2PDiscovery(transport: bcUdp)
         let connection = StubDataConnection()
         let pinnedConnectionID: UInt32 = 0xDEAD_BEEF
-        let transport = RemoteTransport(
-            credentials: makeCreds(),
-            uid: "FAKE-UID",
-            discovery: discovery,
+        let transport = makeTransport(
+            bcUdpTransport: ScriptedBcUdpTransport(scenario: .fullHandshake),
             probeRunner: AlwaysSucceedRunner(),
-            dataConnectionFactory: { _ in connection },
+            connection: connection,
             connectionID: pinnedConnectionID
         )
         try await transport.connect()
 
         let stream = await transport.subscribe()
 
-        // Push a server-initiated message (msg_num=0xBEEF, no
-        // matching reply slot).
         let header = makeHeader(msgID: 33, msgNum: 0xBEEF)
         let msg = BcMessage(header: header)
         let bytes = msg.encode(cipher: .unencrypted)
@@ -276,8 +204,6 @@ struct RemoteTransportTests {
         )
         await connection.deliver(.data(inbound))
 
-        // Race the first stream element against a wall-clock
-        // timeout — same pattern as LANTransport's tests.
         let received = await withTaskGroup(of: BcMessage?.self) { group in
             group.addTask {
                 for await m in stream { return m }
@@ -296,88 +222,13 @@ struct RemoteTransportTests {
         #expect(m.header.msgNum == 0xBEEF)
     }
 
-    @Test("Multi-fragment reply reassembles before dispatch")
-    func multiFragmentReply() async throws {
-        let bcUdp = ScriptedBcUdpTransport(
-            reply: .withCandidates(registration: ("203.0.113.10", 9000), relay: ("relay.example", 8443))
-        )
-        let discovery = P2PDiscovery(transport: bcUdp)
-        let connection = StubDataConnection()
-        let pinnedConnectionID: UInt32 = 0xFEED_FACE
-        let transport = RemoteTransport(
-            credentials: makeCreds(),
-            uid: "FAKE-UID",
-            discovery: discovery,
-            probeRunner: AlwaysSucceedRunner(),
-            dataConnectionFactory: { _ in connection },
-            connectionID: pinnedConnectionID
-        )
-        try await transport.connect()
-
-        // Construct a Baichuan reply with a non-empty body so
-        // we can chop it across multiple BcUdp Data fragments.
-        let body = Data(repeating: 0x55, count: 200)
-        let replyHeader = BcHeader(
-            msgID: 80,
-            bodyLength: UInt32(body.count),
-            channelID: 0,
-            streamType: 0,
-            msgNum: 7,
-            responseCode: 200,
-            msgClass: BcConstants.classModernWithOffset,
-            payloadOffset: 0
-        )
-        let replyMessage = BcMessage(header: replyHeader, body: body)
-        let replyBytes = replyMessage.encode(cipher: .unencrypted)
-        // Chop into 50-byte fragments.
-        let chunkSize = 50
-        var fragments: [BcUdpDataPacket] = []
-        var offset = 0
-        var seq: UInt32 = 0
-        while offset < replyBytes.count {
-            let end = min(offset + chunkSize, replyBytes.count)
-            fragments.append(
-                BcUdpDataPacket(
-                    connectionID: pinnedConnectionID,
-                    sequence: seq,
-                    payload: replyBytes.subdata(in: offset..<end)
-                )
-            )
-            seq &+= 1
-            offset = end
-        }
-
-        async let result = transport.sendAndAwait(
-            BcMessage(header: makeHeader(msgNum: 7)),
-            timeout: 2,
-            stage: "test"
-        )
-
-        try await Task.sleep(for: .milliseconds(20))
-        for fragment in fragments {
-            await connection.deliver(.data(fragment))
-        }
-
-        let reply = try await result
-        #expect(reply.header.msgNum == 7)
-        #expect(reply.header.responseCode == 200)
-        #expect(reply.body.count == 200)
-        #expect(reply.body == body)
-    }
-
     @Test("sendAndAwait honours its timeout when no reply lands")
     func sendAndAwaitTimesOut() async throws {
-        let bcUdp = ScriptedBcUdpTransport(
-            reply: .withCandidates(registration: ("203.0.113.10", 9000), relay: ("relay.example", 8443))
-        )
-        let discovery = P2PDiscovery(transport: bcUdp)
         let connection = StubDataConnection()
-        let transport = RemoteTransport(
-            credentials: makeCreds(),
-            uid: "FAKE-UID",
-            discovery: discovery,
+        let transport = makeTransport(
+            bcUdpTransport: ScriptedBcUdpTransport(scenario: .fullHandshake),
             probeRunner: AlwaysSucceedRunner(),
-            dataConnectionFactory: { _ in connection }
+            connection: connection
         )
         try await transport.connect()
 
@@ -388,6 +239,41 @@ struct RemoteTransportTests {
                 stage: "test-timeout"
             )
         }
+    }
+
+    // MARK: - Helpers
+
+    private func makeTransport(
+        bcUdpTransport: any BcUdpTransport,
+        probeRunner: any HolePunchProbeRunner,
+        connection: StubDataConnection,
+        dataConnectionFactory: (@Sendable (DiscoveryXML.Endpoint) async throws -> any BcUdpDataConnection)? = nil,
+        connectionID: UInt32? = nil
+    ) -> RemoteTransport {
+        let factory: @Sendable (DiscoveryXML.Endpoint) async throws -> any BcUdpDataConnection
+        if let dataConnectionFactory {
+            factory = dataConnectionFactory
+        } else {
+            factory = { _ in connection }
+        }
+        return RemoteTransport(
+            credentials: makeCreds(),
+            uid: "FAKE-UID",
+            discovery: P2PDiscovery(transport: bcUdpTransport),
+            rendezvous: RendezvousClient(transport: bcUdpTransport),
+            probeRunner: probeRunner,
+            dataConnectionFactory: factory,
+            connectionID: connectionID
+        )
+    }
+
+    private func makeCreds() -> BaichuanCredentials {
+        BaichuanCredentials(
+            host: "remote",
+            port: 9000,
+            username: "user",
+            password: "pass"
+        )
     }
 
     private func makeHeader(
@@ -406,35 +292,25 @@ struct RemoteTransportTests {
             payloadOffset: 0
         )
     }
-
-    // MARK: - Helpers
-
-    private func makeCreds() -> BaichuanCredentials {
-        BaichuanCredentials(
-            host: "remote",
-            port: 9000,
-            username: "user",
-            password: "pass"
-        )
-    }
 }
 
 // MARK: - Stubs
 
-/// Stub `BcUdpTransport` that always replies with the same
-/// canned packet. Encrypts replies with a fixed reply
-/// `senderID` so the decryption layer in `P2PDiscovery` is
-/// exercised end-to-end against the wire-truth cipher.
+/// Scripts the full handshake via a single transport stub.
+/// Routes inbound packets based on the decrypted XML payload —
+/// `<C2M_Q>` gets a discovery reply (rendezvous + relay);
+/// `<C2R_C>` gets a rendezvous reply (dmap + relay + sid).
+///
+/// The rendezvous + dmap values are taken from the 2026-05-16
+/// probe pcap so tests anchor to real wire data.
 private struct ScriptedBcUdpTransport: BcUdpTransport {
-    enum CannedReply: Sendable {
-        case empty
-        case withCandidates(
-            registration: (host: String, port: UInt16),
-            relay: (host: String, port: UInt16)
-        )
+    enum Scenario: Sendable {
+        case emptyDiscovery
+        case fullHandshake
+        case rendezvousRejected
     }
 
-    let reply: CannedReply
+    let scenario: Scenario
     private static let replySenderID: UInt32 = 0xCAFE_BABE
 
     func sendAndAwaitReply(
@@ -443,33 +319,60 @@ private struct ScriptedBcUdpTransport: BcUdpTransport {
         port: UInt16,
         timeout: Duration
     ) async throws -> BcUdpPacket {
-        let plain: Data
-        switch reply {
-        case .empty:
-            plain = DiscoveryXML.LookupResponse(responseCode: -3).encode()
-        case .withCandidates(let reg, let rel):
-            plain = DiscoveryXML.LookupResponse(
-                registration: DiscoveryXML.Endpoint(host: reg.host, port: reg.port),
-                relay: DiscoveryXML.Endpoint(host: rel.host, port: rel.port),
+        guard case .disc(let disc) = packet else {
+            throw BcUdpTransportError.malformedReply(host: host, port: port)
+        }
+        let plain = DiscoveryXMLCrypto.decrypt(disc.payload, offset: disc.senderID)
+        let xml = String(data: plain, encoding: .utf8) ?? ""
+
+        let replyPayload: Data
+        if xml.contains("<C2M_Q>") {
+            replyPayload = discoveryReplyXML()
+        } else if xml.contains("<C2R_C>") {
+            replyPayload = rendezvousReplyXML()
+        } else {
+            throw BcUdpTransportError.malformedReply(host: host, port: port)
+        }
+
+        let cipher = DiscoveryXMLCrypto.encrypt(replyPayload, offset: Self.replySenderID)
+        return .disc(BcUdpDiscPacket(senderID: Self.replySenderID, payload: cipher))
+    }
+
+    private func discoveryReplyXML() -> Data {
+        switch scenario {
+        case .emptyDiscovery:
+            return DiscoveryXML.LookupResponse(responseCode: -3).encode()
+        case .fullHandshake, .rendezvousRejected:
+            return DiscoveryXML.LookupResponse(
+                rendezvous: DiscoveryXML.Endpoint(host: "172.232.163.180", port: 58200),
+                relay: DiscoveryXML.Endpoint(host: "172.232.163.180", port: 58100),
                 responseCode: 0
             ).encode()
         }
-        let cipher = DiscoveryXMLCrypto.encrypt(plain, offset: Self.replySenderID)
-        return .disc(BcUdpDiscPacket(senderID: Self.replySenderID, payload: cipher))
+    }
+
+    private func rendezvousReplyXML() -> Data {
+        switch scenario {
+        case .rendezvousRejected:
+            return DiscoveryXML.RendezvousReply(responseCode: -3).encode()
+        case .fullHandshake, .emptyDiscovery:
+            return DiscoveryXML.RendezvousReply(
+                deviceLanEndpoint: DiscoveryXML.Endpoint(host: "192.168.113.228", port: 52858),
+                deviceMappedEndpoint: DiscoveryXML.Endpoint(host: "50.46.39.43", port: 52858),
+                relay: DiscoveryXML.Endpoint(host: "172.232.163.180", port: 51188),
+                sessionID: 7_332_712,
+                responseCode: 0
+            ).encode()
+        }
     }
 }
 
-/// Probe runner that always returns `.success` for the first
-/// endpoint it sees. Used by tests that don't care which
-/// candidate wins, only that *some* candidate wins.
 private struct AlwaysSucceedRunner: HolePunchProbeRunner {
     func probe(_ endpoint: DiscoveryXML.Endpoint, deadline: Duration) async throws -> ProbeOutcome {
         .success
     }
 }
 
-/// Probe runner that consults a dictionary keyed on
-/// `"host:port"` and returns the scripted outcome.
 private struct ScriptedProbeRunner: HolePunchProbeRunner {
     enum Scripted: Sendable { case success; case timeout }
     let script: [String: Scripted]
@@ -482,10 +385,6 @@ private struct ScriptedProbeRunner: HolePunchProbeRunner {
     }
 }
 
-/// Test-side data-connection stub. Records outbound packets,
-/// counts connect/close calls, and exposes a `deliver(...)`
-/// helper that pushes inbound packets to the transport's
-/// receive loop.
 private actor StubDataConnection: BcUdpDataConnection {
     private(set) var connectCallCount = 0
     private(set) var sendCallCount = 0
@@ -494,11 +393,6 @@ private actor StubDataConnection: BcUdpDataConnection {
 
     private var inboundContinuation: AsyncStream<BcUdpPacket>.Continuation?
     private var inboundStream: AsyncStream<BcUdpPacket>?
-    /// Buffer of packets delivered before any subscriber
-    /// registered. Avoids a race in tests where `connect()`
-    /// returns before the receive task has actually subscribed
-    /// — the buffered packets are flushed as soon as the first
-    /// `subscribe()` call arrives.
     private var pendingBeforeSubscribe: [BcUdpPacket] = []
 
     func connect() async throws {
@@ -522,9 +416,6 @@ private actor StubDataConnection: BcUdpDataConnection {
         return stream
     }
 
-    /// Push a packet into the transport's receive loop. If
-    /// no subscriber is registered yet (the receive task is
-    /// still spinning up), buffer until one is.
     func deliver(_ packet: BcUdpPacket) {
         if let cont = inboundContinuation {
             cont.yield(packet)

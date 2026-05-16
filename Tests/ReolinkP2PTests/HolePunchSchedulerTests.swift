@@ -9,13 +9,13 @@ struct HolePunchSchedulerTests {
     @Test("Direct candidate succeeds → returns .direct")
     func directWins() async throws {
         let candidates = makeCandidates(
-            registration: makeEndpoint("203.0.113.10", 9000),
+            rendezvous: makeEndpoint("203.0.113.10", 9000),
             relay: makeEndpoint("relay.example", 8443)
         )
         let runner = ScriptedRunner(script: [
             "203.0.113.10:9000": .success
         ])
-        let result = try await HolePunchScheduler.punch(candidates, runner: runner)
+        let result = try await HolePunchScheduler.punch(direct: candidates.rendezvous, relay: candidates.relay, runner: runner)
         #expect(result.endpoint.host == "203.0.113.10")
         #expect(result.path == .direct)
         let attempted = await runner.attempted()
@@ -25,14 +25,14 @@ struct HolePunchSchedulerTests {
     @Test("Direct times out → fall back to relay successfully")
     func relayFallback() async throws {
         let candidates = makeCandidates(
-            registration: makeEndpoint("203.0.113.10", 9000),
+            rendezvous: makeEndpoint("203.0.113.10", 9000),
             relay: makeEndpoint("relay.example", 8443)
         )
         let runner = ScriptedRunner(script: [
             "203.0.113.10:9000": .timeout,
             "relay.example:8443": .success
         ])
-        let result = try await HolePunchScheduler.punch(candidates, runner: runner)
+        let result = try await HolePunchScheduler.punch(direct: candidates.rendezvous, relay: candidates.relay, runner: runner)
         #expect(result.endpoint.host == "relay.example")
         #expect(result.path == .relayed)
         let attempted = await runner.attempted()
@@ -42,7 +42,7 @@ struct HolePunchSchedulerTests {
     @Test("Both candidates fail → throws .allFailed with diagnostic attempts")
     func bothFailExhausted() async {
         let candidates = makeCandidates(
-            registration: makeEndpoint("203.0.113.10", 9000),
+            rendezvous: makeEndpoint("203.0.113.10", 9000),
             relay: makeEndpoint("relay.example", 8443)
         )
         let runner = ScriptedRunner(script: [
@@ -50,7 +50,7 @@ struct HolePunchSchedulerTests {
             "relay.example:8443": .timeout
         ])
         do {
-            _ = try await HolePunchScheduler.punch(candidates, runner: runner)
+            _ = try await HolePunchScheduler.punch(direct: candidates.rendezvous, relay: candidates.relay, runner: runner)
             Issue.record("Expected .allFailed to throw")
         } catch HolePunchError.allFailed(let attempts) {
             #expect(attempts.count == 2)
@@ -66,13 +66,13 @@ struct HolePunchSchedulerTests {
     @Test("No registration but relay succeeds → returns .relayed")
     func registrationMissingRelaySucceeds() async throws {
         let candidates = makeCandidates(
-            registration: nil,
+            rendezvous: nil,
             relay: makeEndpoint("relay.example", 8443)
         )
         let runner = ScriptedRunner(script: [
             "relay.example:8443": .success
         ])
-        let result = try await HolePunchScheduler.punch(candidates, runner: runner)
+        let result = try await HolePunchScheduler.punch(direct: candidates.rendezvous, relay: candidates.relay, runner: runner)
         #expect(result.path == .relayed)
         let attempted = await runner.attempted()
         #expect(attempted == ["relay.example:8443"])
@@ -80,10 +80,10 @@ struct HolePunchSchedulerTests {
 
     @Test("No candidates at all → throws .noCandidates")
     func neitherCandidate() async {
-        let candidates = makeCandidates(registration: nil, relay: nil)
+        let candidates = makeCandidates(rendezvous: nil, relay: nil)
         let runner = ScriptedRunner(script: [:])
         do {
-            _ = try await HolePunchScheduler.punch(candidates, runner: runner)
+            _ = try await HolePunchScheduler.punch(direct: candidates.rendezvous, relay: candidates.relay, runner: runner)
             Issue.record("Expected .noCandidates")
         } catch HolePunchError.noCandidates {
             // expected
@@ -95,7 +95,7 @@ struct HolePunchSchedulerTests {
     @Test("Runner throws → recorded as .failed, fall-through still happens")
     func runnerThrowsRecordsFailedAndFallsThrough() async throws {
         let candidates = makeCandidates(
-            registration: makeEndpoint("203.0.113.10", 9000),
+            rendezvous: makeEndpoint("203.0.113.10", 9000),
             relay: makeEndpoint("relay.example", 8443)
         )
         struct ProbeError: Error {}
@@ -103,7 +103,7 @@ struct HolePunchSchedulerTests {
             "203.0.113.10:9000": .throwingError,
             "relay.example:8443": .success
         ])
-        let result = try await HolePunchScheduler.punch(candidates, runner: runner)
+        let result = try await HolePunchScheduler.punch(direct: candidates.rendezvous, relay: candidates.relay, runner: runner)
         #expect(result.path == .relayed)
     }
 
@@ -112,12 +112,13 @@ struct HolePunchSchedulerTests {
         // Use a runner that respects the supplied deadline so
         // we can pin that the scheduler does pass it through.
         let candidates = makeCandidates(
-            registration: makeEndpoint("203.0.113.10", 9000),
+            rendezvous: makeEndpoint("203.0.113.10", 9000),
             relay: makeEndpoint("relay.example", 8443)
         )
         let runner = DeadlineRecorder()
         _ = try? await HolePunchScheduler.punch(
-            candidates,
+            direct: candidates.rendezvous,
+            relay: candidates.relay,
             directDeadline: .milliseconds(750),
             relayDeadline: .milliseconds(250),
             runner: runner
@@ -133,10 +134,10 @@ struct HolePunchSchedulerTests {
     // MARK: - Helpers
 
     private func makeCandidates(
-        registration: DiscoveryXML.Endpoint?,
+        rendezvous: DiscoveryXML.Endpoint?,
         relay: DiscoveryXML.Endpoint?
     ) -> DiscoveryXML.LookupResponse {
-        DiscoveryXML.LookupResponse(registration: registration, relay: relay, responseCode: 0)
+        DiscoveryXML.LookupResponse(rendezvous: rendezvous, relay: relay, responseCode: 0)
     }
 
     private func makeEndpoint(_ host: String, _ port: UInt16) -> DiscoveryXML.Endpoint {

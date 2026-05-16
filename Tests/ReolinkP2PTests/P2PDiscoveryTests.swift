@@ -75,7 +75,7 @@ struct P2PDiscoveryTests {
     /// that same value because it lives in the reply header.
     private static func makeReply(uid: String) -> BcUdpPacket {
         let response = DiscoveryXML.LookupResponse(
-            registration: DiscoveryXML.Endpoint(host: "203.0.113.10", port: 9000),
+            rendezvous: DiscoveryXML.Endpoint(host: "203.0.113.10", port: 9000),
             responseCode: 0
         )
         _ = uid
@@ -116,7 +116,7 @@ struct P2PDiscoveryTests {
         let discovery = P2PDiscovery(transport: transport, pool: Self.pool, clientIDProvider: Self.fixedClientID)
 
         let result = try await discovery.lookup(uid: uid)
-        #expect(result.registration == DiscoveryXML.Endpoint(host: "203.0.113.10", port: 9000))
+        #expect(result.rendezvous == DiscoveryXML.Endpoint(host: "203.0.113.10", port: 9000))
 
         let visited = await transport.calledHosts()
         #expect(visited == ["a.example.com"])
@@ -133,7 +133,7 @@ struct P2PDiscoveryTests {
         let discovery = P2PDiscovery(transport: transport, pool: Self.pool, clientIDProvider: Self.fixedClientID)
 
         let result = try await discovery.lookup(uid: uid)
-        #expect(result.registration != nil)
+        #expect(result.rendezvous != nil)
         let visited = await transport.calledHosts()
         #expect(visited == ["a.example.com", "b.example.com", "c.example.com"])
     }
@@ -148,7 +148,7 @@ struct P2PDiscoveryTests {
         let discovery = P2PDiscovery(transport: transport, pool: Self.pool, clientIDProvider: Self.fixedClientID)
 
         let result = try await discovery.lookup(uid: uid)
-        #expect(result.registration != nil)
+        #expect(result.rendezvous != nil)
         let visited = await transport.calledHosts()
         #expect(visited == ["a.example.com", "b.example.com"])
     }

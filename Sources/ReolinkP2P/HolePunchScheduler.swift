@@ -29,17 +29,21 @@ import ReolinkBcUdp
 /// 5a's connection-mode pip).
 public enum HolePunchScheduler {
 
-    /// Drive the punch state machine to completion. Throws
+    /// Drive the punch state machine to completion. The `direct`
+    /// endpoint is the camera's NAT'd public address (the
+    /// `<dmap>` field from the rendezvous reply); `relay` is the
+    /// Reolink TURN endpoint used when direct fails. Throws
     /// `HolePunchError` if neither path responds.
     public static func punch(
-        _ candidates: DiscoveryXML.LookupResponse,
+        direct: DiscoveryXML.Endpoint?,
+        relay: DiscoveryXML.Endpoint?,
         directDeadline: Duration = .seconds(6),
         relayDeadline: Duration = .seconds(4),
         runner: any HolePunchProbeRunner
     ) async throws -> HolePunchResult {
         var attempts: [HolePunchError.Attempt] = []
 
-        if let direct = candidates.registration {
+        if let direct {
             let outcome = await tryProbe(direct, deadline: directDeadline, runner: runner)
             attempts.append(.init(endpoint: direct, path: .direct, outcome: outcome))
             if case .success = outcome {
@@ -47,7 +51,7 @@ public enum HolePunchScheduler {
             }
         }
 
-        if let relay = candidates.relay {
+        if let relay {
             let outcome = await tryProbe(relay, deadline: relayDeadline, runner: runner)
             attempts.append(.init(endpoint: relay, path: .relayed, outcome: outcome))
             if case .success = outcome {
@@ -55,8 +59,6 @@ public enum HolePunchScheduler {
             }
         }
 
-        // Either no candidates were supplied at all, or every
-        // attempted candidate failed.
         if attempts.isEmpty {
             throw HolePunchError.noCandidates
         }

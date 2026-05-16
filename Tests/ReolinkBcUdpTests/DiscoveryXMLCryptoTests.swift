@@ -106,8 +106,8 @@ struct DiscoveryXMLCryptoTests {
         }
         let plaintext = DiscoveryXMLCrypto.decrypt(disc.payload, offset: disc.senderID)
         let parsed = try #require(DiscoveryXML.LookupResponse.decode(from: plaintext))
-        #expect(parsed.registration?.host == "172.232.163.180")
-        #expect(parsed.registration?.port == 58200)
+        #expect(parsed.rendezvous?.host == "172.232.163.180")
+        #expect(parsed.rendezvous?.port == 58200)
         #expect(parsed.relay?.host == "172.232.163.180")
         #expect(parsed.relay?.port == 58101)
         #expect(parsed.responseCode == 0)
