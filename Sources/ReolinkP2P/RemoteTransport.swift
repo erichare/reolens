@@ -391,7 +391,7 @@ extension RemoteTransport {
     public static func production(
         credentials: BaichuanCredentials,
         uid: String,
-        bcUdpTransport: any BcUdpTransport = NWConnectionBcUdpTransport()
+        bcUdpTransport: any BcUdpTransport = PosixBcUdpTransport()
     ) -> RemoteTransport {
         let engine = NWConnectionBcUdpPunchEngine()
         return RemoteTransport(
