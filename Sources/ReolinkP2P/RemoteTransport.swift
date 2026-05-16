@@ -322,3 +322,43 @@ public actor RemoteTransport: BcMessageTransport {
         winner?.path
     }
 }
+
+// MARK: - Production factory
+
+extension RemoteTransport {
+
+    /// Build a `RemoteTransport` wired to the production
+    /// NWConnection-backed stack: discovery via the public
+    /// `p2p*.reolink.com` cluster, hole-punch via a real UDP
+    /// socket, and a data channel that reuses that same socket
+    /// to preserve the NAT mapping. Tests inject the lower
+    /// layers directly through the designated init.
+    ///
+    /// **Status:** the engine sends an empty Disc probe today
+    /// (Phase 3d.2-D structural shell). The first real-device
+    /// run will tell us whether that elicits a reply or whether
+    /// the camera needs a specific probe payload; if the
+    /// latter, the fix is a single-field change in
+    /// `NWConnectionBcUdpPunchEngine.init`.
+    public static func production(
+        credentials: BaichuanCredentials,
+        uid: String,
+        bcUdpTransport: any BcUdpTransport = NWConnectionBcUdpTransport()
+    ) -> RemoteTransport {
+        let engine = NWConnectionBcUdpPunchEngine()
+        return RemoteTransport(
+            credentials: credentials,
+            uid: uid,
+            discovery: P2PDiscovery(transport: bcUdpTransport),
+            probeRunner: engine,
+            dataConnectionFactory: { endpoint in
+                guard let conn = await engine.dataConnection(for: endpoint) else {
+                    throw RemoteTransportError.notYetImplemented(
+                        detail: "punch engine had no cached connection for \(endpoint.host):\(endpoint.port)"
+                    )
+                }
+                return conn
+            }
+        )
+    }
+}
