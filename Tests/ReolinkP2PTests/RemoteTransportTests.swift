@@ -53,7 +53,7 @@ struct RemoteTransportTests {
 
     @Test("connect runs the factory and stores the data channel")
     func successfulHandoff() async throws {
-        let bcUdp = ScriptedBcUdpTransport(reply: .withWanV4(host: "203.0.113.10", port: 9000, uid: "FAKE-UID"))
+        let bcUdp = ScriptedBcUdpTransport(reply: .withRegistration(host: "203.0.113.10", port: 9000))
         let discovery = P2PDiscovery(transport: bcUdp)
         let connection = StubDataConnection()
         let transport = RemoteTransport(
@@ -61,7 +61,7 @@ struct RemoteTransportTests {
             uid: "FAKE-UID",
             discovery: discovery,
             dataConnectionFactory: { response in
-                #expect(response.wanV4?.host == "203.0.113.10")
+                #expect(response.registration?.host == "203.0.113.10")
                 return connection
             }
         )
@@ -77,7 +77,7 @@ struct RemoteTransportTests {
 
     @Test("close is idempotent and tears down the channel")
     func closeIdempotent() async throws {
-        let bcUdp = ScriptedBcUdpTransport(reply: .withWanV4(host: "203.0.113.10", port: 9000, uid: "FAKE-UID"))
+        let bcUdp = ScriptedBcUdpTransport(reply: .withRegistration(host: "203.0.113.10", port: 9000))
         let discovery = P2PDiscovery(transport: bcUdp)
         let connection = StubDataConnection()
         let transport = RemoteTransport(
@@ -95,7 +95,7 @@ struct RemoteTransportTests {
 
     @Test("sendAndAwait throws notYetImplemented in the 3d.1 skeleton")
     func sendNotYetImplemented() async throws {
-        let bcUdp = ScriptedBcUdpTransport(reply: .withWanV4(host: "203.0.113.10", port: 9000, uid: "FAKE-UID"))
+        let bcUdp = ScriptedBcUdpTransport(reply: .withRegistration(host: "203.0.113.10", port: 9000))
         let discovery = P2PDiscovery(transport: bcUdp)
         let connection = StubDataConnection()
         let transport = RemoteTransport(
@@ -140,15 +140,19 @@ struct RemoteTransportTests {
 // MARK: - Stubs
 
 /// Stub `BcUdpTransport` that always replies with the same
-/// canned packet. Just enough surface to drive `P2PDiscovery`
-/// into the response-parsing path.
+/// canned packet. Encrypts replies with a fixed reply
+/// `senderID` so the decryption layer in `P2PDiscovery` is
+/// exercised end-to-end against the wire-truth cipher.
 private struct ScriptedBcUdpTransport: BcUdpTransport {
     enum CannedReply: Sendable {
         case empty(uid: String)
-        case withWanV4(host: String, port: UInt16, uid: String)
+        case withRegistration(host: String, port: UInt16)
     }
 
     let reply: CannedReply
+    /// Fixed reply senderID — must equal the value used as the
+    /// cipher offset below so `P2PDiscovery` can decrypt.
+    private static let replySenderID: UInt32 = 0xCAFE_BABE
 
     func sendAndAwaitReply(
         _ packet: BcUdpPacket,
@@ -156,17 +160,18 @@ private struct ScriptedBcUdpTransport: BcUdpTransport {
         port: UInt16,
         timeout: Duration
     ) async throws -> BcUdpPacket {
-        let payload: Data
+        let plain: Data
         switch reply {
-        case .empty(let uid):
-            payload = DiscoveryXML.LookupResponse(uid: uid).encode()
-        case .withWanV4(let host, let port, let uid):
-            payload = DiscoveryXML.LookupResponse(
-                uid: uid,
-                wanV4: DiscoveryXML.Endpoint(host: host, port: port)
+        case .empty:
+            plain = DiscoveryXML.LookupResponse(responseCode: -3).encode()
+        case .withRegistration(let host, let port):
+            plain = DiscoveryXML.LookupResponse(
+                registration: DiscoveryXML.Endpoint(host: host, port: port),
+                responseCode: 0
             ).encode()
         }
-        return .disc(BcUdpDiscPacket(senderID: 1, payload: payload))
+        let cipher = DiscoveryXMLCrypto.encrypt(plain, offset: Self.replySenderID)
+        return .disc(BcUdpDiscPacket(senderID: Self.replySenderID, payload: cipher))
     }
 }
 

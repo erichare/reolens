@@ -104,16 +104,20 @@ public actor P2PDiscovery {
         guard !pool.entries.isEmpty else { throw P2PDiscoveryError.emptyServerPool }
 
         let request = DiscoveryXML.LookupRequest(uid: uid, clientID: clientIDProvider())
-        // `senderID` is the per-app instance identifier the server
-        // echoes back so we can correlate replies. We mint a fresh
-        // 32-bit value per lookup; the server doesn't appear to
-        // care about its specific value as long as it's stable
-        // within a request/reply pair.
+        // `senderID` doubles as the cipher offset for the request
+        // payload (XML is obfuscated against
+        // `(XML_KEY[i] + senderID).bytesLE` per
+        // `DiscoveryXMLCrypto`). Mint a fresh 32-bit value per
+        // lookup — the server doesn't appear to care about the
+        // specific value, only that it's the same in the header
+        // and the cipher offset.
         let senderID = UInt32.random(in: 1...UInt32.max)
+        let plaintext = request.encode()
+        let ciphertext = DiscoveryXMLCrypto.encrypt(plaintext, offset: senderID)
         let packet = BcUdpPacket.disc(
             BcUdpDiscPacket(
                 senderID: senderID,
-                payload: request.encode()
+                payload: ciphertext
             )
         )
 
@@ -136,7 +140,15 @@ public actor P2PDiscovery {
                     attempts.append(.init(host: entry.host, port: entry.port, outcome: .unexpectedKind(reply.kind)))
                     continue
                 }
-                guard let parsed = DiscoveryXML.LookupResponse.decode(from: discReply.payload) else {
+                // The server stamps its OWN senderID into the
+                // reply header and uses that same value as the
+                // cipher offset for the reply payload. Decrypt
+                // accordingly before parsing.
+                let plaintextReply = DiscoveryXMLCrypto.decrypt(
+                    discReply.payload,
+                    offset: discReply.senderID
+                )
+                guard let parsed = DiscoveryXML.LookupResponse.decode(from: plaintextReply) else {
                     attempts.append(.init(host: entry.host, port: entry.port, outcome: .malformedReply))
                     continue
                 }

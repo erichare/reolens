@@ -3,123 +3,141 @@ import Foundation
 /// Encode / decode the `<P2P>` XML payloads carried inside
 /// [`BcUdpDiscPacket.payload`](./BcUdpPacket.swift).
 ///
-/// The Reolink P2P discovery flow is request-and-response over UDP:
-/// the client sends a `C2D_C` (client-to-device control) lookup
-/// keyed on the camera's UID; the server replies with a `D2C_C`
-/// (device-to-client control) carrying the camera's current
-/// candidates (WAN address, LAN address, relay hint).
+/// The Reolink P2P discovery flow is request-and-response over
+/// UDP/9999: the client sends a `<C2M_Q>` (Client-to-Mediator
+/// Query) keyed on the camera's UID; the server replies with a
+/// `<M2C_Q_R>` (Mediator-to-Client Query Reply) carrying the
+/// camera's currently-registered WAN endpoint and a relay
+/// fallback.
 ///
-/// ## Wire-format status (post May 2026 capture)
+/// ## Wire-format status
 ///
-/// The codec below operates on **plaintext** XML. The 2026-05-16
-/// pcap against `p2p*.reolink.com` shows the wire payload is
-/// **obfuscated** — Disc packet payloads start with non-ASCII
-/// byte patterns (e.g. `da 17 58 4f 16 81...`) that don't match
-/// any of Reolink's documented ciphers (the rotating XOR key from
-/// the Baichuan BCEncrypt mode doesn't reproduce them). The
-/// obfuscation scheme is a Phase 3d.2 reverse-engineering task —
-/// likely a different stream cipher or a position-keyed XOR mask.
+/// **Validated against the 2026-05-16 `p2p*.reolink.com`
+/// capture.** Both request and response schemas below were
+/// decrypted from real Reolink-macOS-app traffic with
+/// [`DiscoveryXMLCrypto`](./DiscoveryXMLCrypto.swift). Tag names
+/// and structural nesting match the wire byte-for-byte.
 ///
-/// Once 3d.2 lands the decryptor, the flow will be:
-///   wire bytes → BcUdpDiscPacket.payload → decrypt → XML bytes
-///   → DiscoveryXML.decode (this codec).
-///
-/// Until then, the value of this codec is the structural seam
-/// (request schema, response parsing, tag-name source of truth) +
-/// round-trip tests that validate that part independently. The
-/// concrete `RemoteTransport.connect` path can't actually succeed
-/// against a real camera until the wire encryption is wired in.
-///
-/// Tag names: validated against neolink and `reolink-aio` sources
-/// only — the pcap can't confirm them while the payload is still
-/// obfuscated. 3d.2 will confirm or correct them once the cipher
-/// is broken.
+/// Wire payloads ARE encrypted — the codec here operates on
+/// plaintext XML. The caller (typically `P2PDiscovery`) is
+/// responsible for running `DiscoveryXMLCrypto.encrypt(...)`
+/// before stamping bytes into `BcUdpDiscPacket.payload` and
+/// `DiscoveryXMLCrypto.decrypt(...)` after pulling them out.
 ///
 /// Pure value-type codec — no networking, no actors.
 public enum DiscoveryXML {
 
     // MARK: - Tag names (single source of truth)
 
-    /// Element-name constants. Centralized so the eventual
-    /// "actually, the real server says it's `<deviceIp>` not
-    /// `<dev_ip>`" Phase-2 fix only touches one place.
+    /// Element-name constants — every tag we read or emit is
+    /// listed here so the wire schema is one searchable
+    /// definition. Validated against the May 2026 pcap.
     public enum Tag {
         public static let root = "P2P"
-        public static let clientRequest = "C2D_C"
-        public static let deviceResponse = "D2C_C"
+        public static let clientRequest = "C2M_Q"
+        public static let serverReply = "M2C_Q_R"
+
+        // Request children
         public static let uid = "uid"
-        public static let clientID = "cli"
-        /// Optional client-side hint at the priority of paths
-        /// the client can accept (1 = direct preferred; higher
-        /// values allow relay sooner). neolink sends `2`.
-        public static let priority = "p2pPriority"
-        // Response children — the parser is tolerant and accepts
-        // either the flat form (e.g. `<devNatIp>` / `<devNatPort>`)
-        // or the nested form (`<dev><ip>...</ip><port>...</port></dev>`).
-        // Both have been observed in the wild on different
-        // firmware lines.
-        public static let wanIPv4 = "devNatIp"
-        public static let wanPort = "devNatPort"
-        public static let wanIPv6 = "devNatIpV6"
-        public static let lanIPv4 = "devLanIp"
-        public static let lanPort = "devLanPort"
-        public static let relayHost = "relayIp"
-        public static let relayPort = "relayPort"
+        /// Protocol version. Observed value `3` from the
+        /// Reolink macOS app's discovery query.
+        public static let version = "ver"
+        /// Protocol family. Observed value `6` (likely
+        /// "Reolink P2P v6").
+        public static let family = "family"
+        /// Client OS / addressing identifier. Observed value
+        /// `MAC` from the macOS app.
+        public static let clientSource = "s"
+
+        // Response children
+        /// Camera's current WAN registration — the primary
+        /// direct hole-punch target.
+        public static let registration = "reg"
+        /// Relay endpoint — TURN-style fallback when direct
+        /// punch fails.
+        public static let relay = "relay"
+        /// Endpoint sub-elements (nested under `reg`/`relay`).
+        public static let ip = "ip"
+        public static let port = "port"
+        /// Status code. `0` = candidates returned; non-zero
+        /// (observed `-3`) = camera not registered at this
+        /// server, try the next pool entry.
+        public static let responseCode = "rsp"
     }
 
     // MARK: - Request
 
     /// A camera-lookup request the client sends to a discovery
-    /// server. The `clientID` is a short opaque token the client
-    /// generates per lookup so responses can be correlated; the
-    /// server echoes it back in the reply.
+    /// server. The `clientID` from Phase 1 isn't actually used
+    /// at this protocol layer — request/reply correlation runs
+    /// off the BcUdp `senderID` field, not anything XML-level.
     public struct LookupRequest: Sendable, Hashable {
         public var uid: String
-        public var clientID: String
-        public var priority: Int
+        /// Protocol version. Default `3` matches the Reolink
+        /// macOS app's wire bytes.
+        public var version: Int
+        /// Protocol family. Default `6` matches the wire.
+        public var family: Int
+        /// Client source / OS marker. The macOS app sends
+        /// `"MAC"`; we send `"MAC"` from macOS and `"IOS"`
+        /// from iOS so the server gets a recognisable signal.
+        public var clientSource: String
 
-        public init(uid: String, clientID: String, priority: Int = 2) {
+        public init(
+            uid: String,
+            clientID: String = "",   // retained for API compatibility; ignored on the wire
+            version: Int = 3,
+            family: Int = 6,
+            clientSource: String = "MAC"
+        ) {
+            _ = clientID
             self.uid = uid
-            self.clientID = clientID
-            self.priority = priority
+            self.version = version
+            self.family = family
+            self.clientSource = clientSource
         }
 
         /// Encode to UTF-8 XML bytes ready to drop into a
-        /// `BcUdpDiscPacket.payload`. No surrounding whitespace
-        /// because some firmware lines reject extra whitespace
-        /// between tags (observed on the Home Hub Pro).
+        /// `BcUdpDiscPacket.payload` (after encryption via
+        /// `DiscoveryXMLCrypto.encrypt`). Trailing newline-free
+        /// for byte-for-byte parity with the captured Reolink
+        /// app traffic — some firmware lines have been observed
+        /// to reject extra whitespace between tags.
         public func encode() -> Data {
-            let xml = """
-            <?xml version="1.0" encoding="UTF-8" ?>
-            <\(Tag.root)>
-            <\(Tag.clientRequest)>
-            <\(Tag.uid)>\(uid)</\(Tag.uid)>
-            <\(Tag.clientID)>\(clientID)</\(Tag.clientID)>
-            <\(Tag.priority)>\(priority)</\(Tag.priority)>
-            </\(Tag.clientRequest)>
-            </\(Tag.root)>
-            """
+            let xml = "<\(Tag.root)>" +
+                "<\(Tag.clientRequest)>" +
+                "<\(Tag.uid)>\(uid)</\(Tag.uid)>" +
+                "<\(Tag.version)>\(version)</\(Tag.version)>" +
+                "<\(Tag.family)>\(family)</\(Tag.family)>" +
+                "<\(Tag.clientSource)>\(clientSource)</\(Tag.clientSource)>" +
+                "</\(Tag.clientRequest)>" +
+                "</\(Tag.root)>"
             return Data(xml.utf8)
         }
 
-        /// Best-effort decode. Returns nil if the payload doesn't
-        /// look like a lookup request (used by the eventual mock
-        /// server in tests + by any future debugging tools).
+        /// Best-effort decode — used by the in-process tests
+        /// that synthesise a fake discovery server.
         public static func decode(from payload: Data) -> LookupRequest? {
             guard let text = String(data: payload, encoding: .utf8) else { return nil }
-            guard let uid = TagScan.firstTagContent(in: text, tag: Tag.uid) else { return nil }
-            let cli = TagScan.firstTagContent(in: text, tag: Tag.clientID) ?? ""
-            let priority = TagScan.firstTagContent(in: text, tag: Tag.priority).flatMap(Int.init) ?? 2
-            return LookupRequest(uid: uid, clientID: cli, priority: priority)
+            guard let uid = TagScan.firstTagContent(in: text, tag: Tag.uid),
+                  !uid.isEmpty else { return nil }
+            let version = TagScan.firstTagContent(in: text, tag: Tag.version).flatMap(Int.init) ?? 3
+            let family = TagScan.firstTagContent(in: text, tag: Tag.family).flatMap(Int.init) ?? 6
+            let clientSource = TagScan.firstTagContent(in: text, tag: Tag.clientSource) ?? "MAC"
+            return LookupRequest(
+                uid: uid,
+                version: version,
+                family: family,
+                clientSource: clientSource
+            )
         }
     }
 
     // MARK: - Response
 
     /// Single host/port pair returned by the discovery server.
-    /// Port is `UInt16` because that's the wire width; host is a
-    /// string because the server may return IPv4 dotted-quad,
-    /// IPv6, or (rarely) a hostname.
+    /// Port is `UInt16` (wire width); host is a string because
+    /// the server returns IPv4 dotted-quad or IPv6.
     public struct Endpoint: Sendable, Hashable {
         public var host: String
         public var port: UInt16
@@ -130,105 +148,96 @@ public enum DiscoveryXML {
         }
     }
 
-    /// The parsed result of a successful discovery lookup. All
-    /// fields are optional — the server may omit candidates it
-    /// doesn't have (e.g. IPv6 when the camera hasn't registered
-    /// a v6 address, or relay when the camera hasn't been
-    /// assigned one). At least one of `wanV4`, `wanV6`, or
-    /// `relay` is typically present in a successful response;
-    /// callers should treat a `LookupResponse` with all fields
-    /// nil as "camera not registered" and try the next server.
+    /// Parsed result of a discovery lookup.
+    ///
+    /// The wire reply carries two endpoints of interest:
+    ///
+    /// - `registration`: the camera's currently-registered WAN
+    ///   IP:port. This is the primary direct hole-punch target.
+    /// - `relay`: a Reolink-operated relay that brokers traffic
+    ///   when direct punch fails.
+    ///
+    /// Several diagnostic fields (the `<log>`, `<t>`, `<mtu>`,
+    /// `<debug>`, `<ac>` elements observed on the wire) are
+    /// intentionally NOT modelled here — the hole-punch state
+    /// machine only consumes `registration` + `relay`, and
+    /// surfacing the diagnostic fields would invite premature
+    /// reliance on values that Reolink might silently repurpose.
+    ///
+    /// The `responseCode` field is the server's verdict: `0`
+    /// means "candidates included", a non-zero value (`-3`
+    /// observed = "not registered at this server") means the
+    /// caller should try the next pool entry.
     public struct LookupResponse: Sendable, Hashable {
-        public var uid: String
-        public var wanV4: Endpoint?
-        public var wanV6: Endpoint?
-        public var lanV4: Endpoint?
+        public var registration: Endpoint?
         public var relay: Endpoint?
+        public var responseCode: Int
 
         public init(
-            uid: String,
-            wanV4: Endpoint? = nil,
-            wanV6: Endpoint? = nil,
-            lanV4: Endpoint? = nil,
-            relay: Endpoint? = nil
+            registration: Endpoint? = nil,
+            relay: Endpoint? = nil,
+            responseCode: Int = 0
         ) {
-            self.uid = uid
-            self.wanV4 = wanV4
-            self.wanV6 = wanV6
-            self.lanV4 = lanV4
+            self.registration = registration
             self.relay = relay
+            self.responseCode = responseCode
         }
 
         /// True when the response carries no usable candidate.
-        /// Caller should treat this as a soft "not found" and try
-        /// the next discovery server rather than failing the
-        /// whole lookup.
+        /// The caller treats this as a soft "not found" and
+        /// tries the next discovery server.
         public var isEmpty: Bool {
-            wanV4 == nil && wanV6 == nil && lanV4 == nil && relay == nil
+            registration == nil && relay == nil
         }
 
         public func encode() -> Data {
             var inner = ""
-            inner += "<\(Tag.uid)>\(uid)</\(Tag.uid)>\n"
-            if let wanV4 {
-                inner += "<\(Tag.wanIPv4)>\(wanV4.host)</\(Tag.wanIPv4)>\n"
-                inner += "<\(Tag.wanPort)>\(wanV4.port)</\(Tag.wanPort)>\n"
-            }
-            if let wanV6 {
-                inner += "<\(Tag.wanIPv6)>\(wanV6.host)</\(Tag.wanIPv6)>\n"
-            }
-            if let lanV4 {
-                inner += "<\(Tag.lanIPv4)>\(lanV4.host)</\(Tag.lanIPv4)>\n"
-                inner += "<\(Tag.lanPort)>\(lanV4.port)</\(Tag.lanPort)>\n"
+            if let registration {
+                inner += "<\(Tag.registration)>" +
+                    "<\(Tag.ip)>\(registration.host)</\(Tag.ip)>" +
+                    "<\(Tag.port)>\(registration.port)</\(Tag.port)>" +
+                    "</\(Tag.registration)>"
             }
             if let relay {
-                inner += "<\(Tag.relayHost)>\(relay.host)</\(Tag.relayHost)>\n"
-                inner += "<\(Tag.relayPort)>\(relay.port)</\(Tag.relayPort)>\n"
+                inner += "<\(Tag.relay)>" +
+                    "<\(Tag.ip)>\(relay.host)</\(Tag.ip)>" +
+                    "<\(Tag.port)>\(relay.port)</\(Tag.port)>" +
+                    "</\(Tag.relay)>"
             }
-            let xml = """
-            <?xml version="1.0" encoding="UTF-8" ?>
-            <\(Tag.root)>
-            <\(Tag.deviceResponse)>
-            \(inner)</\(Tag.deviceResponse)>
-            </\(Tag.root)>
-            """
+            inner += "<\(Tag.responseCode)>\(responseCode)</\(Tag.responseCode)>"
+            let xml = "<\(Tag.root)>" +
+                "<\(Tag.serverReply)>" +
+                inner +
+                "</\(Tag.serverReply)>" +
+                "</\(Tag.root)>"
             return Data(xml.utf8)
         }
 
         public static func decode(from payload: Data) -> LookupResponse? {
             guard let text = String(data: payload, encoding: .utf8) else { return nil }
-            guard let uid = TagScan.firstTagContent(in: text, tag: Tag.uid) else { return nil }
-            let wanV4 = makeEndpoint(in: text, hostTag: Tag.wanIPv4, portTag: Tag.wanPort)
-            // v6 host has no paired port tag in the wire format —
-            // Reolink reuses the v4 socket on a dual-stack bind, so
-            // the same `wanPort` applies to both candidates. The
-            // caller (`RemoteTransport`) substitutes v4's port for
-            // v6; the v6 candidate carries port 0 in the model.
-            let wanV6 = makeEndpoint(in: text, hostTag: Tag.wanIPv6, portTag: nil)
-            let lanV4 = makeEndpoint(in: text, hostTag: Tag.lanIPv4, portTag: Tag.lanPort)
-            let relay = makeEndpoint(in: text, hostTag: Tag.relayHost, portTag: Tag.relayPort)
+            // The reply must carry the `<M2C_Q_R>` wrapper to be a
+            // valid discovery response. Anything else is treated as
+            // malformed.
+            guard text.contains("<\(Tag.serverReply)>") else { return nil }
+            let registration = parseEndpoint(in: text, parentTag: Tag.registration)
+            let relay = parseEndpoint(in: text, parentTag: Tag.relay)
+            let responseCode = TagScan.firstTagContent(in: text, tag: Tag.responseCode).flatMap(Int.init) ?? 0
             return LookupResponse(
-                uid: uid,
-                wanV4: wanV4,
-                wanV6: wanV6,
-                lanV4: lanV4,
-                relay: relay
+                registration: registration,
+                relay: relay,
+                responseCode: responseCode
             )
         }
 
-        private static func makeEndpoint(in text: String, hostTag: String, portTag: String?) -> Endpoint? {
-            guard let host = TagScan.firstTagContent(in: text, tag: hostTag),
+        /// Extracts `<ip>` + `<port>` from inside a `<parentTag>`
+        /// element. Returns nil if the parent isn't present or its
+        /// children are malformed.
+        private static func parseEndpoint(in xml: String, parentTag: String) -> Endpoint? {
+            guard let inner = TagScan.firstTagContent(in: xml, tag: parentTag),
+                  !inner.isEmpty else { return nil }
+            guard let host = TagScan.firstTagContent(in: inner, tag: Tag.ip),
                   !host.isEmpty else { return nil }
-            // Port is optional: some firmware emits an address
-            // tag without a paired port (and expects the client to
-            // substitute), and the v6 candidate shares the v4
-            // port-tag entirely (`portTag == nil`).
-            let port: UInt16
-            if let portTag {
-                port = TagScan.firstTagContent(in: text, tag: portTag).flatMap(UInt16.init) ?? 0
-            } else {
-                port = 0
-            }
+            let port = TagScan.firstTagContent(in: inner, tag: Tag.port).flatMap(UInt16.init) ?? 0
             return Endpoint(host: host, port: port)
         }
     }

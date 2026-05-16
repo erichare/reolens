@@ -69,17 +69,32 @@ struct P2PDiscoveryTests {
 
     // MARK: - Helpers
 
+    /// Build a scripted "success" reply with one registration
+    /// endpoint. The reply payload is encrypted under a fixed
+    /// reply senderID (`replySenderID`); the actor decrypts using
+    /// that same value because it lives in the reply header.
     private static func makeReply(uid: String) -> BcUdpPacket {
         let response = DiscoveryXML.LookupResponse(
-            uid: uid,
-            wanV4: DiscoveryXML.Endpoint(host: "203.0.113.10", port: 9000)
+            registration: DiscoveryXML.Endpoint(host: "203.0.113.10", port: 9000),
+            responseCode: 0
         )
-        return .disc(BcUdpDiscPacket(senderID: 1, payload: response.encode()))
+        _ = uid
+        let replySenderID: UInt32 = 0xCAFE_BABE
+        let plaintext = response.encode()
+        let ciphertext = DiscoveryXMLCrypto.encrypt(plaintext, offset: replySenderID)
+        return .disc(BcUdpDiscPacket(senderID: replySenderID, payload: ciphertext))
     }
 
+    /// Build a scripted "not registered" reply — the server's
+    /// soft-no when this pool entry doesn't currently hold a
+    /// registration for the UID. `rsp = -3` per the wire capture.
     private static func makeEmptyReply(uid: String) -> BcUdpPacket {
-        let response = DiscoveryXML.LookupResponse(uid: uid)
-        return .disc(BcUdpDiscPacket(senderID: 1, payload: response.encode()))
+        _ = uid
+        let response = DiscoveryXML.LookupResponse(responseCode: -3)
+        let replySenderID: UInt32 = 0xCAFE_BABE
+        let plaintext = response.encode()
+        let ciphertext = DiscoveryXMLCrypto.encrypt(plaintext, offset: replySenderID)
+        return .disc(BcUdpDiscPacket(senderID: replySenderID, payload: ciphertext))
     }
 
     private static let pool = DiscoveryServerPool(entries: [
@@ -101,8 +116,7 @@ struct P2PDiscoveryTests {
         let discovery = P2PDiscovery(transport: transport, pool: Self.pool, clientIDProvider: Self.fixedClientID)
 
         let result = try await discovery.lookup(uid: uid)
-        #expect(result.uid == uid)
-        #expect(result.wanV4 == DiscoveryXML.Endpoint(host: "203.0.113.10", port: 9000))
+        #expect(result.registration == DiscoveryXML.Endpoint(host: "203.0.113.10", port: 9000))
 
         let visited = await transport.calledHosts()
         #expect(visited == ["a.example.com"])
@@ -119,7 +133,7 @@ struct P2PDiscoveryTests {
         let discovery = P2PDiscovery(transport: transport, pool: Self.pool, clientIDProvider: Self.fixedClientID)
 
         let result = try await discovery.lookup(uid: uid)
-        #expect(result.wanV4 != nil)
+        #expect(result.registration != nil)
         let visited = await transport.calledHosts()
         #expect(visited == ["a.example.com", "b.example.com", "c.example.com"])
     }
@@ -134,7 +148,7 @@ struct P2PDiscoveryTests {
         let discovery = P2PDiscovery(transport: transport, pool: Self.pool, clientIDProvider: Self.fixedClientID)
 
         let result = try await discovery.lookup(uid: uid)
-        #expect(result.wanV4 != nil)
+        #expect(result.registration != nil)
         let visited = await transport.calledHosts()
         #expect(visited == ["a.example.com", "b.example.com"])
     }
@@ -224,10 +238,12 @@ struct P2PDiscoveryTests {
         }
     }
 
-    @Test("Encoded lookup request carries the supplied client ID")
-    func usesProvidedClientID() async throws {
+    @Test("Encoded lookup request encrypts the payload with senderID as offset")
+    func sentRequestIsEncrypted() async throws {
         // Capture the packet the actor sends so we can verify
-        // the client-ID provider is wired through.
+        // the wire encryption uses the senderID as the cipher
+        // offset, and the encrypted payload decrypts back to the
+        // expected UID.
         actor CaptureTransport: BcUdpTransport {
             private(set) var captured: BcUdpPacket?
             let reply: BcUdpPacket
@@ -250,7 +266,7 @@ struct P2PDiscoveryTests {
         let discovery = P2PDiscovery(
             transport: transport,
             pool: Self.pool,
-            clientIDProvider: { "deadbeef" }
+            clientIDProvider: { "ignored" }
         )
         _ = try await discovery.lookup(uid: uid)
 
@@ -259,8 +275,12 @@ struct P2PDiscoveryTests {
             Issue.record("Expected the sent packet to be a Disc")
             return
         }
-        let parsed = try #require(DiscoveryXML.LookupRequest.decode(from: disc.payload))
+        // The on-wire payload must NOT be plaintext XML.
+        #expect(!disc.payload.starts(with: Data("<P2P>".utf8)))
+        // Decrypting with the senderID from the same header should
+        // recover the plaintext request that carries our UID.
+        let plaintext = DiscoveryXMLCrypto.decrypt(disc.payload, offset: disc.senderID)
+        let parsed = try #require(DiscoveryXML.LookupRequest.decode(from: plaintext))
         #expect(parsed.uid == uid)
-        #expect(parsed.clientID == "deadbeef")
     }
 }
