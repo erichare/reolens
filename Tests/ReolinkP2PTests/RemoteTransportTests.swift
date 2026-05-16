@@ -166,7 +166,7 @@ private struct ScriptedBcUdpTransport: BcUdpTransport {
                 wanV4: DiscoveryXML.Endpoint(host: host, port: port)
             ).encode()
         }
-        return .disc(BcUdpDiscPacket(connectionID: 0, responseCode: 0, payload: payload))
+        return .disc(BcUdpDiscPacket(senderID: 1, payload: payload))
     }
 }
 

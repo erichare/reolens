@@ -9,14 +9,31 @@ import Foundation
 /// (device-to-client control) carrying the camera's current
 /// candidates (WAN address, LAN address, relay hint).
 ///
-/// **Tag names pending Phase 2 validation.** The exact element
-/// names below are best-effort recall from the public Reolink
-/// reverse-engineering work (`thirtythreeforty/neolink`,
-/// `reolink-aio`). Phase 2's first packet capture against a real
-/// `p2p*.reolink.com` server will confirm them; if any tag is
-/// wrong, fixing it is a one-line change in the constants below.
-/// Round-trip tests cover every documented field so a regression
-/// is loud.
+/// ## Wire-format status (post May 2026 capture)
+///
+/// The codec below operates on **plaintext** XML. The 2026-05-16
+/// pcap against `p2p*.reolink.com` shows the wire payload is
+/// **obfuscated** — Disc packet payloads start with non-ASCII
+/// byte patterns (e.g. `da 17 58 4f 16 81...`) that don't match
+/// any of Reolink's documented ciphers (the rotating XOR key from
+/// the Baichuan BCEncrypt mode doesn't reproduce them). The
+/// obfuscation scheme is a Phase 3d.2 reverse-engineering task —
+/// likely a different stream cipher or a position-keyed XOR mask.
+///
+/// Once 3d.2 lands the decryptor, the flow will be:
+///   wire bytes → BcUdpDiscPacket.payload → decrypt → XML bytes
+///   → DiscoveryXML.decode (this codec).
+///
+/// Until then, the value of this codec is the structural seam
+/// (request schema, response parsing, tag-name source of truth) +
+/// round-trip tests that validate that part independently. The
+/// concrete `RemoteTransport.connect` path can't actually succeed
+/// against a real camera until the wire encryption is wired in.
+///
+/// Tag names: validated against neolink and `reolink-aio` sources
+/// only — the pcap can't confirm them while the payload is still
+/// obfuscated. 3d.2 will confirm or correct them once the cipher
+/// is broken.
 ///
 /// Pure value-type codec — no networking, no actors.
 public enum DiscoveryXML {

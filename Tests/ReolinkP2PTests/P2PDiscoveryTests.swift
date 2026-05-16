@@ -74,12 +74,12 @@ struct P2PDiscoveryTests {
             uid: uid,
             wanV4: DiscoveryXML.Endpoint(host: "203.0.113.10", port: 9000)
         )
-        return .disc(BcUdpDiscPacket(connectionID: 0, responseCode: 0, payload: response.encode()))
+        return .disc(BcUdpDiscPacket(senderID: 1, payload: response.encode()))
     }
 
     private static func makeEmptyReply(uid: String) -> BcUdpPacket {
         let response = DiscoveryXML.LookupResponse(uid: uid)
-        return .disc(BcUdpDiscPacket(connectionID: 0, responseCode: 0, payload: response.encode()))
+        return .disc(BcUdpDiscPacket(senderID: 1, payload: response.encode()))
     }
 
     private static let pool = DiscoveryServerPool(entries: [
@@ -142,7 +142,7 @@ struct P2PDiscoveryTests {
     @Test("Skips servers that return a non-Disc packet kind")
     func skipsWrongKind() async throws {
         let uid = "AAAAAAAA00000000"
-        let bogusKind = BcUdpPacket.ack(BcUdpAckPacket(connectionID: 0, cumulativeAck: 0))
+        let bogusKind = BcUdpPacket.ack(BcUdpAckPacket(connectionID: 0))
         let transport = ScriptedTransport(script: [
             "a.example.com": [.reply(bogusKind)],
             "b.example.com": [.reply(Self.makeReply(uid: uid))]
@@ -158,7 +158,7 @@ struct P2PDiscoveryTests {
     func skipsMalformedPayload() async throws {
         let uid = "BBBBBBBB00000000"
         let malformed = BcUdpPacket.disc(
-            BcUdpDiscPacket(connectionID: 0, responseCode: 0, payload: Data("not xml".utf8))
+            BcUdpDiscPacket(senderID: 1, payload: Data("not xml".utf8))
         )
         let transport = ScriptedTransport(script: [
             "a.example.com": [.reply(malformed)],

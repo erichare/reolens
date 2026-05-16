@@ -104,10 +104,15 @@ public actor P2PDiscovery {
         guard !pool.entries.isEmpty else { throw P2PDiscoveryError.emptyServerPool }
 
         let request = DiscoveryXML.LookupRequest(uid: uid, clientID: clientIDProvider())
+        // `senderID` is the per-app instance identifier the server
+        // echoes back so we can correlate replies. We mint a fresh
+        // 32-bit value per lookup; the server doesn't appear to
+        // care about its specific value as long as it's stable
+        // within a request/reply pair.
+        let senderID = UInt32.random(in: 1...UInt32.max)
         let packet = BcUdpPacket.disc(
             BcUdpDiscPacket(
-                connectionID: 0,
-                responseCode: 0,
+                senderID: senderID,
                 payload: request.encode()
             )
         )
