@@ -42,20 +42,41 @@ public struct NWConnectionBcUdpTransport: BcUdpTransport {
         port: UInt16,
         timeout: Duration
     ) async throws -> BcUdpPacket {
+        // Force IPv4. Reolink's p2p*.reolink.com cluster
+        // resolves to both A and AAAA records, but on networks
+        // where IPv6 is advertised-but-broken (some home
+        // routers, some CGNAT'd cellular paths) NWConnection
+        // picks the v6 path and reports ENETDOWN. The 2026-05-16
+        // capture showed IPv6 worked there; later runs surfaced
+        // the ENETDOWN failure. v4-only is the more reliable
+        // default for the discovery cluster.
+        let params = NWParameters.udp
+        if let ipOptions = params.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
+            ipOptions.version = .v4
+        }
         let conn = NWConnection(
             host: NWEndpoint.Host(host),
             port: NWEndpoint.Port(rawValue: port) ?? .init(integerLiteral: 9999),
-            using: .udp
+            using: params
         )
         // `defer` cancels on every exit, including the throw
         // path. `NWConnection.cancel()` is idempotent and safe to
         // call on a still-readying connection.
         defer { conn.cancel() }
 
+        // Wall-clock cap across DNS + ready + send + receive.
+        // Without this, a slow DNS resolution or a stuck-in-
+        // `.preparing` socket can hang `sendAndAwaitReply`
+        // forever — the per-receive timeout inside
+        // `awaitOneReply` only fires after the connection is up.
         do {
-            try await awaitReady(conn, host: host, port: port)
-            try await sendBytes(packet.encode(), on: conn, host: host, port: port)
-            return try await awaitOneReply(on: conn, host: host, port: port, timeout: timeout)
+            return try await withWallClockTimeout(timeout) {
+                try await self.awaitReady(conn, host: host, port: port)
+                try await self.sendBytes(packet.encode(), on: conn, host: host, port: port)
+                return try await self.awaitOneReply(on: conn, host: host, port: port, timeout: timeout)
+            } onTimeout: {
+                BcUdpTransportError.timedOut(host: host, port: port)
+            }
         } catch let error as BcUdpTransportError {
             throw error
         } catch {
@@ -65,6 +86,35 @@ public struct NWConnectionBcUdpTransport: BcUdpTransport {
             // actor's fallback still kicks in rather than tearing
             // the whole lookup down.
             throw BcUdpTransportError.unreachable(host: host, port: port, detail: "\(error)")
+        }
+    }
+
+    /// Race an async operation against a wall-clock deadline.
+    /// On timeout, throws the value returned by `onTimeout`.
+    /// On operation completion, returns its value (or rethrows
+    /// its error).
+    private func withWallClockTimeout<T: Sendable>(
+        _ duration: Duration,
+        operation: @escaping @Sendable () async throws -> T,
+        onTimeout: @escaping @Sendable () -> any Error
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T?.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try? await Task.sleep(for: duration)
+                return nil
+            }
+            defer { group.cancelAll() }
+            // First task to finish wins. If it's a real value,
+            // return it; if it's nil (the sleep won), throw.
+            while let next = try await group.next() {
+                if let value = next {
+                    return value
+                } else {
+                    throw onTimeout()
+                }
+            }
+            throw onTimeout()
         }
     }
 

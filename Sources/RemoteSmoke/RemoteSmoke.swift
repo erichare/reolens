@@ -75,14 +75,27 @@ struct RemoteSmoke {
 
         section("Step 1-3 — RemoteTransport.connect()")
         let start = Date()
+        // Per-second heartbeat so a hang is distinguishable from
+        // a long-but-progressing call.
+        let heartbeat = Task {
+            var seconds = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                if Task.isCancelled { return }
+                seconds += 1
+                print("  · waiting (\(seconds)s) …")
+            }
+        }
         do {
             try await transport.connect()
+            heartbeat.cancel()
             let elapsed = Date().timeIntervalSince(start)
             print("  ✓ connect succeeded in \(String(format: "%.2f", elapsed)) s")
             if let path = await transport.connectionPath {
                 print("  → path: \(path)")
             }
         } catch {
+            heartbeat.cancel()
             let elapsed = Date().timeIntervalSince(start)
             print("  ✗ connect failed after \(String(format: "%.2f", elapsed)) s")
             print("  error: \(error)")
