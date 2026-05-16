@@ -156,14 +156,19 @@ public enum DiscoveryXML {
         /// app traffic — some firmware lines have been observed
         /// to reject extra whitespace between tags.
         public func encode() -> Data {
-            let xml = "<\(Tag.root)>" +
-                "<\(Tag.clientRequest)>" +
-                "<\(Tag.uid)>\(uid)</\(Tag.uid)>" +
-                "<\(Tag.version)>\(version)</\(Tag.version)>" +
-                "<\(Tag.family)>\(family)</\(Tag.family)>" +
-                "<\(Tag.clientSource)>\(clientSource)</\(Tag.clientSource)>" +
-                "</\(Tag.clientRequest)>" +
-                "</\(Tag.root)>"
+            // Newline-separated tags — captured Reolink-macOS-app
+            // packets put a `\n` between every element. 2026-05-16
+            // smoke test surfaced that the server silently drops
+            // newline-free packets (sends went out fine; zero
+            // replies came back). Matches the wire byte-for-byte.
+            let xml = "<\(Tag.root)>\n" +
+                "<\(Tag.clientRequest)>\n" +
+                "<\(Tag.uid)>\(uid)</\(Tag.uid)>\n" +
+                "<\(Tag.version)>\(version)</\(Tag.version)>\n" +
+                "<\(Tag.family)>\(family)</\(Tag.family)>\n" +
+                "<\(Tag.clientSource)>\(clientSource)</\(Tag.clientSource)>\n" +
+                "</\(Tag.clientRequest)>\n" +
+                "</\(Tag.root)>\n"
             return Data(xml.utf8)
         }
 

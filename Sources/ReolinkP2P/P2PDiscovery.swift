@@ -112,11 +112,18 @@ public actor P2PDiscovery {
         // specific value, only that it's the same in the header
         // and the cipher offset.
         let senderID = UInt32.random(in: 1...UInt32.max)
+        // `requestToken` is per-request and always non-zero in
+        // captured traffic. 2026-05-16 smoke test had the server
+        // silently dropping our queries when the token was 0,
+        // matching one of several plausible filtering rules.
+        // Mint a fresh random non-zero value here.
+        let requestToken = UInt32.random(in: 1...UInt32.max)
         let plaintext = request.encode()
         let ciphertext = DiscoveryXMLCrypto.encrypt(plaintext, offset: senderID)
         let packet = BcUdpPacket.disc(
             BcUdpDiscPacket(
                 senderID: senderID,
+                requestToken: requestToken,
                 payload: ciphertext
             )
         )
