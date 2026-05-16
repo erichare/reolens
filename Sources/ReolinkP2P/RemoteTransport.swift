@@ -12,42 +12,29 @@ private let log = Logger(subsystem: "com.reolens.p2p", category: "remote-transpo
 /// ## State machine (per `connect()` call)
 ///
 /// 1. **Discovery.** `P2PDiscovery.lookup(uid:)` against the
-///    `p2p*.reolink.com` cluster. Returns the camera's current
-///    WAN registration plus a relay endpoint.
+///    `p2p*.reolink.com` cluster — returns the camera's
+///    current WAN registration plus a relay endpoint.
 /// 2. **Hole-punch.** `HolePunchScheduler.punch(...)` probes
-///    registration first, falls back to relay if it doesn't
-///    respond within `directDeadline` (6 s by default per
-///    decision #2). Returns the winning endpoint + the path
-///    discriminator (direct vs relayed) for UI.
+///    registration first, falls back to relay on timeout.
 /// 3. **Data channel.** `dataConnectionFactory` builds a
 ///    `BcUdpDataConnection` bound to the winning endpoint.
-///    Subsequent sends/receives flow through that connection.
-/// 4. **Send path.** Baichuan messages are encoded with the
-///    current cipher, fragmented to fit MTU via
-///    `DataFragmenter`, and stamped as `BcUdpDataPacket`s.
-/// 5. **Receive path.** Inbound `BcUdpDataPacket`s feed a
-///    `DataReassembler`; once a complete Baichuan message
-///    surfaces it's routed to the matching reply slot or
-///    broadcast to subscribers.
+/// 4. **Receive loop.** A child task subscribes to the data
+///    connection's inbound stream, runs each `BcUdpDataPacket`
+///    through a `DataReassembler`, and parses out `BcMessage`s
+///    using the Baichuan layer's own decode.
+/// 5. **Send.** `sendAndAwait` encodes a `BcMessage` with the
+///    negotiated cipher, fragments via `DataFragmenter`, and
+///    writes each fragment to the data connection.
 ///
-/// ## Status (Phase 3d.2, partial)
+/// ## Status (Phase 3d.2)
 ///
-/// What this commit ships:
-/// - Discovery + hole-punch are wired through and gated on
-///   injected `HolePunchProbeRunner` + endpoint-keyed factory.
-///   `connect()` succeeds when a winning candidate is selected.
-/// - `nextMessageNumber`, `currentCipher`, `setCipher`,
-///   `close` behave correctly.
-///
-/// Still pending Phase 3d.2-D + 3d.2-F:
-/// - `sendAndAwait` runs `DataFragmenter` to split the message
-///   bytes but the actual UDP send + receive-loop reassembly
-///   path isn't wired yet (concrete
-///   `NWConnectionBcUdpDataConnection` is the missing piece).
-///   It still throws `notYetImplemented` so callers (notably
-///   `CameraSession`) don't silently swallow the gap.
-/// - `subscribe()` returns an immediately-finished stream
-///   until the receive loop lands.
+/// Discovery, hole-punch, fragment codec, and receive loop
+/// are all wired through with offline tests covering the
+/// flow. The remaining piece is the concrete UDP layer
+/// (`NWConnectionBcUdpDataConnection`) — until that lands,
+/// production callers will need to inject a real UDP-backed
+/// `BcUdpDataConnection` themselves; unit tests use the
+/// stubbed connection in `RemoteTransportTests`.
 public actor RemoteTransport: BcMessageTransport {
 
     public let credentials: BaichuanCredentials
@@ -62,43 +49,29 @@ public actor RemoteTransport: BcMessageTransport {
     private var dataConnection: (any BcUdpDataConnection)?
     private var winner: HolePunchResult?
     private var fragmenter: DataFragmenter?
+    private var reassembler: DataReassembler?
+    private var receiveTask: Task<Void, Never>?
+    private var readBuffer: Data = Data()
     private var cipher: BcCipher = .unencrypted
     private var nextMsgNum: UInt16 = 0
     private var isClosed = false
 
+    /// Reply slots keyed by `msg_num` — same pattern as
+    /// `LANTransport`. Registered synchronously inside the
+    /// actor before the send is dispatched, so a fast reply
+    /// can't slip through to subscribers.
+    private var replySlots: [UInt16: AsyncStream<BcMessage>.Continuation] = [:]
+
+    /// Subscribers that consume the unsolicited-message stream
+    /// (events, server-initiated pushes).
+    private var unsolicitedContinuations: [UUID: AsyncStream<BcMessage>.Continuation] = [:]
+
     /// Locally-minted connection ID stamped into outbound
-    /// `BcUdpDataPacket`s. The wire capture showed each
-    /// session uses its own connection ID minted somewhere in
-    /// the handshake; absent a clear signal of where it comes
-    /// from, we generate it locally for now. Phase 3d.2-D
-    /// can swap to a handshake-provided ID once we have
-    /// captures showing how the server advertises one.
+    /// `BcUdpDataPacket`s. Phase 3d.2-D may swap to a
+    /// handshake-provided value if the protocol turns out to
+    /// hand one over.
     private let connectionID: UInt32
 
-    /// - Parameters:
-    ///   - credentials: Baichuan login credentials. The
-    ///     username/password gate the Baichuan-layer login
-    ///     that runs on top of this transport; they're not used
-    ///     for discovery (which is UID-keyed) or hole-punch.
-    ///   - uid: Camera UID, captured on first LAN login and
-    ///     persisted in `CameraEntry.uid` (Phase 4b).
-    ///   - discovery: `p2p*.reolink.com` discovery actor.
-    ///   - probeRunner: Sends Disc probes to candidates during
-    ///     hole-punch. Production wraps a real UDP socket;
-    ///     tests inject a scripted runner.
-    ///   - dataConnectionFactory: Builds the post-punch data
-    ///     channel bound to the winning endpoint. Called once,
-    ///     after the scheduler picks a winner.
-    ///   - directDeadline: How long to wait for the
-    ///     registration (direct) probe before falling back to
-    ///     relay. Decision #2 fixes the production value at 6
-    ///     s.
-    ///   - relayDeadline: How long to wait for the relay probe
-    ///     before declaring exhaustion. 4 s is conservative —
-    ///     a relay path that won't respond quickly is likely
-    ///     broken regardless.
-    ///   - connectionID: Optional override. Tests pin to a
-    ///     known value; production lets the actor mint one.
     public init(
         credentials: BaichuanCredentials,
         uid: String,
@@ -125,7 +98,6 @@ public actor RemoteTransport: BcMessageTransport {
         guard dataConnection == nil else { return }
         log.info("RemoteTransport.connect uid=\(self.uid, privacy: .private)")
 
-        // Discovery first.
         let candidates: DiscoveryXML.LookupResponse
         do {
             candidates = try await discovery.lookup(uid: uid)
@@ -137,7 +109,6 @@ public actor RemoteTransport: BcMessageTransport {
             throw RemoteTransportError.noCandidates(uid: uid)
         }
 
-        // Hole-punch.
         let result: HolePunchResult
         do {
             result = try await HolePunchScheduler.punch(
@@ -159,24 +130,38 @@ public actor RemoteTransport: BcMessageTransport {
 
         log.info("Hole-punch winner: \(result.endpoint.host, privacy: .private):\(result.endpoint.port, privacy: .public) path=\(String(describing: result.path), privacy: .public)")
 
-        // Bind the data channel to the winner.
         let channel = try await dataConnectionFactory(result.endpoint)
         try await channel.connect()
         self.dataConnection = channel
         self.winner = result
         self.fragmenter = DataFragmenter(connectionID: connectionID)
-        log.info("RemoteTransport data channel ready uid=\(self.uid, privacy: .private)")
+        self.reassembler = DataReassembler(connectionID: connectionID)
+
+        startReceiveLoop()
+        log.info("RemoteTransport ready uid=\(self.uid, privacy: .private)")
     }
 
     public func close() async {
         guard !isClosed else { return }
         isClosed = true
+        receiveTask?.cancel()
+        receiveTask = nil
         if let channel = dataConnection {
             await channel.close()
         }
         dataConnection = nil
         winner = nil
         fragmenter = nil
+        reassembler = nil
+        readBuffer = Data()
+        for (_, cont) in replySlots {
+            cont.finish()
+        }
+        replySlots.removeAll()
+        for (_, cont) in unsolicitedContinuations {
+            cont.finish()
+        }
+        unsolicitedContinuations.removeAll()
     }
 
     public func sendAndAwait(
@@ -184,32 +169,68 @@ public actor RemoteTransport: BcMessageTransport {
         timeout: TimeInterval,
         stage: String
     ) async throws -> BcMessage {
-        guard dataConnection != nil, fragmenter != nil else {
+        guard let dataConnection,
+              var fragmenter = self.fragmenter else {
             throw RemoteTransportError.notYetImplemented(
-                detail: "connect() must succeed before sendAndAwait can run"
+                detail: "connect() must succeed before sendAndAwait"
             )
         }
-        // Fragmentation is already wire-correct (Phase 3d.2-B).
-        // What's still missing is the receive loop that ingests
-        // inbound Data packets, runs them through
-        // DataReassembler, parses BcMessages, and routes them
-        // to reply slots. That's Phase 3d.2-F (next commit) and
-        // depends on the concrete
-        // `NWConnectionBcUdpDataConnection` from 3d.2-D
-        // actually delivering inbound packets to subscribers.
-        _ = (message, timeout, stage)
-        throw RemoteTransportError.notYetImplemented(
-            detail: "send-path fragmenter is wired; receive loop awaits Phase 3d.2-F"
-        )
+
+        let msgNum = message.header.msgNum
+        let bytes = message.encode(cipher: cipher)
+        let fragments = fragmenter.fragment(bytes)
+        self.fragmenter = fragmenter
+
+        // Register the reply slot BEFORE sending so a fast
+        // reply can't fall through to subscribers.
+        let (stream, continuation) = AsyncStream<BcMessage>.makeStream(bufferingPolicy: .bufferingOldest(1))
+        replySlots[msgNum] = continuation
+        defer {
+            replySlots.removeValue(forKey: msgNum)
+            continuation.finish()
+        }
+
+        log.debug("TX msgNum=\(msgNum) stage=\(stage, privacy: .public) bytes=\(bytes.count) fragments=\(fragments.count)")
+        for fragment in fragments {
+            do {
+                try await dataConnection.send(.data(fragment))
+            } catch {
+                throw BaichuanError.connectionFailed("BcUdp send failed: \(error)")
+            }
+        }
+
+        // Race the reply against the timeout.
+        let result = await withTaskGroup(of: BcMessage?.self) { group in
+            group.addTask {
+                for await msg in stream { return msg }
+                return nil
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(timeout))
+                return nil
+            }
+            let first = await group.next().flatMap { $0 }
+            group.cancelAll()
+            return first
+        }
+        guard let msg = result else {
+            throw BaichuanError.timedOut(stage: stage)
+        }
+        return msg
     }
 
     public func subscribe() async -> AsyncStream<BcMessage> {
-        AsyncStream { continuation in
-            // Phase 3d.2-F replaces this with a bridge from the
-            // reassembler's BcMessage output. Until then, no
-            // events flow to subscribers.
-            continuation.finish()
+        let (stream, continuation) = AsyncStream<BcMessage>.makeStream(bufferingPolicy: .unbounded)
+        let id = UUID()
+        unsolicitedContinuations[id] = continuation
+        continuation.onTermination = { @Sendable [weak self] _ in
+            Task { await self?.removeSubscriber(id: id) }
         }
+        return stream
+    }
+
+    private func removeSubscriber(id: UUID) {
+        unsolicitedContinuations.removeValue(forKey: id)
     }
 
     public func nextMessageNumber() -> UInt16 {
@@ -220,6 +241,77 @@ public actor RemoteTransport: BcMessageTransport {
 
     public func currentCipher() -> BcCipher { cipher }
     public func setCipher(_ new: BcCipher) { self.cipher = new }
+
+    // MARK: - Receive loop
+
+    private func startReceiveLoop() {
+        guard let dataConnection else { return }
+        receiveTask = Task { [weak self] in
+            await self?.runReceiveLoop(on: dataConnection)
+        }
+    }
+
+    private func runReceiveLoop(on channel: any BcUdpDataConnection) async {
+        let stream = await channel.subscribe()
+        for await packet in stream {
+            if Task.isCancelled { break }
+            handlePacket(packet)
+        }
+    }
+
+    private func handlePacket(_ packet: BcUdpPacket) {
+        switch packet {
+        case .data(let dataPacket):
+            handleDataPacket(dataPacket)
+        case .ack:
+            // Phase 3d.2-G will wire retransmit / selective-ack
+            // logic. The wire shows ~1 Ack per ~10 Data; we
+            // ignore them for now since the data-plane bytes
+            // are the only thing the upper layer cares about.
+            break
+        case .disc:
+            // Disc packets in the data-plane channel can occur
+            // for keepalives or path-renegotiation. Ignored for
+            // now; Phase 3d.2-D's concrete connection emits
+            // keepalive Discs itself rather than routing them
+            // up to us.
+            break
+        }
+    }
+
+    private func handleDataPacket(_ packet: BcUdpDataPacket) {
+        guard var reassembler = self.reassembler else { return }
+        let outcome = reassembler.ingest(packet)
+        readBuffer.append(reassembler.pullAssembled())
+        self.reassembler = reassembler
+
+        if case .wrongConnection = outcome {
+            // Different session multiplexed on the same UDP
+            // socket — not our concern right now (Phase 3d.2
+            // assumes a single session).
+            return
+        }
+
+        // Peel off as many complete BcMessages as the
+        // accumulated bytes contain.
+        while !readBuffer.isEmpty {
+            guard let (msg, consumed) = BcMessage.decode(from: readBuffer, cipher: cipher) else {
+                break
+            }
+            readBuffer.removeFirst(consumed)
+            dispatch(msg)
+        }
+    }
+
+    private func dispatch(_ msg: BcMessage) {
+        if let slot = replySlots[msg.header.msgNum] {
+            slot.yield(msg)
+            return
+        }
+        for (_, sub) in unsolicitedContinuations {
+            sub.yield(msg)
+        }
+    }
 
     // MARK: - Inspection (for diagnostics / tests)
 
