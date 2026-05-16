@@ -25,7 +25,13 @@ let package = Package(
         // for the wire codec.
         .library(name: "ReolinkP2P", targets: ["ReolinkP2P"]),
         .library(name: "AppShared", targets: ["AppShared"]),
-        .executable(name: "Reolens", targets: ["Reolens"])
+        .executable(name: "Reolens", targets: ["Reolens"]),
+        // 0.7.0 — small diagnostic CLI for end-to-end smoke
+        // tests of the remote-connectivity stack against a real
+        // Reolink camera. Not shipped to users; lives in the
+        // package so `swift run RemoteSmoke <uid> <user> <pass>`
+        // works from a checkout.
+        .executable(name: "RemoteSmoke", targets: ["RemoteSmoke"])
     ],
     dependencies: [
         // Sparkle 2 powers the in-app updater. The SPM artifact is an
@@ -145,6 +151,18 @@ let package = Package(
                 // enabling it explicitly is rejected by the toolchain.
                 // Keep ExistentialAny as an opt-in until the codebase is
                 // fully migrated.
+                .enableUpcomingFeature("ExistentialAny")
+            ]
+        ),
+        .executableTarget(
+            // 0.7.0 — diagnostic CLI for end-to-end smoke
+            // tests of `RemoteTransport` against a real
+            // Reolink camera. Run as:
+            //   swift run RemoteSmoke <uid> <username> <password>
+            name: "RemoteSmoke",
+            dependencies: ["ReolinkP2P", "ReolinkBaichuan", "ReolinkBcUdp"],
+            path: "Sources/RemoteSmoke",
+            swiftSettings: [
                 .enableUpcomingFeature("ExistentialAny")
             ]
         ),
