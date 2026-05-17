@@ -83,6 +83,13 @@ public actor P2PDiscovery {
     ///   - clientIDProvider: Source of per-lookup client tokens.
     ///     Defaults to a short random hex string; tests inject a
     ///     deterministic generator.
+    /// Diagnostic override. When non-nil, the actor uses this
+    /// exact value as the outbound `senderID` instead of
+    /// deriving one from the class-marker + uptime-counter
+    /// pattern. Useful for replay-testing a captured working
+    /// senderID against the live server.
+    public nonisolated(unsafe) static var senderIDOverride: UInt32?
+
     public init(
         transport: any BcUdpTransport,
         pool: DiscoveryServerPool = .default,
@@ -123,8 +130,13 @@ public actor P2PDiscovery {
         // counter the server may have aged out). Randomize the
         // low byte per-lookup so request/reply pairs remain
         // correlatable.
-        let lowByte = UInt32.random(in: 0...0xFF)
-        let senderID: UInt32 = (Self.clientClassMarker << 16) | (Self.uptimeCounterByte << 8) | lowByte
+        let senderID: UInt32
+        if let override = Self.senderIDOverride {
+            senderID = override
+        } else {
+            let lowByte = UInt32.random(in: 0...0xFF)
+            senderID = (Self.clientClassMarker << 16) | (Self.uptimeCounterByte << 8) | lowByte
+        }
         // `requestToken` is per-request and always non-zero in
         // captured traffic. 2026-05-16 smoke test had the server
         // silently dropping our queries when the token was 0,

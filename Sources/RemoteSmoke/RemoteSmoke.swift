@@ -40,17 +40,35 @@ struct RemoteSmoke {
     static func main() async {
         let rawArgs = CommandLine.arguments
         var verbose = false
+        var senderIDOverride: UInt32?
         var positional: [String] = []
-        for arg in rawArgs.dropFirst() {
+        var i = 1
+        while i < rawArgs.count {
+            let arg = rawArgs[i]
             if arg == "--verbose" || arg == "-v" {
                 verbose = true
+                i += 1
+            } else if arg == "--sender-id" {
+                guard i + 1 < rawArgs.count else {
+                    print("error: --sender-id requires a hex value (e.g. 0x003D0CCF)")
+                    exit(2)
+                }
+                let hex = rawArgs[i + 1].replacingOccurrences(of: "0x", with: "")
+                guard let parsed = UInt32(hex, radix: 16) else {
+                    print("error: --sender-id value '\(rawArgs[i + 1])' is not valid hex")
+                    exit(2)
+                }
+                senderIDOverride = parsed
+                i += 2
             } else {
                 positional.append(arg)
+                i += 1
             }
         }
         guard positional.count == 3 else {
-            print("usage: swift run RemoteSmoke [--verbose] <uid> <username> <password>")
+            print("usage: swift run RemoteSmoke [--verbose] [--sender-id <hex>] <uid> <username> <password>")
             print("  e.g. swift run RemoteSmoke -v 9527000I500W1NSQ admin secret")
+            print("       swift run RemoteSmoke --sender-id 0x003D0CCF <uid> ...")
             exit(2)
         }
         let uid = positional[0]
@@ -59,6 +77,10 @@ struct RemoteSmoke {
         if verbose {
             PosixBcUdpTransport.verboseLogging = true
             print("[verbose] enabled — every outbound + inbound BcUdp packet will be hex-dumped")
+        }
+        if let senderIDOverride {
+            P2PDiscovery.senderIDOverride = senderIDOverride
+            print("[override] senderID = 0x\(String(format: "%08X", senderIDOverride))")
         }
 
         await run(uid: uid, username: username, password: password)
