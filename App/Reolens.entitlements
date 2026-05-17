@@ -2,6 +2,20 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <!-- 0.6.5: cloudd refuses any CloudKit request whose process is
+         missing `com.apple.application-identifier` (logged as
+         "Invalid value of (null) for entitlement
+         com.apple.application-identifier" + the NSError it returns
+         localizes to "Trying to initialize a container without an
+         application id"). Xcode-signed targets get this entitlement
+         injected automatically from the provisioning profile, but the
+         macOS DMG is signed via `codesign` directly out of
+         Scripts/build-app.sh — codesign uses this file verbatim and
+         never injects the key, so without this line the entitlement
+         is absent in the running binary and the CloudKit motion-event
+         relay silently dies at the cloudd boundary on every save. -->
+    <key>com.apple.application-identifier</key>
+    <string>5M9UT7VQ8Q.com.reolens.Reolens</string>
     <key>com.apple.security.app-sandbox</key>
     <true/>
     <key>com.apple.security.network.client</key>

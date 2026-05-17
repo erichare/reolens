@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.5] — 2026-05-17
+
+Real fix for the silently-broken CloudKit motion-event relay. 0.6.4
+unblocked the entitlement probe but exposed the underlying cause:
+the macOS DMG has been shipping without
+`com.apple.application-identifier` in its signed entitlements all
+the way back to 0.4.1 (when the relay first landed). Xcode-signed
+targets get this key auto-injected from the provisioning profile;
+the macOS build uses `codesign` directly out of `Scripts/build-app.sh`
+with a hand-written entitlements file, and `codesign` uses the file
+verbatim — no injection. With the key absent in the running binary,
+`cloudd` rejects every CloudKit request with `Invalid value of
+"(null)" for entitlement "com.apple.application-identifier"` and
+returns an `NSError` whose localized description is *exactly* the
+"Trying to initialize a container without an application id"
+string that the diagnostic row has been showing since the feature
+shipped.
+
+### Fixed
+
+- **`com.apple.application-identifier` entitlement on macOS** — add
+  `5M9UT7VQ8Q.com.reolens.Reolens` to `App/Reolens.entitlements` so
+  the codesign'd DMG carries the entitlement cloudd requires. After
+  installing this build, the **CloudKit publish** diagnostic row
+  flips green on the next test event and the TestFlight iPhone
+  starts receiving the motion-event banners the relay was always
+  meant to deliver.
+
 ## [0.6.4] — 2026-05-17
 
 Fixes silently-broken CloudKit motion-event relay on macOS 26. The
