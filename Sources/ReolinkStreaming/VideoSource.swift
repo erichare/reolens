@@ -9,16 +9,15 @@ import CoreMedia
 ///
 /// Reolens started life with a single video path: RTSP/RTP →
 /// depacketize H.264 or H.265 NALUs → `CMSampleBuffer` →
-/// `AVSampleBufferDisplayLayer`. The 0.7.0 remote-connectivity
-/// work adds a *second* path: Baichuan `msg_id=3` frames over
-/// the BcUdp-backed remote transport → depacketize NALUs →
-/// `CMSampleBuffer` → same display layer.
+/// `AVSampleBufferDisplayLayer`. The protocol abstracted here
+/// keeps room for a second path (e.g. Baichuan `msg_id=3` frames
+/// over the BcUdp-backed transport) that produces NALUs by
+/// another means and feeds the same depacketize → `CMSampleBuffer`
+/// → display layer pipeline.
 ///
 /// Everything past "depacketize NALUs" is identical between
-/// the two paths. Everything before it differs. `VideoSource`
-/// is the seam — `LiveVideoPlayer` accepts any conformer and
-/// the choice of source is made by `CameraSession` based on
-/// `CameraReachability`.
+/// paths. Everything before it differs. `VideoSource` is the
+/// seam — `LiveVideoPlayer` accepts any conformer.
 ///
 /// ## Phasing
 ///

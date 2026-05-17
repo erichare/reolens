@@ -152,8 +152,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.reolens.Reolens.iOS
         PRODUCT_NAME: Reolens
-        MARKETING_VERSION: "0.6.2"
-        CURRENT_PROJECT_VERSION: "12"
+        MARKETING_VERSION: "0.6.3"
+        CURRENT_PROJECT_VERSION: "13"
         # Same Apple Developer team as the macOS app. Xcode's automatic
         # signing uses this to fetch / create the Apple Distribution
         # certificate and the App Store provisioning profile on first
@@ -216,8 +216,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.reolens.Reolens.iOS.Widgets
         PRODUCT_NAME: ReolensiOSWidgets
-        MARKETING_VERSION: "0.6.2"
-        CURRENT_PROJECT_VERSION: "12"
+        MARKETING_VERSION: "0.6.3"
+        CURRENT_PROJECT_VERSION: "13"
         DEVELOPMENT_TEAM: 5M9UT7VQ8Q
         CODE_SIGN_STYLE: Automatic
         PROVISIONING_PROFILE_SPECIFIER: "$(REOLENS_IOS_WIDGETS_PROFILE_NAME)"

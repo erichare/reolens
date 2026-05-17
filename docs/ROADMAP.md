@@ -16,6 +16,22 @@ Status keys:
 
 ---
 
+## Note on 0.6.3
+
+0.6.3 was a **course-correction release**, not a features release.
+It removed the 0.7.0 manual DDNS / `remoteHost` fallback that briefly
+landed in `[Unreleased]` and pivoted off-LAN access to **Tailscale**
+(or any overlay-network equivalent) documented end-to-end in
+[docs/remote-connectivity.md](remote-connectivity.md). Features that
+were previously slated for 0.6.3 (TTFF perf measurement, iOS-build
+CI promotion, accessibility follow-ups, view-file decomposition)
+deferred to **0.6.4**. The 0.7.0 storyline as a "remote-connectivity"
+release no longer exists — the BcUdp / P2P infrastructure stays in
+the tree dormant, and 0.7.0's slot reopens for whatever the next
+genuinely minor-bump-worthy storyline turns out to be.
+
+---
+
 ## HomeKit Secure Video — full integration
 
 - **Status:** Scaffolded (0.6.0).
@@ -83,7 +99,8 @@ Status keys:
 
 ## TTFF perf measurement
 
-- **Status:** Planned (0.6.3).
+- **Status:** Planned (0.6.4) — deferred from 0.6.3 because 0.6.3
+  became the DDNS-removal pivot release.
 - **Why deferred:** the 0.6.1 OSSignposter instrument on
   `com.reolens.streaming` / `TTFF` is in place and the live-video
   cold-start path emits the interval correctly. Capturing a
@@ -91,18 +108,19 @@ Status keys:
   rather than simulator timings, and the 0.6.2 CHANGELOG entry that
   promised "one measurable improvement with a number" can't be
   honestly filled without that capture.
-- **0.6.3 plan:** capture cold-start TTFF on iPhone + Mac across
+- **0.6.4 plan:** capture cold-start TTFF on iPhone + Mac across
   H.264 and H.265 paths; record the number in `docs/perf-baselines/`
   and CHANGELOG; ship a targeted improvement (likely on the RTSP
   handshake → first IDR path) backed by the measurement.
 
 ## iOS-build CI gate promotion
 
-- **Status:** Planned (0.6.3) — was originally planned for 0.6.2,
-  deferred because GitHub's `macos-26` runner image still ships
-  Xcode 26 variants that can't resolve `generic/platform=iOS`
-  (stable 26.3 lacks the device-platform component; beta 26.5
-  lacks matching simulator runtimes).
+- **Status:** Planned (0.6.4) — originally planned for 0.6.2,
+  deferred again from 0.6.3 (DDNS-removal pivot). Blocked on
+  GitHub's `macos-26` runner image still shipping Xcode 26
+  variants that can't resolve `generic/platform=iOS` (stable 26.3
+  lacks the device-platform component; beta 26.5 lacks matching
+  simulator runtimes).
 - **Workflow change required:** drop the `continue-on-error: true`
   on the three iOS-build steps in `.github/workflows/ci.yml` once
   the runner image carries a non-beta Xcode 26.x with both the
@@ -119,7 +137,8 @@ since 0.6.0); the iOS build job stays informational this cycle.
 
 ## Accessibility follow-ups
 
-- **Status:** Planned (0.6.3).
+- **Status:** Planned (0.6.4) — deferred from 0.6.3 (DDNS-removal
+  pivot).
 - **Driver:** items 1 and 4 of the 0.6.2 a11y batch deferred because
   both require device verification rather than source-only review.
 - **Items:**
@@ -133,13 +152,14 @@ since 0.6.0); the iOS build job stays informational this cycle.
 
 ## Larger view-file decomposition
 
-- **Status:** Partial (0.6.2) — carries to 0.6.3.
+- **Status:** Partial (0.6.2) — carries to 0.6.4 (deferred from 0.6.3
+  / DDNS-removal pivot).
 - **Driver:** AGENTS.md / repo 800-LOC view-file guideline.
 - **0.6.2 progress:** macOS `RecordingsView` 1116 → 784 LOC via
   `RecordingPlayerSheet` extract. iOS `RecordingsView` 767 LOC,
   already under threshold. `AllRecordingsView` 1282 → 1120 LOC via
   the three trailing sub-views extract.
-- **0.6.3 plan:** `AllRecordingsView` indexed-search panel cluster
+- **0.6.4 plan:** `AllRecordingsView` indexed-search panel cluster
   (~230 LOC) lifts into a dedicated view struct, which needs the
   snapshot-test safety net to land confidently. Brings the parent
   under 800 LOC.

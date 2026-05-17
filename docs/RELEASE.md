@@ -114,6 +114,59 @@ Each new version, walk this list. It takes about 10 minutes.
   ```
 - [ ] **Commit the bumps** as a single `chore(release): vX.Y.Z` commit
 
+### 0.6.3-specific verification
+
+Walk these on macOS and on iPhone + iPad simulators (iOS 26) before
+tagging. 0.6.3 is a course-correction release: it removes the 0.7.0
+manual DDNS / `remoteHost` field and pivots remote-access guidance
+to Tailscale. The verification surface is "the DDNS code is *gone*
+everywhere, LAN connect still works, and old configs still load."
+
+- [ ] **No "Remote address" field in Add Camera** — open the macOS
+  Add Camera sheet (+ in sidebar). The form ends at Connection
+  (HTTPS / codec); there is no "Remote access" section or remote-
+  host text field below it.
+- [ ] **No "Camera connection" section in channel Settings** — open
+  any camera's Settings tab. The form contains OSD / AI / Channel /
+  Motion privacy zones / Recording schedule / Motion-detection
+  schedule / Overlay / Device. There is no "Camera connection"
+  section, no remote-address text field, and no "How does this
+  work?" help button referencing DDNS or port forwarding.
+- [ ] **LAN connect still works** — add a fresh Reolink camera or
+  Home Hub on the LAN; it connects, live tiles play, recordings
+  scrub, OSD toggles round-trip. Reconnect from the context menu
+  works. Confirm the connection retry logs in Diagnostics show a
+  single LAN-attempt sequence — no "falling back to remote host"
+  log line.
+- [ ] **Old 0.7.0 `cameras.json` decodes** — if you have a synced
+  iCloud `cameras.json` from a 0.7.0 install that has a `remoteHost`
+  field on any entry, confirm 0.6.3 launches cleanly and the camera
+  list is intact. The field is silently dropped; the
+  `CameraEntrySchemaTests` cover this offline, but a real round-trip
+  through iCloud is the integration check.
+- [ ] **Hub child channels render unchanged** — for a Home Hub paired
+  with multiple cameras, open Settings on each child channel and
+  confirm the Device section (Model / Firmware / Hardware) is
+  present on every channel as before. No "Hub Settings" sub-row in
+  the sidebar; no gear sub-row in the Live-tab disclosure groups on
+  iOS.
+- [ ] **`docs/remote-connectivity.md` reads cleanly** — open the new
+  Tailscale guide and walk through it as if you were a new user.
+  Hardware options table makes sense; setup steps are concrete; the
+  README link to the long-form doc resolves correctly on GitHub.
+- [ ] **README "Remote access" section** — confirm it leads with
+  Tailscale, gives a 4-step short version, links to
+  `docs/remote-connectivity.md`, and contains no remaining mentions
+  of DDNS / DuckDNS / port forwarding as a *recommended* path.
+- [ ] **Dormant P2P infrastructure compiles** — `swift test --filter
+  ReolinkBcUdpTests` and `--filter ReolinkP2PTests` both pass (the
+  BcUdp codec round-trips and the P2P discovery actor's offline
+  fallback tests). These have no user-facing surface but stay green
+  so the door remains open if Reolink's P2P opens up.
+- [ ] **`Scripts/check-versions.sh` is green** — macOS
+  `CFBundleShortVersionString` and iOS `MARKETING_VERSION` both
+  report `0.6.3`. CI's first step.
+
 ### 0.6.2-specific verification
 
 Walk these on macOS and on iPhone + iPad simulators (iOS 26) before

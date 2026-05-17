@@ -16,11 +16,10 @@ import ReolinkBcUdp
 ///
 /// ## Probe sequencing
 ///
-/// Per decision #2 in `docs/0.7.0-plan.md`, the direct deadline
-/// defaults to 6 s. Relay deadline is shorter (4 s) on the
-/// theory that if relay won't answer quickly the network path
-/// is hopelessly broken regardless. Both are configurable for
-/// tests and for users with unusually slow paths.
+/// The direct deadline defaults to 6 s. Relay deadline is shorter
+/// (4 s) on the theory that if relay won't answer quickly the
+/// network path is hopelessly broken regardless. Both are
+/// configurable for tests and for users with unusually slow paths.
 ///
 /// ## Result
 ///

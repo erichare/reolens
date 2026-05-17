@@ -7,41 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Added — 0.7.0 remote-connectivity work in progress
+## [0.6.3] — 2026-05-17
+
+A cleanup release. The 0.7.0 remote-connectivity storyline (manual
+DDNS fallback, plus the dormant Reolink-P2P infrastructure built
+behind it) pivoted to an out-of-app recommendation: use
+**Tailscale** (or any overlay-network equivalent) to put your phone
+on the LAN. Rather than ship a half-trusted DDNS path with port-
+forwarding caveats, 0.6.3 removes the user-facing remote field and
+documents the Tailscale path end-to-end. Net change: less code,
+clearer privacy story, no compromise on remote access — Tailscale
+delivers it without exposing the camera to the public internet.
+
+### Removed
+
+- **Manual DDNS / "Remote address" field** — `CameraEntry.remoteHost`,
+  `CameraStore.setRemoteHost`, the "Remote address" section in the
+  macOS Add Camera sheet, the per-channel "Camera connection"
+  section in the Settings tab, and the WAN-fallback branch in
+  `CameraSession.runConnect`. Cameras now connect over LAN only;
+  off-LAN access is delegated to an overlay network (Tailscale).
+  Existing 0.7.0 `cameras.json` files with `remoteHost` set still
+  decode — the field is silently dropped via `decodeIfPresent`.
+- **`CameraConnectionMode` and `CameraReachability.decide`** —
+  the LAN/Remote/Offline decision rule and its hosting enum.
+  The rule was implemented as a pure function ahead of any caller
+  and never reached `runConnect`; with the WAN path gone, neither
+  the type nor its tests have a job.
+- **`CameraSession.activeCredentials`, `connectionMode`,
+  `switchToHost`** — the host-swapping machinery that supported
+  LAN→WAN fallback. `CameraSession` now binds `client` and
+  `streamURLs` to `credentials` at init and never swaps.
+
+### Changed
+
+- **Remote access documentation rewritten Tailscale-first.**
+  `README.md` "Remote access (off-LAN)" section now recommends an
+  overlay network (Tailscale, with Apple TV as the most-ergonomic
+  subnet-router host), with a short setup list and a link to the
+  long-form guide. `docs/remote-connectivity.md` replaced with an
+  end-to-end Tailscale setup guide covering hardware options
+  (Apple TV / UniFi / OPNsense / pfSense / NAS / Pi), step-by-step
+  configuration, troubleshooting, and equivalents (WireGuard,
+  ZeroTier, Headscale, why Cloudflare Tunnel doesn't fit cameras).
+  Rationale: zero ports forwarded, nothing on the public internet
+  to scan, works on CGNAT, no trust delegated to a free DDNS
+  provider.
+- **Tests** — `CameraReachabilityTests` removed (the decision rule
+  it tested no longer exists). `CameraEntrySchemaTests` gains a
+  forward-compat test that confirms a 0.7.0-era `cameras.json`
+  carrying `remoteHost` still decodes cleanly with the field
+  ignored.
+
+### Retained (dormant infrastructure)
+
+The Reolink-P2P building blocks landed before the pivot stay in
+the tree, off the user-facing path:
 
 - **BcUdp wire codec** (`Sources/ReolinkBcUdp/`) — pure value-type
-  encode/decode of the three Reolink P2P packet kinds (Disc /
-  Data / Ack). Round-trip tests pin the documented byte layout;
-  the magic constants and discovery XML tag names are cited
-  against neolink and marked pending validation against captured
-  packets from a real device.
-- **Discovery client** (`Sources/ReolinkP2P/`) — `P2PDiscovery`
-  actor walks the `p2p*.reolink.com` server pool by UID and
-  returns the first non-empty `LookupResponse`. Falls through on
-  per-host timeout / unreachable / malformed / empty responses;
-  throws `.exhausted` with per-server outcomes when the whole
-  pool is dry.
-- **Concrete UDP transport** — `NWConnectionBcUdpTransport`
-  backs the abstract `BcUdpTransport` protocol with
-  `Network.framework`. One-shot send-and-await per call; fresh
-  connection per server to keep pool-fallback semantics clean.
-- **UID capture** — `CameraEntry.uid` now persists the Reolink
-  P2P identifier fetched on first successful Baichuan login
-  (msg_id=114). Never shown to the user — exists to keep the
-  zero-config remote-access UX promise. Forward-compatible
-  decode-and-ignore for older Reolens builds reading a newer
-  `cameras.json`. Idempotent re-fetch through
-  `CameraStore.recordUID(_:for:)`.
-- **Design doc** (`docs/remote-connectivity.md`) — phased plan,
-  privacy-stance edit, threat model, and open questions.
+  encode/decode of Disc / Data / Ack packets. Round-trip tests
+  intact.
+- **P2P discovery client + UDP transport** (`Sources/ReolinkP2P/`)
+  — `P2PDiscovery` actor and `NWConnectionBcUdpTransport`. No
+  callers in the app; tests intact.
+- **`CameraEntry.uid`** — still captured on first successful
+  Baichuan login (msg_id=114). Never shown to the user; zero cost
+  to keep; leaves a clean seam if Reolink ever opens P2P.
 
-Remote access does not yet reach users in this slice: the
-discovery client and the transport exist, and `CameraEntry`
-captures the UID needed to look the camera up, but
-`BaichuanClient` still holds its own TCP `NWConnection` and the
-Phase 4 video pipeline (Baichuan msg_id=3 → VideoToolbox,
-bypassing RTSP) hasn't been written yet. Phases 3 + 4 + 5 land
-in subsequent slices.
+### Removed (design docs)
+
+- `docs/0.7.0-plan.md` — the abandoned-path design doc.
 
 ## [0.6.2] — 2026-05-15
 
@@ -1683,7 +1718,9 @@ First public release.
 - All camera passwords stored in the macOS Keychain — never in plain text
 - No analytics, no telemetry, no accounts
 
-[Unreleased]: https://github.com/jestatsio/reolens/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/jestatsio/reolens/compare/v0.6.3...HEAD
+[0.6.3]: https://github.com/jestatsio/reolens/compare/v0.6.2...v0.6.3
+[0.6.2]: https://github.com/jestatsio/reolens/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/jestatsio/reolens/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/jestatsio/reolens/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/jestatsio/reolens/compare/v0.5.0...v0.5.1

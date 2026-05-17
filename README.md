@@ -93,36 +93,34 @@ Drag tiles to rearrange them. Right-click a tile for "Make primary",
 
 ## Remote access (off-LAN)
 
-Reolens reaches your camera over your home network by default. If you
-want it to work when you're away from home too, set up DDNS pointing
-at your router's WAN IP and forward the camera's ports.
+Reolens is LAN-only by design. It reaches your camera at its LAN IP
+and does not exchange anything with Reolink's cloud, a DDNS provider,
+or any third-party relay. To make a LAN-only app reachable when
+you're away from home, put your phone *on* the LAN with an overlay
+network. **[Tailscale](https://tailscale.com)** is the
+recommended path — it's free for personal use, takes about ten minutes
+to set up, and avoids every footgun of port forwarding (open ports,
+WAN-IP exposure, CGNAT'd ISPs, untrusted DDNS providers).
 
-1. **Pick a DDNS provider.** Free options like
-   [duckdns.org](https://www.duckdns.org), Cloudflare, or
-   [no-ip.com](https://www.noip.com) work fine. Many routers have DDNS
-   clients built in (Asus, Synology, pfSense, etc).
-2. **Forward the camera's ports on your router.** Reolink cameras
-   speak HTTP (port 80) or HTTPS (443), RTSP (554 for video), and a
-   custom Baichuan protocol on TCP/9000 (events + battery info). Map
-   each of those from your router's WAN IP to the camera's LAN IP.
-   Most consumer routers expose this under "Port Forwarding" or
-   "Virtual Server".
-3. **Enter the DDNS hostname** in Reolens' Add Camera sheet, under
-   "Remote address". Leave blank for LAN-only.
+See **[docs/remote-connectivity.md](docs/remote-connectivity.md)** for
+the full step-by-step. The short version:
 
-Reolens dials the LAN host first and falls back to the remote address
-only when LAN is unreachable. The "no Reolens server, no third-party
-server" promise still holds: traffic goes directly from your device
-to your home router's WAN IP — Reolens isn't proxying anything, and
-you're not signing in to anyone's cloud. (Your DDNS provider sees
-your home IP, but that's a record they keep regardless of whether
-Reolens uses it.)
+1. **Install Tailscale on something always-on inside your LAN** —
+   an Apple TV (the sleeper-pick: zero extra hardware in an Apple
+   household), a UniFi / OPNsense / pfSense / OpenWrt router with
+   the native Tailscale plugin, a Synology / QNAP NAS, or a Raspberry
+   Pi. Enable **subnet routing** so it advertises your LAN's CIDR
+   (e.g. `192.168.1.0/24`).
+2. **Approve the route** in the Tailscale admin console.
+3. **Install Tailscale on your iPhone, iPad, and Mac**, sign in with
+   the same account.
+4. **Open Reolens off-LAN** — your phone reaches the hub at its LAN
+   IP exactly as it does at home. No setting to change in Reolens.
 
-If you'd prefer not to expose your camera to the public internet at
-all, [Tailscale](https://tailscale.com) is a great alternative —
-it puts your devices on a private overlay network and your camera's
-LAN IP just works from anywhere. Reolens needs zero configuration
-for that case.
+Why an overlay network instead of DDNS: zero ports forwarded, nothing
+on the public internet to scan, works on CGNAT'd connections, no
+trust delegated to a free DDNS provider, family members reach the
+cameras by inviting them to your tailnet.
 
 ## What you get
 

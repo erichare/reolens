@@ -1,471 +1,228 @@
-# Remote Connectivity — Design Doc
+# Remote Connectivity — Tailscale Setup Guide
 
-**Status:** Considering. No code yet. This doc exists so we can
-argue about scope, risks, and tradeoffs *before* writing 5,000+
-lines that touch the streaming pipeline.
+Reolens is LAN-only. The app reaches your camera at its LAN IP and
+never talks to Reolink's cloud, a DDNS provider, or any third-party
+relay. To make a LAN-only app work when you're away from home, put
+your phone *on* the LAN by joining an overlay network. **Tailscale**
+is the recommended path.
 
-**Owner:** Eric.
-
-**Last revised:** 2026-05-15.
+This guide walks the full setup end-to-end. It assumes you have a
+Reolink camera or Home Hub already paired in Reolens and working on
+your home Wi-Fi, and that you want it to keep working when you leave
+the house.
 
 ---
 
-## Problem
+## Why Tailscale (and not DDNS / port forwarding)
 
-Today Reolens is a strict LAN client. Once the user leaves their
-home network, every camera in the sidebar goes red — there is no
-path to reach the device.
+The older "DDNS + port forwarding" pattern works but exposes the
+camera's HTTP/RTSP/Baichuan ports to the public internet. Reolink
+firmwares have a steady stream of CVEs and Reolink's hardware is a
+common target for botnet scans. Even with the ports forwarded only
+to your specific camera, you're trusting:
 
-The official Reolink app works anywhere on the internet because
-it speaks Reolink's proprietary P2P stack: a discovery-server +
-hole-punch + relay design keyed on the camera's UID (the same UID
-we already fetch in
-[`Sources/ReolinkBaichuan/BaichuanUID.swift`](../Sources/ReolinkBaichuan/BaichuanUID.swift)).
+- Your free DDNS provider's uptime and the DNS record's integrity.
+- Your router's port-forward rules to not regress on a firmware
+  update.
+- Reolink's firmware to handle malformed inbound requests safely.
+- Your ISP to give you a routable WAN IP at all — many residential
+  ISPs (most cellular, some fiber) now use **CGNAT**, which makes
+  inbound connections impossible regardless of how cleverly you set
+  up DDNS.
 
-Reolens has to either (a) implement that P2P stack itself, (b)
-lean on user-managed alternatives (DDNS, Tailscale, etc.), or (c)
-some combination. This doc argues for (c) with P2P as the
-headline feature and the alternatives as documented fallbacks.
+Tailscale sidesteps all of these. Your phone and a small always-on
+LAN device join a **tailnet** — a private mesh network — and the
+phone reaches the camera's LAN IP directly through the mesh. Zero
+ports forwarded. Nothing on the public internet to scan. Works on
+CGNAT'd connections. Tailscale's own infrastructure only handles
+NAT-punching and keys; the camera video itself goes peer-to-peer.
 
-## Non-goals
+Tailscale is **free** for personal use (100 devices, 3 users).
+Self-hostable as **Headscale** if you'd rather not depend on
+Tailscale, Inc.'s coordination server.
 
-- **A Reolens-operated relay.** The README's stance is "no Reolens
-  server, no third-party analytics, no telemetry." Standing up a
-  Reolens TURN cluster would break that, and bandwidth costs are
-  meaningful for video.
-- **Remote access without internet on the camera.** P2P needs the
-  camera to be online and able to reach Reolink's discovery
-  servers. Air-gapped LANs are out of scope.
-- **Reverse-engineering Reolink's account system.** P2P needs only
-  the camera UID + the device's own credentials. We do not need
-  the user's Reolink cloud account.
+---
 
-## Background: how Reolink P2P actually works
+## What you need
 
-Reverse-engineered by `thirtythreeforty/neolink` (Rust, GPLv3).
-Their crate is our protocol reference — we cannot copy code
-(GPL ↔ MIT incompatible), but the wire format is a fact and is
-fair game to re-implement.
+1. **A Reolink camera or Home Hub** already paired in Reolens on
+   your home Wi-Fi.
+2. **An always-on device on the same LAN as the camera**, capable of
+   running Tailscale as a *subnet router*. You probably already have
+   one. In rough order of "least extra hardware":
 
-The pieces:
+   - **Apple TV** (4K, tvOS 17+) — runs the official Tailscale app,
+     can act as a subnet router, never sleeps its network stack.
+     The most ergonomic option in an Apple household.
+   - **Your router**, if it runs UniFi (UDM Pro / Dream Router /
+     OS 4+), OPNsense, pfSense, OpenWrt, MikroTik (recent
+     RouterOS), AsusWRT-Merlin, or GL.iNet. All have native
+     Tailscale integrations — typically one checkbox in the web UI.
+   - **A NAS** (Synology, QNAP, Unraid, TrueNAS) — Tailscale ships
+     official apps for each.
+   - **A Mac mini, an old MacBook, or any always-on Mac.**
+   - **A Raspberry Pi** (4, 5, or Zero 2 W) — the classic fallback,
+     ~$15–50.
+3. **A Tailscale account** (free, sign in with Apple / Google /
+   GitHub at <https://tailscale.com>).
+4. **The Tailscale app on every Apple device** you want to use
+   Reolens from — iPhone, iPad, Mac. All from the App Store.
 
-### 1. Discovery (rendezvous)
+---
 
-The camera continuously registers its (UID → public IP:port,
-public IPv6:port, local LAN IP:port) tuple with one of Reolink's
-keepalive servers. Known endpoints:
+## Setup
 
-- `p2p.reolink.com`
-- `p2p2.reolink.com` … `p2p9.reolink.com`
-- Regional flavors: `p2p-na.reolink.com`, `p2p-eu.reolink.com`,
-  `p2p-as.reolink.com`.
+### 1. Create a Tailscale account
 
-Clients query the same servers with the UID and a small XML
-payload to retrieve the camera's *current* candidate list. The
-candidate list is short-lived; we have to re-query when paths
-go stale.
+Visit <https://tailscale.com> → Sign in → pick an identity provider.
+The free Personal tier is fine.
 
-The discovery protocol rides on top of the same **BcUdp** packet
-format (below) — it is not HTTP. Authentication is by knowing
-the UID. There is no per-user secret at this layer; the camera
-credentials gate the *next* layer, not the rendezvous.
+### 2. Install Tailscale on your LAN-side device (the subnet router)
 
-### 2. NAT traversal (hole punching)
+The steps differ slightly per device; the goal is the same: install
+Tailscale, sign in, and enable "advertise routes" for your LAN's
+CIDR.
 
-Classic STUN-style UDP hole punching:
+#### Apple TV (recommended for most users)
 
-1. Client and camera each send small "Disc" packets to each
-   other's candidates simultaneously.
-2. The first packet pair that survives a NAT round-trip wins —
-   that 5-tuple becomes the data path.
-3. Symmetric NATs on both sides defeat hole punching. We fall
-   back to relay.
+1. App Store on the Apple TV → search "Tailscale" → Install.
+2. Open the app. It shows a code and URL; visit the URL on your
+   phone, sign in, and approve the Apple TV.
+3. Back in the Apple TV app → **Settings → Advertise routes**.
+4. Enter your home LAN's CIDR (e.g. `192.168.1.0/24`,
+   `192.168.0.0/24`, or `10.0.0.0/24`). If you're not sure: look up
+   the IP address your Reolink hub has. If it's `192.168.1.100`,
+   your CIDR is `192.168.1.0/24`.
+5. Save.
 
-Practical NAT class coverage from neolink's experience: ~75–85 %
-of consumer NATs succeed without relay; the long tail is
-double-NAT (CGNAT, mobile carriers, some hotel/airport WiFi).
+#### UniFi / OPNsense / pfSense / OpenWrt / GL.iNet
 
-### 3. Relay fallback
+Each platform has its own UI, but the pattern is: install the
+Tailscale plugin/app → sign in via the on-screen QR code → enable
+"subnet routes" → enter your LAN CIDR. UniFi has a dedicated
+Tailscale section under Network Settings; OPNsense/pfSense add a
+"VPN: Tailscale" pane; OpenWrt installs via `opkg`; GL.iNet exposes a
+single "Enable Tailscale" toggle plus a CIDR field.
 
-When hole punching fails, the discovery server brokers a relay
-through Reolink's TURN-like infrastructure. Traffic is rate-
-limited and presumably observable by Reolink — same as the
-official app.
+#### Synology / QNAP / Unraid / TrueNAS
 
-### 4. BcUdp transport (the actual wire format)
+Install the Tailscale app from the platform's package manager. Sign
+in, then enable subnet routing via the app's settings → advertise
+your LAN CIDR.
 
-Once a 5-tuple is established (direct or relayed), control and
-video both flow as BcUdp packets:
+#### Raspberry Pi (or any Linux)
 
-```
-+--------+--------+--------+--------+
-| Magic  | Type   | Length          |  Type ∈ {Disc, Ack, Data}
-+--------+--------+--------+--------+
-| Connection ID (UID for Disc;      |
-|  short connection-id for Data/Ack)|
-+-----------------------------------+
-| Packet seq                        |
-+-----------------------------------+
-| Payload …                         |
-+-----------------------------------+
-```
-
-Reference: `neolink/crates/core/src/bcudp/` — codec.rs, model.rs.
-
-- **Disc** packets carry discovery XML (lookup, candidate list,
-  hole-punch hints).
-- **Data** packets carry the same Baichuan messages we already
-  encode in
-  [`Sources/ReolinkBaichuan/Wire/BcMessage.swift`](../Sources/ReolinkBaichuan/Wire/BcMessage.swift)
-  — login, video, PTZ, etc.
-- **Ack** packets ack data sequence numbers. There's a
-  selective-ack / retransmit loop because UDP doesn't have one.
-
-So a fully working P2P stack is conceptually:
-
-```
-Reolens (BaichuanClient)
-   ↓
-[Transport] ← LAN: NWConnection over TCP/9000
-            ← P2P: BcUdp framing over NWConnection.udp
-                     ├─ direct path (post-hole-punch)
-                     └─ relayed path (via Reolink TURN)
+```sh
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up --advertise-routes=192.168.1.0/24   # adjust CIDR
 ```
 
-`BaichuanClient` shouldn't need to know which transport it's on
-once the transport is up. That's the cleanest factoring.
-
-### 5. Video: no RTSP, only Baichuan frames
-
-Reolink P2P *does not* tunnel RTSP. There is no SDP. Video is
-delivered as Baichuan `msg_id=3` data frames inside BcUdp Data
-packets:
-
-- Each msg_id=3 reply carries one chunk: a Baichuan video sub-
-  header + raw H.264 or H.265 NALUs (Annex-B framing).
-- We have to depacketize NALUs ourselves and feed them to
-  `VTDecompressionSession`. The
-  [`Sources/ReolinkStreaming/RTSP/`](../Sources/ReolinkStreaming/RTSP)
-  H.264/H.265 NALU pipe is reusable for the *decode* half but
-  the RTSP demuxer is bypassed entirely.
-- Audio: Baichuan AAC frames in msg_id=3 just like the official
-  app. Reuses our existing AVAudioEngine sink.
-
-This is the single largest piece of the project: a second
-"recorder" path that consumes msg_id=3 frames instead of RTP/AVP.
-
-## UX contract: zero-config
-
-Remote access must be **invisible** to the user. There is no
-"Remote address" field, no port-forwarding instructions, no
-DDNS setup. The flow is:
-
-1. User adds a camera on the local network (existing
-   `AddCameraSheet` flow — unchanged).
-2. Reolens fetches the camera's UID on first successful LAN
-   login (the Baichuan `msg_id=114` exchange we already
-   implement in
-   [`Sources/ReolinkBaichuan/BaichuanUID.swift`](../Sources/ReolinkBaichuan/BaichuanUID.swift)).
-3. The UID is persisted to `cameras.json` alongside the other
-   per-camera fields.
-4. When the LAN endpoint isn't reachable (user is away, or
-   they're on cellular), reachability silently fails over to
-   P2P keyed on the stored UID. No prompt, no setting.
-
-A user who never leaves their home network never knows the
-P2P stack exists. A user who *does* leave just sees their
-cameras keep working.
-
-Manual remote-address entry (DDNS / port-forward) is
-**explicitly out of scope** — it was considered as a
-ships-immediately fallback but rejected on UX grounds. We're
-committing to the full P2P implementation as the only remote
-path.
-
-## Phased plan
-
-Each phase is independently shippable as a no-op once
-gated behind a kill switch. Full remote parity arrives at
-Phase 4; before that, every phase is dark code with tests.
-
-### Phase 1: BcUdp packet codec + tests (3–5 days) — ✅ landed
-
-A new `Sources/ReolinkBcUdp/` module that knows nothing about
-networking — just packet encode/decode.
-
-```
-ReolinkBcUdp/
-  Wire/
-    BcUdpHeader.swift     // magic / type / length / conn-id / seq
-    BcUdpPacket.swift     // Disc / Data / Ack variants
-    DiscoveryXML.swift    // <P2P> tag schema for Disc payloads
-  ReolinkBcUdp.swift      // module docs + module-public entry
-Tests/ReolinkBcUdpTests/  // round-trip vectors, captured from a
-                          //   real device under tcpdump
-```
-
-**Acceptance:**
-- 100 % round-trip on every captured packet in
-  `Tests/ReolinkBcUdpTests/Fixtures/`.
-- No network code. No actors. Pure value-type encoding.
-
-**Risk:** Low. This is parser-grade work and is the layer
-neolink has the cleanest public reference for.
-
-### Phase 2: Discovery client (3–5 days) — ✅ landed (offline tests)
-
-A `P2PDiscovery` actor that, given a UID, queries the
-`p2p*.reolink.com` cluster (UDP/9999, BcUdp Disc packets) and
-returns a `Candidates` struct: `{ wanV4, wanV6, lanV4, relayHint }`.
-
-**Acceptance:**
-- Given a known-good UID and an internet connection, returns at
-  least one candidate within 3 s. **Pending real-device
-  validation** — the offline test suite proves the fallback /
-  empty-response / unexpected-kind paths but the actual XML tag
-  names and packet magics need a tcpdump capture against a real
-  Reolink server to lock in.
-- Falls through across the `p2p*` cluster on per-host timeout. ✅
-- Survives the discovery server replying with a "try this other
-  server" redirect — **pending** redirect-handling logic; today
-  the actor just retries the next pool entry, which works for
-  per-server failover but not for explicit redirects.
-
-**Risk:** Medium. Server pool composition can change. The
-bootstrap list ships as Swift constants for now (the "JSON
-resource" option is still open per § "Open questions" below) —
-swapping the source is mechanical because the actor consumes a
-`DiscoveryServerPool` value either way.
-
-### Phase 2b: Concrete UDP transport — ✅ landed
-
-`NWConnectionBcUdpTransport` backs the abstract
-[`BcUdpTransport`](../Sources/ReolinkP2P/BcUdpTransport.swift)
-protocol with `Network.framework`. One-shot send-and-await per
-call, fresh UDP `NWConnection` per server, mirrors the
-`ContinuationBox` idempotency pattern from
-[`BaichuanClient`](../Sources/ReolinkBaichuan/BaichuanClient.swift)
-to keep behavior under cancellation predictable.
-
-**Acceptance:**
-- Wall-clock timeout honored end-to-end ✅
-- DNS-resolution failures surface as `.unreachable` so the
-  actor's fallback fires ✅
-- No connection reuse across attempts — fresh socket per call
-  keeps pool-fallback semantics clean ✅
-- Real-device validation: **pending** (needs a router + real
-  Reolink camera; the offline tests use a `ScriptedTransport`
-  actor stub).
-
-### Phase 3: NAT traversal + transport (1–2 weeks)
-
-`RemoteTransport` actor: takes a `Candidates` payload, drives
-hole punching, exposes the same `send(BcMessage)` /
-`AsyncStream<BcMessage>` surface that
-[`BaichuanClient`](../Sources/ReolinkBaichuan/BaichuanClient.swift)
-expects today.
-
-Refactor `BaichuanClient` to accept a `Transport` protocol
-instead of holding an `NWConnection` directly. Existing TCP path
-becomes `LANTransport: Transport`; new `RemoteTransport: Transport`
-slots in alongside.
-
-**Acceptance:**
-- A working `LogIn → fetchUID → fetchVersion` round-trip over
-  the remote transport against a real camera on a real residential
-  NAT.
-- Direct path preferred; if hole punching fails within 6 s,
-  fall back to relay-hint candidate.
-- Transparent to `BaichuanLogin`, `BaichuanBattery`, etc. — no
-  changes in those files.
-
-**Risk:** High. Requires real-device testing on multiple NATs.
-This is where neolink users still occasionally report breakage.
-
-### Phase 4: Baichuan video pipeline (1–2 weeks)
-
-A new `BaichuanVideoSource` in `ReolinkStreaming` that consumes
-`msg_id=3` frames over `RemoteTransport`, splits NALUs, and feeds
-the existing `VideoDecoder` (VideoToolbox wrapper).
-
-**Acceptance:**
-- A camera reached via P2P plays main + sub stream in the grid
-  with the same first-frame latency target as RTSP (≤ 600 ms p50
-  on a healthy connection).
-- Stream switch (main ↔ sub) works.
-- Snapshot (`msg_id=109`) works.
-- Talkback (`msg_id=202`) works.
-
-**Risk:** High. Largest LOC delta of the project. May surface
-codec edge cases on battery cameras (whose sub-stream timing
-differs).
-
-### Phase 4b: UID capture in the existing flow (½ day) — ✅ landed
-
-Tiny but important. After Phase 1–4 land but before remote
-becomes user-visible, we need every newly-added (and previously-
-added) camera to have a UID stored.
-
-- On first successful LAN login (existing `BaichuanLogin`
-  path), call `fetchUID(channelID:)` and persist the result to
-  `CameraEntry.uid`. ✅
-- Background re-attempt: handled by the existing Baichuan retry
-  loop in
-  [`CameraSession.startBaichuanEvents`](../Sources/AppShared/CameraSession.swift)
-  — if the first fetch fails (e.g. on older firmware where the
-  hub takes a moment to settle after login), the next reconnect
-  retries opportunistically. A session-local
-  `uidCapturedThisSession` flag prevents redundant fetches
-  inside a single app run once the UID lands. ✅
-- No UI — the user never sees the UID. ✅
-- Idempotent persistence via
-  [`CameraStore.recordUID(_:for:)`](../Sources/AppShared/CameraStore.swift)
-  so the iCloud sync stays clean. ✅
-
-### Phase 5: UI surfacing (1–2 days)
-
-The user-visible surface is deliberately tiny — zero-config
-means nothing for the user to configure.
-
-- Connection-mode indicator on each camera tile: "LAN" (green
-  pip), "Remote" (amber pip), "Relayed" (orange pip). Tap → a
-  small details popover that explains the three states. No
-  settings, no toggles.
-- Settings → Privacy & Sync → short "Remote access" paragraph
-  explaining that when the user is away from home, the app
-  reaches the camera through Reolink's discovery / relay
-  servers. **One** opt-out toggle: "Allow remote access"
-  (default on). When off, off-LAN cameras simply show the
-  existing unreachable state.
-- About screen note matching the README copy below.
-
-### Phase 6: Documentation + release (1 day)
-
-- `README.md`: replace the "no third-party servers" line with
-  the honest framing below. No setup instructions because there
-  *is* no setup.
-- `SECURITY.md`: P2P threat model. Reolink's servers learn that
-  *some* client reached *this* UID; they do not learn the
-  credentials (we still log in to the camera ourselves once the
-  transport is up). Credentials are TLS-encrypted? **No** —
-  Baichuan login uses MD5'd nonces, not TLS. Same as LAN. Worth
-  calling out.
-- `CHANGELOG.md`: 0.7.0 entry.
-
-## Total effort
-
-5–7 weeks of focused work for one developer. Roughly:
-
-| Phase | Effort | Cumulative |
-|-------|--------|------------|
-| 1     | 5 d    | 5 d        |
-| 2     | 5 d    | 10 d       |
-| 3     | 10 d   | 20 d       |
-| 4     | 10 d   | 30 d       |
-| 4b    | 0.5 d  | 30.5 d     |
-| 5     | 2 d    | 32.5 d     |
-| 6     | 1 d    | 33.5 d     |
-
-## Risks worth re-stating before we commit
-
-### Reolink can break this any time
-
-The `p2p*.reolink.com` cluster is private infrastructure. They
-can rotate domains, change the BcUdp framing, require signed
-clients, or block UIDs reported by non-official apps. The
-mitigation is "ship updates fast" — there is no real defense.
-
-### Reolink's terms of service
-
-Reolink's device EULA likely prohibits reverse-engineered access
-to their cloud services. neolink lives with this; so does
-ReolinkRestApi (Python) and Home Assistant's reolink integration.
-The risk is takedown rather than legal — we should not
-advertise "uses Reolink P2P" loudly, the way neolink doesn't.
-Call it "remote access" in the UI.
-
-### Privacy stance shift
-
-The README's "no third-party servers" line stops being literally
-true once P2P is on. The honest framing:
-
-> **At home**, Reolens talks only to your cameras on your local
-> network. **Away from home**, Reolens uses Reolink's discovery
-> servers (and, if direct hole-punching fails, their relay
-> servers) to reach your camera. There is still no Reolens
-> server. You can disable remote access in Settings if you
-> only want LAN-mode behavior.
-
-That edit needs to land in both `README.md` and the in-app
-About screen.
-
-### Real-device testing surface
-
-We need at least three NAT configurations to validate Phase 3:
-home cable modem (full-cone), home fibre with CGNAT, mobile
-hotspot (symmetric). The CI runners can't simulate this. The
-dev loop will involve a real Reolink device on a real residential
-internet connection.
-
-### Battery cameras
-
-Battery cameras (Argus, Reolink Go, Duo Battery) have a
-different P2P keepalive cadence — they sleep and wake. The
-discovery server tells us "device is sleeping; send wake hint";
-the wake hint is an FCM-style push that Reolink's app delivers,
-which we *cannot* mimic. Battery cameras may end up remote-only
-when they happen to be awake. Worth a Settings note.
-
-## Open questions
-
-1. **Server-pool bootstrap.** Ship the `p2p*.reolink.com` list
-   as a JSON resource, or hard-code? JSON wins for hot-fixing
-   but adds a "where is this loaded from" question for
-   reviewers.
-2. **Relay opt-in.** Should we offer "direct-only, no relay"
-   as a privacy setting? Power users may prefer "fail rather
-   than send my video through Reolink's TURN".
-3. **iCloud sync of remote settings.** Per-camera "Allow
-   remote" lives in the existing `cameras.json` iCloud sync, but
-   it implies the same toggle on every signed-in device. Good
-   default; worth surfacing in the Settings copy.
-4. **HKSV interaction.** If HomeKit Secure Video ever lands
-   (see `docs/ROADMAP.md`), HKSV expects RTSP. The P2P path
-   bypasses RTSP entirely. Either keep HKSV LAN-only or build a
-   tiny local-loopback RTSP server fed by Baichuan frames. The
-   second is plausible but out of scope for this project.
-
-## What to do next
-
-Phases 1, 2, 2b, and 4b are landed (offline-tested). The next
-piece of work is **Phase 3** — refactor `BaichuanClient` to
-accept a `Transport` protocol so the existing TCP-via-
-`NWConnection` path becomes one of two interchangeable backends,
-with a new `RemoteTransport` built on
-[`P2PDiscovery`](../Sources/ReolinkP2P/P2PDiscovery.swift) +
-[`NWConnectionBcUdpTransport`](../Sources/ReolinkP2P/NWConnectionBcUdpTransport.swift)
-as the other.
-
-This refactor is intentionally deferred until a Swift compiler
-is available locally — it touches the most heavily-exercised
-file in the project and a subtle isolation / Sendable mistake
-would surface only at runtime. Phase 4 (Baichuan video pipeline)
-follows the same logic — VideoToolbox + NALU parsing want a
-compile-test-iterate loop, not a cold-write pass.
-
-Phase 5 (UI surfacing) and Phase 6 (release docs) are
-straightforward and land last, once Phases 3 + 4 have shaken
-out against real devices.
-
-## References
-
-- `thirtythreeforty/neolink` —
-  https://github.com/thirtythreeforty/neolink (Rust, GPLv3) —
-  protocol reference only, no code copied.
-- `crates/core/src/bcudp/` in neolink — the BcUdp codec we will
-  re-implement in Swift.
-- `crates/core/src/bc_protocol/connection/discovery.rs` in
-  neolink — the discovery state machine.
-- Home Assistant `reolink` integration — uses the same camera
-  CGI we already use, no P2P, useful for sanity checks on the
-  control-plane half.
+#### Mac
+
+Install Tailscale from the App Store, sign in, and enable subnet
+routing under Tailscale menu bar → Settings → "Use exit node and
+subnet routes" → Advertise routes → enter the CIDR.
+
+### 3. Approve the subnet route in the Tailscale admin console
+
+This is a one-time step. Tailscale doesn't auto-approve subnet
+routes — you confirm which routes are real.
+
+1. Open <https://login.tailscale.com/admin/machines>.
+2. Find the row for your subnet-router device (Apple TV / router /
+   NAS / Pi).
+3. Click the "⋯" menu → **Edit route settings**.
+4. Toggle on the route you just advertised. Save.
+
+### 4. Install Tailscale on every Apple device that runs Reolens
+
+App Store → Tailscale → Install → sign in with the same account on
+iPhone, iPad, and Mac. iOS installs a VPN configuration; approve it.
+
+### 5. Test
+
+1. Turn off your phone's Wi-Fi so you're on cellular (truly off-LAN).
+2. Toggle Tailscale on.
+3. In Safari, open `http://<your-hub's-LAN-IP>`. The Reolink web UI
+   should load just as if you were home. If it does, the route is
+   working.
+4. Open Reolens. The hub appears online, live tiles play. Done.
+
+You don't need to change anything in Reolens — there's no remote-host
+field to fill in. The app dials the camera's LAN IP, and Tailscale
+delivers the packets.
+
+---
+
+## Tips
+
+- **Apple TV in standby is fine.** Tailscale on tvOS keeps the
+  network stack alive even when the TV is "off" (as long as it's
+  plugged in).
+- **MagicDNS** (one toggle in the admin console) lets you reach
+  tailnet devices by name — handy but not required for Reolens.
+- **Don't enable "Use Exit Node"** unless you actually want *all*
+  your phone's traffic routed through home. Subnet routing is what
+  Reolens needs; exit-node routing is a different feature.
+- **Family members** can join your tailnet for free (invite from the
+  admin console) and Reolens will work for them too. Their phones do
+  not need your Tailscale login.
+- **CGNAT is not a problem** for Tailscale. The mesh punches through
+  most NATs; in the rare cases it can't, it falls back to a relay.
+  Latency is fine for video.
+- **Headscale** is a community open-source coordination server if you
+  want to fully self-host the control plane.
+
+---
+
+## Troubleshooting
+
+**The Apple TV (or router / NAS) doesn't appear in the admin
+console.** Make sure you signed in with the same Tailscale account
+you're using on your phone. Some sign-in flows pick up the wrong
+account if you have multiple identity providers linked.
+
+**Subnet route approved but I still can't reach the LAN.** Confirm
+the CIDR matches your home LAN. If your hub is `192.168.1.100`, the
+CIDR is `192.168.1.0/24` — not `192.168.0.0/24`. Also check that
+the iPhone is *not* on the same LAN's Wi-Fi while testing — on-LAN,
+your phone reaches the hub directly without using Tailscale, so a
+broken Tailscale config still appears to "work."
+
+**Reolens shows the camera as offline off-LAN.** Open Safari on the
+phone and try `http://<hub-LAN-IP>` first. If Safari can't reach it
+either, the issue is Tailscale routing, not Reolens. If Safari works
+but Reolens doesn't, force-quit Reolens and reopen — the session
+may have cached an unreachable state.
+
+**iOS keeps disconnecting Tailscale.** Settings → General → VPN &
+Device Management → Tailscale → make sure "Connect On Demand" is
+configured to your preference. By default Tailscale stays up.
+
+**Live tile stutters.** Tailscale adds ~10–30 ms of latency depending
+on whether the connection is direct or relayed. For video this is
+unnoticeable, but if you see issues, check the Tailscale admin
+console for the connection type — "direct" is best. If it's
+"relayed (DERP)," some NAT/firewall is preventing the peer-to-peer
+hole-punch; opening UDP port 41641 on your router fixes the
+overwhelming majority of these cases.
+
+---
+
+## What about non-Tailscale options?
+
+Tailscale isn't the only choice; the pattern is "overlay network +
+LAN-side subnet router." Equivalents:
+
+- **WireGuard** — the protocol Tailscale is built on. Roll your own
+  if you want to skip the coordination server. More setup, more
+  control.
+- **ZeroTier** — older mesh-VPN alternative. Similar UX.
+- **Cloudflare Tunnel** — HTTPS-only, so it does *not* work for
+  RTSP or Baichuan. Skip for cameras.
+- **Headscale** — drop-in self-hostable replacement for Tailscale's
+  coordination server.
+
+Reolens does not ship integration with any of these — it doesn't
+need to. As long as something puts your phone and the camera on the
+same routable network, Reolens just works.

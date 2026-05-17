@@ -130,48 +130,18 @@ struct CameraEntrySchemaTests {
         #expect(entry.uid == nil)
     }
 
-    // MARK: - remoteHost (0.7.0 — manual WAN fallback)
-
-    @Test("remoteHost round-trips through JSON when present")
-    func remoteHostRoundTrips() throws {
-        let entry = CameraEntry(
-            displayName: "Driveway",
-            host: "10.0.0.5",
-            username: "admin",
-            remoteHost: "mycam.duckdns.org"
-        )
-        let data = try JSONEncoder().encode(entry)
-        let json = try #require(String(data: data, encoding: .utf8))
-        #expect(json.contains("remoteHost"))
-        #expect(json.contains("mycam.duckdns.org"))
-        let decoded = try JSONDecoder().decode(CameraEntry.self, from: data)
-        #expect(decoded.remoteHost == "mycam.duckdns.org")
-    }
-
-    @Test("Absent remoteHost stays nil and is not emitted to JSON")
-    func remoteHostAbsent() throws {
-        // A LAN-only camera has no remote host. We must not
-        // emit a noisy `remoteHost: null` — keeps iCloud-sync
-        // diffs clean and older Reolens builds see no change.
-        let entry = CameraEntry(
-            displayName: "Front Door",
-            host: "10.0.0.5",
-            username: "admin"
-        )
-        let data = try JSONEncoder().encode(entry)
-        let json = try #require(String(data: data, encoding: .utf8))
-        #expect(!json.contains("remoteHost"))
-        let decoded = try JSONDecoder().decode(CameraEntry.self, from: data)
-        #expect(decoded.remoteHost == nil)
-    }
-
-    @Test("Decoding an older cameras.json without remoteHost tolerates the absent field")
-    func remoteHostDecodesOldSchema() throws {
+    @Test("Decoding a 0.7.0 cameras.json with a remoteHost field is tolerated")
+    func remoteHostFromOldSchemaIsIgnored() throws {
+        // 0.7.0 briefly persisted a `remoteHost` field for manual
+        // DDNS fallback. The feature was removed in favour of
+        // Tailscale-based remote access; existing JSON written by
+        // that build must still decode cleanly with the field
+        // simply dropped.
         let json = """
         {
-            "id": "33333333-3333-3333-3333-333333333333",
-            "displayName": "Old Cam",
-            "host": "192.168.1.42",
+            "id": "44444444-4444-4444-4444-444444444444",
+            "displayName": "Old DDNS Cam",
+            "host": "192.168.1.50",
             "port": 80,
             "username": "admin",
             "useHTTPS": false,
@@ -179,10 +149,11 @@ struct CameraEntrySchemaTests {
             "channelStreamRotations": {},
             "dualLensOverrides": [],
             "gridPreset": "adaptive",
-            "channelOrder": []
+            "channelOrder": [],
+            "remoteHost": "old.duckdns.org"
         }
         """.data(using: .utf8)!
         let entry = try JSONDecoder().decode(CameraEntry.self, from: json)
-        #expect(entry.remoteHost == nil)
+        #expect(entry.host == "192.168.1.50")
     }
 }

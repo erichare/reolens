@@ -42,30 +42,15 @@ public struct TimestampedAIEvent: Sendable, Hashable, Identifiable {
 @Observable
 public final class CameraSession {
     public let entry: CameraEntry
-    /// Original LAN credentials supplied at init time. Kept for
-    /// diagnostics and for the LAN-first retry on every fresh
-    /// `connect()` call. The *active* credentials may swap to a
-    /// remote host (`entry.remoteHost`) at runtime — see
-    /// `activeCredentials`.
+    /// LAN credentials supplied at init time.
     public let credentials: CameraCredentials
-    /// Credentials currently in use. Equal to `credentials` for
-    /// LAN-mode sessions; swapped to a `host = entry.remoteHost`
-    /// variant when the connect fallback engages. Read-only
-    /// outside the session.
-    public private(set) var activeCredentials: CameraCredentials
-    /// CGI client bound to `activeCredentials`. Rebuilt on
-    /// LAN→remote (or remote→LAN) fallback. External callers
-    /// access fresh state each read.
+    /// CGI client bound to `credentials`. External callers access
+    /// fresh state each read.
     public private(set) var client: CGIClient
-    /// RTSP/HTTP URL builder bound to `activeCredentials`.
-    /// Rebuilt alongside `client`.
+    /// RTSP/HTTP URL builder bound to `credentials`.
     public private(set) var streamURLs: StreamURLs
-    /// The mode the *last successful* connect used. Surfaced in
-    /// the UI (sidebar pip) so the user can tell at a glance
-    /// which path the camera is reached over.
-    public private(set) var connectionMode: CameraConnectionMode = .lan
-    /// TLS pinning policy passed at init. Held so the fallback
-    /// path can build a new `CGIClient` with the same setting.
+    /// TLS pinning policy passed at init. Held so transport
+    /// reconfigurations rebuild a `CGIClient` with the same setting.
     private let tlsPolicy: TLSPinningPolicy
 
     public var status: ConnectionStatus = .disconnected
@@ -134,7 +119,6 @@ public final class CameraSession {
     ) {
         self.entry = entry
         self.credentials = credentials
-        self.activeCredentials = credentials
         self.tlsPolicy = tlsPolicy
         self.client = CGIClient(credentials: credentials, tlsPolicy: tlsPolicy)
         self.streamURLs = StreamURLs(credentials: credentials)
@@ -212,11 +196,6 @@ public final class CameraSession {
         connectionAttempt = 0
         let deadline = Date().addingTimeInterval(policy.overallDeadlineSeconds)
 
-        // Every connect() starts fresh with the LAN credentials,
-        // even if the previous session failed over to remote.
-        // Moving back home, the user expects LAN to win.
-        switchToHost(credentials.host, mode: .lan)
-
         // iOS only: a missing Local Network permission silently
         // strands every camera request for ~30 s before the
         // URLSession deadline trips. Probe up front so the UI can
@@ -238,74 +217,37 @@ public final class CameraSession {
             break
         }
 
-        // Attempt 1: LAN. Most cameras succeed here.
-        let lanOutcome = await attemptHostUntilDeadline(
-            mode: .lan,
+        // Reolens is LAN-only: it reaches the camera on the user's home
+        // network (or via an overlay like Tailscale that exposes the LAN
+        // from anywhere). There's no public-internet fallback path.
+        let outcome = await attemptHostUntilDeadline(
             deadline: deadline,
             policy: policy
         )
-        switch lanOutcome {
+        switch outcome {
         case .succeeded:
             return
         case .authFailure(let reason):
             status = .error(reason)
             connectionStage = .failed(reason: reason)
-            return
-        case .unreachable, .deadlineExceeded:
-            break   // fall through to remote
-        }
-
-        // Attempt 2: WAN, only if the user has configured a
-        // remote host. The earlier zero-config Reolink-P2P path
-        // turned out to be account-gated; this manual DDNS /
-        // static-IP fallback is the 0.7.0 ship.
-        let trimmedRemote = (entry.remoteHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedRemote.isEmpty, !Task.isCancelled {
-            log.info("LAN unreachable; falling back to remote host \(trimmedRemote, privacy: .public)")
-            switchToHost(trimmedRemote, mode: .remote)
-            let remoteOutcome = await attemptHostUntilDeadline(
-                mode: .remote,
-                deadline: deadline,
-                policy: policy
-            )
-            switch remoteOutcome {
-            case .succeeded:
-                return
-            case .authFailure(let reason):
-                status = .error(reason)
-                connectionStage = .failed(reason: reason)
-                return
-            case .unreachable(let err), .deadlineExceeded(let err?):
-                status = .error(String(describing: err))
-                connectionStage = .failed(reason: "Couldn't reach the camera over LAN or its configured remote address. Check the network and try again.")
-                return
-            case .deadlineExceeded(nil):
-                status = .error("Couldn't reach the camera")
-                connectionStage = .failed(reason: "Couldn't reach the camera over LAN or its configured remote address. Check the network and try again.")
-                return
-            }
-        }
-
-        // No remote configured: emit the LAN-only failure as before.
-        switch lanOutcome {
-        case .unreachable(let err), .deadlineExceeded(let err?):
+        case .unreachable(let err):
+            status = .error(String(describing: err))
+            connectionStage = .failed(reason: "Couldn't reach the camera (\(String(describing: err))). Try again.")
+        case .deadlineExceeded(let err?):
             status = .error(String(describing: err))
             connectionStage = .failed(reason: "Couldn't reach the camera (\(String(describing: err))). Try again.")
         case .deadlineExceeded(nil):
             status = .error("Couldn't reach the camera")
             connectionStage = .failed(reason: "Couldn't reach the camera. Try again.")
-        case .succeeded, .authFailure:
-            break   // already handled above
         }
     }
 
-    /// Run the per-attempt retry loop against the currently-
-    /// active host (`activeCredentials.host`). Returns when
-    /// either the connect succeeds (terminal), the credentials
-    /// are rejected (terminal), every attempt has failed with
-    /// non-auth errors, or the wall-clock deadline elapses.
+    /// Run the per-attempt retry loop against the camera's LAN host
+    /// (`credentials.host`). Returns when the connect succeeds
+    /// (terminal), credentials are rejected (terminal), every attempt
+    /// has failed with non-auth errors, or the wall-clock deadline
+    /// elapses.
     private func attemptHostUntilDeadline(
-        mode: CameraConnectionMode,
         deadline: Date,
         policy: ConnectRetryPolicy
     ) async -> HostAttemptOutcome {
@@ -345,7 +287,6 @@ public final class CameraSession {
                     log.info("Channel \(ch.channel) name=\(ch.name ?? "<none>", privacy: .public) typeInfo=\(ch.typeInfo ?? "<nil>", privacy: .public) sleep=\(ch.sleep ?? 0) online=\(ch.online)")
                 }
                 connectionStage = .establishingPushChannel
-                connectionMode = mode
                 status = .connected
                 startEventPolling()
                 startBaichuanEvents()
@@ -360,7 +301,7 @@ public final class CameraSession {
                     log.warning("connect attempt \(attempt) auth-failed; stopping retries")
                     return .authFailure(reason: "Authentication failed — check the password.")
                 }
-                log.warning("connect attempt \(attempt) failed (mode=\(String(describing: mode), privacy: .public)): \(error.localizedDescription, privacy: .public)")
+                log.warning("connect attempt \(attempt) failed: \(error.localizedDescription, privacy: .public)")
                 if attempt >= policy.maxAttempts { break }
                 let backoff = policy.backoffSeconds(attempt: attempt)
                 // Don't sleep past the overall deadline.
@@ -382,22 +323,6 @@ public final class CameraSession {
         // before the first attempt produced one). Surface as
         // a deadline-exceeded with no error.
         return .deadlineExceeded(lastError: nil)
-    }
-
-    /// Rebuild `activeCredentials`, `client`, and `streamURLs`
-    /// for the supplied host. Mode is recorded but only
-    /// committed to `connectionMode` on a successful connect.
-    private func switchToHost(_ host: String, mode: CameraConnectionMode) {
-        let newCreds = CameraCredentials(
-            host: host,
-            port: credentials.port,
-            username: credentials.username,
-            password: credentials.password,
-            useHTTPS: credentials.useHTTPS
-        )
-        self.activeCredentials = newCreds
-        self.client = CGIClient(credentials: newCreds, tlsPolicy: tlsPolicy)
-        self.streamURLs = StreamURLs(credentials: newCreds)
     }
 
     /// "Stop retrying" classifier. 0.5.1: rewritten to inspect the
@@ -486,12 +411,13 @@ public final class CameraSession {
             // Use the host the CGI connect actually succeeded
             // against — LAN normally, remote (DDNS / WAN) when
             // the LAN attempt timed out and the fallback fired.
-            // Baichuan rides the same TCP path, so reusing the
-            // active host keeps the two control planes in sync.
+            // Baichuan rides the same TCP path as CGI, so reusing the
+            // session's credentials keeps the two control planes in
+            // sync.
             let creds = BaichuanCredentials(
-                host: self.activeCredentials.host,
-                username: self.activeCredentials.username,
-                password: self.activeCredentials.password
+                host: self.credentials.host,
+                username: self.credentials.username,
+                password: self.credentials.password
             )
             var backoffSeconds: UInt64 = 2
             let maxBackoffSeconds: UInt64 = 60
