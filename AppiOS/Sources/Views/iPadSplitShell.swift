@@ -171,6 +171,10 @@ struct iPadSplitShell: View {
             switch target {
             case .liveCamera(let deviceID):
                 selectedSection = .device(deviceID)
+            case .liveChannel(let deviceID, let channelID):
+                // Hub-nested live tap → highlight the channel row
+                // directly under the expanded hub disclosure.
+                selectedSection = .channel(deviceID: deviceID, channel: channelID)
             case .recording(let deviceID, let channelID, _):
                 // Drill straight into the channel's detail; the inner
                 // SingleChannelView reads `pendingRecordingScroll`

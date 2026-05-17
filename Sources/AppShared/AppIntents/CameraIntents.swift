@@ -98,11 +98,22 @@ public struct OpenCameraIntent: AppIntent {
 /// so the value survives a fresh launch from a backgrounded state.
 public enum AppIntentFocus {
     /// What the user wants to focus on after launching the app.
+    ///
+    /// Codable note: cases are added rather than mutated because
+    /// Swift's auto-synthesized enum Codable is positional and the
+    /// pending blob stored in `UserDefaults` must remain decodable
+    /// across an app upgrade.
     public enum Target: Sendable, Codable, Equatable {
         /// Open the live view for the named device. Used by
-        /// `OpenCameraIntent` (Shortcuts/Siri) and by notification taps
-        /// that fire on a recent event (< 1 minute old).
+        /// `OpenCameraIntent` (Shortcuts/Siri, which is channel-
+        /// unaware) and by notification taps on single-camera
+        /// devices when the event is recent (< `liveTapThreshold`).
         case liveCamera(deviceID: UUID)
+        /// Open the live view for a specific channel of a multi-
+        /// channel hub. Emitted by notification taps when the event
+        /// is recent and the payload carries a channel ID. Falls
+        /// back to the hub grid if the session hasn't mounted yet.
+        case liveChannel(deviceID: UUID, channelID: Int)
         /// Open the recordings browser for the named device + channel,
         /// positioned at `at`. Used by notification taps that fire on
         /// an older event — the user is more likely to want to scrub

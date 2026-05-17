@@ -286,7 +286,14 @@ public final class EventNotifier {
         // synced across devices via NSUbiquitousKeyValueStore). The
         // off-main-actor read avoids hopping the MainActor for every
         // alarm event on a busy hub.
-        guard CameraNotificationPreferences.isNotificationsEnabledOffMainActor(for: cameraID) else {
+        //
+        // 0.6.3 — checked at channel granularity so a user can mute
+        // a single camera under a hub. Device-level mute supersedes
+        // the channel state (see `CameraNotificationPreferences`).
+        guard CameraNotificationPreferences.isNotificationsEnabledOffMainActor(
+            for: cameraID,
+            channel: Int(event.channelID)
+        ) else {
             await logDroppedEvent(
                 event: event,
                 cameraID: cameraID,
@@ -822,14 +829,24 @@ public final class NotificationTapDelegate: NSObject, UNUserNotificationCenterDe
             let cameraString = userInfo[EventNotifier.userInfoCameraIDKey] as? String,
             let cameraID = UUID(uuidString: cameraString)
         else { return }
-        let channelID = (userInfo[EventNotifier.userInfoChannelKey] as? Int) ?? 0
+        let rawChannel = userInfo[EventNotifier.userInfoChannelKey] as? Int
+        let channelID = rawChannel ?? 0
         let eventTime = (userInfo[EventNotifier.userInfoEventTimeKey] as? TimeInterval)
             .map { Date(timeIntervalSince1970: $0) }
             ?? Date()
         let age = Date().timeIntervalSince(eventTime)
         let target: AppIntentFocus.Target
         if age < EventNotifier.liveTapThreshold {
-            target = .liveCamera(deviceID: cameraID)
+            // Carry the channel through when the payload tagged one so
+            // hub-nested taps land on the specific camera rather than
+            // the hub's grid. Absence of `userInfoChannelKey` (legacy /
+            // CloudKit-relayed payloads) falls back to the device-level
+            // target, which OpenCameraIntent also uses.
+            if let rawChannel {
+                target = .liveChannel(deviceID: cameraID, channelID: rawChannel)
+            } else {
+                target = .liveCamera(deviceID: cameraID)
+            }
         } else {
             target = .recording(deviceID: cameraID, channelID: channelID, at: eventTime)
         }

@@ -135,7 +135,22 @@ struct iPhoneTabShell: View {
                 selectedTab = .live
                 liveTabPath = NavigationPath()
                 liveTabPath.append(entry)
-            case .recording(let deviceID, _, _):
+            case .liveChannel(let deviceID, let channel):
+                guard let entry = store.cameras.first(where: { $0.id == deviceID })
+                else { break }
+                // Hub-nested live tap → push the channel target so the
+                // user lands on the specific camera's SingleChannelView.
+                // The per-channel destination falls back to the hub's
+                // grid view when channels haven't arrived yet, so this
+                // is safe even on a cold launch racing session mount.
+                selectedTab = .live
+                liveTabPath = NavigationPath()
+                if isMultiChannelHub(deviceID: deviceID) {
+                    liveTabPath.append(CameraChannelTarget(deviceID: deviceID, channel: channel))
+                } else {
+                    liveTabPath.append(entry)
+                }
+            case .recording(let deviceID, let channel, _):
                 guard let entry = store.cameras.first(where: { $0.id == deviceID })
                 else { break }
                 // Recording-aged tap → drill into the channel's
@@ -143,10 +158,16 @@ struct iPhoneTabShell: View {
                 // stashed the timestamp in `pendingRecordingScroll`;
                 // the channel detail's `consumeRecordingScrollIfAny`
                 // flips to the Recordings tab and auto-plays the
-                // closest clip.
+                // closest clip. For multi-channel hubs we push the
+                // channel target directly so the visible top-of-stack
+                // matches the channel that fired the event.
                 selectedTab = .live
                 liveTabPath = NavigationPath()
-                liveTabPath.append(entry)
+                if isMultiChannelHub(deviceID: deviceID) {
+                    liveTabPath.append(CameraChannelTarget(deviceID: deviceID, channel: channel))
+                } else {
+                    liveTabPath.append(entry)
+                }
             case .digest:
                 // 0.5.0 Theme A5 — digest tap shows the
                 // `DigestDetailView` sheet bound at the app
@@ -158,5 +179,16 @@ struct iPhoneTabShell: View {
             }
             store.pendingIntentNavigation = nil
         }
+    }
+
+    /// Heuristic used to decide whether a notification-intent target
+    /// should push `CameraChannelTarget` (drill into a specific camera
+    /// under a hub) or just the device-level `CameraEntry` (single
+    /// camera). Treats a not-yet-mounted session as single-camera so
+    /// the user still lands somewhere reasonable; the per-channel
+    /// navigation destination already handles the channel-not-yet-
+    /// available race with its own fallback.
+    private func isMultiChannelHub(deviceID: UUID) -> Bool {
+        (store.session(for: deviceID)?.channels.count ?? 0) > 1
     }
 }
