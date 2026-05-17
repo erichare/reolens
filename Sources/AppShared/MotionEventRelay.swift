@@ -306,29 +306,26 @@ public actor CloudKitMotionEventPublisher: MotionEventPublisher {
 /// the iCloud container to keep AMFI happy on `swift build` /
 /// `swift run`).
 ///
-/// macOS reads the running process's signed entitlements via
-/// `SecCodeCopySigningInformation`, which returns whatever the
-/// codesign blob baked in. That gives a `true` for any
-/// Developer-ID-signed (or App Store / TestFlight) release whether
-/// or not the user is signed into iCloud yet, and a clean `false`
-/// for ad-hoc-signed dev binaries that intentionally drop the
-/// container.
+/// macOS detects this by looking for `Contents/embedded.provisionprofile`
+/// inside the running bundle. Developer-ID-signed release DMGs always
+/// embed a provisioning profile (Scripts/build-app.sh's ASC helper
+/// drops one in before signing — without it, AMFI rejects launch with
+/// -413). Ad-hoc-signed dev builds, by contrast, have no profile and
+/// also no iCloud entitlement: the two go together one-to-one. So
+/// "profile present" is an exact proxy for "iCloud entitlement
+/// present" without going near SecCode introspection of the running
+/// app — that path returns false-negatives intermittently under
+/// macOS 26's tightened sandbox + hardened-runtime regime, which
+/// silently regressed the relay on legitimately-capable release
+/// builds (recorded as `noEntitlement` in RelayDiagnostics).
 ///
 /// iOS has no public API for reading the running task's entitlements
-/// (`SecTask*` is private SPI on both platforms but the
-/// `SecCode*` codesigning APIs are macOS-only), and iOS distribution
-/// paths — App Store, TestFlight, and dev-device builds — always
-/// embed the entitlements declared in `AppiOS/project.yml`. There is
-/// no path where an iOS binary runs without its declared
-/// entitlements, so the iOS branch trusts the build.
-///
-/// The earlier 0.4.1 probe used
-/// `FileManager.url(forUbiquityContainerIdentifier:)` which returned
-/// nil whenever the user hadn't enabled iCloud Drive in System
-/// Settings — that incorrectly disabled the relay toggle on
-/// legitimately-capable release builds.
+/// and no provisioning-profile concept the same way — App Store /
+/// TestFlight / dev-device builds always embed the entitlements
+/// declared in `AppiOS/project.yml`, so the iOS branch trusts the
+/// build.
 public enum CloudKitAvailability {
-    /// Memoized so the entitlement probe only runs once per process.
+    /// Memoized so the probe only runs once per process.
     private static let lock = NSLock()
     nonisolated(unsafe) private static var cache: [String: Bool] = [:]
 
@@ -340,13 +337,8 @@ public enum CloudKitAvailability {
         }
         let available: Bool
         #if os(macOS)
-        available = macOSSignedEntitlementContainers().contains(containerID)
+        available = macOSHasEmbeddedProvisioningProfile()
         #else
-        // iOS App Store / TestFlight / dev-device builds always
-        // embed the entitlements declared in project.yml. The
-        // `CKContainer.init` trap fires only on entitlement-less
-        // binaries, which iOS doesn't allow to run in the first
-        // place.
         available = true
         #endif
         cache[containerID] = available
@@ -354,39 +346,17 @@ public enum CloudKitAvailability {
     }
 
     #if os(macOS)
-    /// Read `com.apple.developer.icloud-container-identifiers` from
-    /// the running app bundle's signed entitlements via the public
-    /// `SecStaticCode` API. Returns an empty array on any failure
-    /// (ad-hoc binary without the entitlement, codesigning call
-    /// failing because the bundle is unsigned, etc.) — caller treats
-    /// absent as "CloudKit unavailable" so we never reach the
-    /// `CKContainer.init` trap.
-    ///
-    /// `SecStaticCodeCreateWithPath` + `SecCodeCopySigningInformation`
-    /// is preferred over `SecCodeCopySelf` here to sidestep the
-    /// `SecCode` → `SecStaticCode` type-bridging gap in the Swift
-    /// overlay (the two are toll-free bridged in C but treated as
-    /// unrelated classes in Swift). The path-based variant returns
-    /// a `SecStaticCode` directly, which is what
-    /// `SecCodeCopySigningInformation` expects.
-    private static func macOSSignedEntitlementContainers() -> [String] {
-        let bundleURL = Bundle.main.bundleURL as CFURL
-        var staticCodeRef: SecStaticCode?
-        let createStatus = SecStaticCodeCreateWithPath(
-            bundleURL,
-            SecCSFlags(rawValue: 0),
-            &staticCodeRef
-        )
-        guard createStatus == errSecSuccess, let code = staticCodeRef else { return [] }
-        var infoRef: CFDictionary?
-        let flags = SecCSFlags(rawValue: UInt32(kSecCSSigningInformation))
-        let infoStatus = SecCodeCopySigningInformation(code, flags, &infoRef)
-        guard infoStatus == errSecSuccess,
-              let info = infoRef as? [String: Any],
-              let entitlements = info[kSecCodeInfoEntitlementsDict as String] as? [String: Any],
-              let containers = entitlements["com.apple.developer.icloud-container-identifiers"] as? [String]
-        else { return [] }
-        return containers
+    /// `Contents/embedded.provisionprofile` is added by the release
+    /// build pipeline (Scripts/build-app.sh) before `codesign` and is
+    /// the simplest sandbox-safe signal that this bundle carries the
+    /// full Developer-ID entitlement set (including the iCloud
+    /// container). Reading the app's own bundle is always permitted
+    /// under the sandbox, so this probe doesn't false-negative the
+    /// way SecCode introspection did on macOS 26.
+    private static func macOSHasEmbeddedProvisioningProfile() -> Bool {
+        let url = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/embedded.provisionprofile")
+        return FileManager.default.fileExists(atPath: url.path)
     }
     #endif
 }

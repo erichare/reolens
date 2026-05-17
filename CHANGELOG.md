@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.4] — 2026-05-17
+
+Fixes silently-broken CloudKit motion-event relay on macOS 26. The
+0.4.1 `CloudKitAvailability.canUseCloudKit` probe used
+`SecCodeCopySigningInformation` against the running bundle to detect
+the iCloud-container entitlement. macOS 26 tightened sandbox +
+hardened-runtime restrictions on SecCode introspection of the
+running app's own bundle, so the probe began returning false-
+negatives on legitimately-capable release DMGs — the publisher
+silently short-circuited with `outcome=noEntitlement` and never
+attempted any save. Receiving devices saw zero motion-event silent
+pushes even though their CloudKit subscription was healthy.
+
+### Fixed
+
+- **CloudKit relay on macOS 26** — replace the SecCode-based
+  entitlement probe with an `embedded.provisionprofile` presence
+  check. Developer-ID-signed release DMGs always carry the embedded
+  profile (Scripts/build-app.sh's ASC helper drops it in before
+  signing), ad-hoc dev builds never do, so the check exactly
+  matches the "is iCloud entitlement present" question without
+  needing SecCode at all. Sandbox-safe: reading the app's own
+  bundle is always permitted. Visible result: the macOS Push
+  diagnostics row stops getting stuck on red "noEntitlement", and
+  TestFlight iOS finally receives the motion-event banners the
+  relay was designed for.
+
 ## [0.6.3] — 2026-05-17
 
 A cleanup release. The 0.7.0 remote-connectivity storyline (manual
