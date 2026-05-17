@@ -103,6 +103,27 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
     /// remote access "just works" later without any extra step.
     public var uid: String? = nil
 
+    /// User-configured WAN hostname (DDNS or static IP) for the
+    /// camera. When set, Reolens treats this as the remote-mode
+    /// fallback path: LAN is tried first, and if it doesn't
+    /// answer within the connect timeout, the session retries
+    /// against `remoteHost` instead. `nil` means "LAN-only" —
+    /// the camera is unreachable when the user is away from
+    /// home.
+    ///
+    /// 0.7.0 ships this as a manual configuration field
+    /// because the zero-config Reolink P2P path turned out to
+    /// be account-gated and not reverse-engineerable without
+    /// shipping Reolink-cloud-account logic. See
+    /// `docs/0.7.0-plan.md` for the full story.
+    ///
+    /// Hostname only (no port); the existing camera ports
+    /// (HTTP/HTTPS via `port`, Baichuan TCP/9000, RTSP/554)
+    /// are reused as-is and the user is expected to forward
+    /// those ports on their router or use the camera's own
+    /// "UPnP / port mapping" feature.
+    public var remoteHost: String? = nil
+
     public init(
         id: UUID = UUID(),
         displayName: String,
@@ -118,7 +139,8 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
         tlsFingerprint: String? = nil,
         hiddenAppBadgeChannels: Set<Int> = [],
         homeKitEnabled: Bool = false,
-        uid: String? = nil
+        uid: String? = nil,
+        remoteHost: String? = nil
     ) {
         self.id = id
         self.displayName = displayName
@@ -135,6 +157,7 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
         self.hiddenAppBadgeChannels = hiddenAppBadgeChannels
         self.homeKitEnabled = homeKitEnabled
         self.uid = uid
+        self.remoteHost = remoteHost
     }
 
     /// Codable conformance: serialize the dict with String keys so JSON is round-trip clean.
@@ -148,7 +171,8 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
              tlsFingerprint,           // 0.4.1: TOFU TLS pinning
              hiddenAppBadgeChannels,   // 0.4.1: per-channel "hide app badges"
              homeKitEnabled,           // 0.6.0 Slice B2: HomeKit exposure opt-in
-             uid                       // 0.7.0 Phase 4b: Reolink P2P identifier
+             uid,                      // 0.7.0 Phase 4b: Reolink P2P identifier
+             remoteHost                // 0.7.0 — manual DDNS / WAN host fallback
     }
 
     public init(from decoder: any Decoder) throws {
@@ -200,6 +224,12 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
         // those installs while the newer install has remote
         // access available.
         self.uid = try? c.decodeIfPresent(String.self, forKey: .uid)
+        // 0.7.0 — manual DDNS / WAN host. Optional + default-nil
+        // so older `cameras.json` files (and older Reolens
+        // builds on the user's other Apple devices) round-trip
+        // cleanly. Older builds see no remoteHost and keep
+        // LAN-only behavior.
+        self.remoteHost = try? c.decodeIfPresent(String.self, forKey: .remoteHost)
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -232,6 +262,9 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
         // successful LAN login stays "uid-less" and the JSON
         // doesn't gain a noisy `uid: null` line.
         try c.encodeIfPresent(uid, forKey: .uid)
+        // 0.7.0 — only emit `remoteHost` when set; LAN-only
+        // cameras keep a tidy JSON shape.
+        try c.encodeIfPresent(remoteHost, forKey: .remoteHost)
     }
 }
 
