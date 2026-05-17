@@ -105,13 +105,17 @@ public actor P2PDiscovery {
 
         let request = DiscoveryXML.LookupRequest(uid: uid, clientID: clientIDProvider())
         // `senderID` doubles as the cipher offset for the request
-        // payload (XML is obfuscated against
-        // `(XML_KEY[i] + senderID).bytesLE` per
-        // `DiscoveryXMLCrypto`). Mint a fresh 32-bit value per
-        // lookup — the server doesn't appear to care about the
-        // specific value, only that it's the same in the header
-        // and the cipher offset.
-        let senderID = UInt32.random(in: 1...UInt32.max)
+        // payload AND a server-side client-class filter. The 2026-
+        // 05-17 byte-level diff against the official Reolink
+        // macOS app's traffic showed every working request uses
+        // the form `0x003D_XXXX` — high 16 bits pinned to
+        // `0x003D` (= 61, meaning unclear; likely a "macOS
+        // client" or similar class marker). Random 32-bit values
+        // get silently dropped by the discovery server.
+        //
+        // Low 16 bits stay random per-lookup so request/reply
+        // pairs remain correlatable.
+        let senderID: UInt32 = (Self.clientClassMarker << 16) | UInt32.random(in: 0...0xFFFF)
         // `requestToken` is per-request and always non-zero in
         // captured traffic. 2026-05-16 smoke test had the server
         // silently dropping our queries when the token was 0,
@@ -202,4 +206,18 @@ public actor P2PDiscovery {
     public static let defaultClientID: @Sendable () -> String = {
         String(UInt32.random(in: 0...UInt32.max), radix: 16)
     }
+
+    /// High 16 bits of every outbound `senderID`. Observed
+    /// across every captured Reolink-macOS-app discovery query
+    /// from this account on 2026-05-16 and 2026-05-17:
+    /// `0x003D` (= 61). Meaning unconfirmed — most likely a
+    /// per-app-build or per-installation client-class marker
+    /// the discovery server uses to gate which clients it
+    /// answers. Random values in the full 32-bit space are
+    /// silently dropped.
+    ///
+    /// If a future capture shows this varies by platform
+    /// (iOS / Android / Windows app) we may need to vary it
+    /// too; for now we pin to the observed macOS value.
+    static let clientClassMarker: UInt32 = 0x0000_003D
 }
