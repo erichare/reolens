@@ -296,6 +296,8 @@ private struct ManualPane: View {
     @State private var password = ""
     @State private var useHTTPS = false
     @State private var preferredCodec: VideoCodec = .h264
+    @State private var remoteHost = ""
+    @State private var showRemoteHelp = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -317,6 +319,37 @@ private struct ManualPane: View {
                         Text("H.265 (4K / 8MP)").tag(VideoCodec.h265)
                     }
                 }
+                Section {
+                    TextField("Remote address (optional)", text: $remoteHost, prompt: Text("example.duckdns.org"))
+                        .textContentType(.URL)
+                        .autocorrectionDisabled(true)
+                        #if os(iOS)
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
+                        #endif
+                    Button {
+                        showRemoteHelp.toggle()
+                    } label: {
+                        Label(showRemoteHelp ? "Hide setup notes" : "How does this work?", systemImage: "info.circle")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .buttonStyle(.borderless)
+                    if showRemoteHelp {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Reolens reaches your camera over the LAN by default. When you're away from home, it can dial a public hostname instead — typically a DDNS name (`duckdns.org`, Cloudflare, no-ip.com, etc) that points at your router's WAN IP.")
+                            Text("You'll need to forward the camera's ports on your router: 80/443 (HTTP/HTTPS for the API), 554 (RTSP for video), and 9000 (Baichuan, for events and battery info).")
+                                .padding(.top, 2)
+                            Text("Leave blank for LAN-only.")
+                                .padding(.top, 2)
+                                .foregroundStyle(.secondary)
+                        }
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 4)
+                    }
+                } header: {
+                    Text("Remote access")
+                }
             }
             .formStyle(.grouped)
 
@@ -325,13 +358,15 @@ private struct ManualPane: View {
                 Button("Add device") {
                     let portInt = Int(port) ?? 80
                     let displayed = displayName.isEmpty ? host : displayName
+                    let trimmedRemote = remoteHost.trimmingCharacters(in: .whitespacesAndNewlines)
                     let entry = CameraEntry(
                         displayName: displayed,
                         host: host,
                         port: portInt,
                         username: username,
                         useHTTPS: useHTTPS,
-                        preferredCodec: preferredCodec
+                        preferredCodec: preferredCodec,
+                        remoteHost: trimmedRemote.isEmpty ? nil : trimmedRemote
                     )
                     onAdd(entry, password)
                 }

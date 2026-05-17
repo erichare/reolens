@@ -91,6 +91,39 @@ Requires Xcode 26 + Swift 6.2.
 Drag tiles to rearrange them. Right-click a tile for "Make primary",
 "Rotate", and per-channel settings.
 
+## Remote access (off-LAN)
+
+Reolens reaches your camera over your home network by default. If you
+want it to work when you're away from home too, set up DDNS pointing
+at your router's WAN IP and forward the camera's ports.
+
+1. **Pick a DDNS provider.** Free options like
+   [duckdns.org](https://www.duckdns.org), Cloudflare, or
+   [no-ip.com](https://www.noip.com) work fine. Many routers have DDNS
+   clients built in (Asus, Synology, pfSense, etc).
+2. **Forward the camera's ports on your router.** Reolink cameras
+   speak HTTP (port 80) or HTTPS (443), RTSP (554 for video), and a
+   custom Baichuan protocol on TCP/9000 (events + battery info). Map
+   each of those from your router's WAN IP to the camera's LAN IP.
+   Most consumer routers expose this under "Port Forwarding" or
+   "Virtual Server".
+3. **Enter the DDNS hostname** in Reolens' Add Camera sheet, under
+   "Remote address". Leave blank for LAN-only.
+
+Reolens dials the LAN host first and falls back to the remote address
+only when LAN is unreachable. The "no Reolens server, no third-party
+server" promise still holds: traffic goes directly from your device
+to your home router's WAN IP — Reolens isn't proxying anything, and
+you're not signing in to anyone's cloud. (Your DDNS provider sees
+your home IP, but that's a record they keep regardless of whether
+Reolens uses it.)
+
+If you'd prefer not to expose your camera to the public internet at
+all, [Tailscale](https://tailscale.com) is a great alternative —
+it puts your devices on a private overlay network and your camera's
+LAN IP just works from anywhere. Reolens needs zero configuration
+for that case.
+
 ## What you get
 
 ### Live viewing

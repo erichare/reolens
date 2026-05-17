@@ -140,8 +140,13 @@ struct ClipExportCoordinatorTests {
             ofItemAtPath: oldURL.path
         )
 
-        let removed = ClipExportCoordinator.pruneStaging(olderThan: 3600)
-        #expect(removed >= 1)
+        // Don't assert on the returned count — the staging
+        // directory is shared across tests (and across CI
+        // workers) so concurrent prunes can leave it racy.
+        // The per-file assertions below are the real
+        // contract: this run's `oldURL` was removed and this
+        // run's `freshURL` survived.
+        _ = ClipExportCoordinator.pruneStaging(olderThan: 3600)
         #expect(!FileManager.default.fileExists(atPath: oldURL.path))
         #expect(FileManager.default.fileExists(atPath: freshURL.path))
         try? FileManager.default.removeItem(at: freshURL)

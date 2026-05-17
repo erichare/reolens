@@ -69,4 +69,120 @@ struct CameraEntrySchemaTests {
         let decoded = try JSONDecoder().decode(CameraEntry.self, from: data)
         #expect(decoded == entry)
     }
+
+    // MARK: - 0.7.0 Phase 4b — UID field
+
+    @Test("UID round-trips through JSON when present")
+    func uidRoundTrips() throws {
+        let entry = CameraEntry(
+            displayName: "Driveway",
+            host: "10.0.0.5",
+            username: "admin",
+            uid: "9876543210ABCDEF"
+        )
+        let data = try JSONEncoder().encode(entry)
+        let json = try #require(String(data: data, encoding: .utf8))
+        #expect(json.contains("uid"))
+        #expect(json.contains("9876543210ABCDEF"))
+        let decoded = try JSONDecoder().decode(CameraEntry.self, from: data)
+        #expect(decoded.uid == "9876543210ABCDEF")
+    }
+
+    @Test("Absent UID stays nil and is not emitted to JSON")
+    func uidAbsent() throws {
+        // A camera that hasn't yet completed a Baichuan login has
+        // no UID. We must not emit a noisy `uid: null` for the
+        // common case — iCloud-sync diffs stay clean and older
+        // Reolens builds (which decode-and-ignore the field) see
+        // no change vs. a pre-Phase-4b cameras.json.
+        let entry = CameraEntry(
+            displayName: "Front Door",
+            host: "10.0.0.5",
+            username: "admin"
+        )
+        let data = try JSONEncoder().encode(entry)
+        let json = try #require(String(data: data, encoding: .utf8))
+        #expect(!json.contains("uid"))
+        let decoded = try JSONDecoder().decode(CameraEntry.self, from: data)
+        #expect(decoded.uid == nil)
+    }
+
+    @Test("Decoding an older cameras.json without uid tolerates the absent field")
+    func uidDecodesOldSchema() throws {
+        // Same shape as the 0.3.0 fixture in `decodesOldSchema`
+        // above, just exercising the new `uid` field path.
+        let json = """
+        {
+            "id": "22222222-2222-2222-2222-222222222222",
+            "displayName": "Old Cam",
+            "host": "192.168.1.42",
+            "port": 80,
+            "username": "admin",
+            "useHTTPS": false,
+            "preferredCodec": "h264",
+            "channelStreamRotations": {},
+            "dualLensOverrides": [],
+            "gridPreset": "adaptive",
+            "channelOrder": []
+        }
+        """.data(using: .utf8)!
+        let entry = try JSONDecoder().decode(CameraEntry.self, from: json)
+        #expect(entry.uid == nil)
+    }
+
+    // MARK: - remoteHost (0.7.0 — manual WAN fallback)
+
+    @Test("remoteHost round-trips through JSON when present")
+    func remoteHostRoundTrips() throws {
+        let entry = CameraEntry(
+            displayName: "Driveway",
+            host: "10.0.0.5",
+            username: "admin",
+            remoteHost: "mycam.duckdns.org"
+        )
+        let data = try JSONEncoder().encode(entry)
+        let json = try #require(String(data: data, encoding: .utf8))
+        #expect(json.contains("remoteHost"))
+        #expect(json.contains("mycam.duckdns.org"))
+        let decoded = try JSONDecoder().decode(CameraEntry.self, from: data)
+        #expect(decoded.remoteHost == "mycam.duckdns.org")
+    }
+
+    @Test("Absent remoteHost stays nil and is not emitted to JSON")
+    func remoteHostAbsent() throws {
+        // A LAN-only camera has no remote host. We must not
+        // emit a noisy `remoteHost: null` — keeps iCloud-sync
+        // diffs clean and older Reolens builds see no change.
+        let entry = CameraEntry(
+            displayName: "Front Door",
+            host: "10.0.0.5",
+            username: "admin"
+        )
+        let data = try JSONEncoder().encode(entry)
+        let json = try #require(String(data: data, encoding: .utf8))
+        #expect(!json.contains("remoteHost"))
+        let decoded = try JSONDecoder().decode(CameraEntry.self, from: data)
+        #expect(decoded.remoteHost == nil)
+    }
+
+    @Test("Decoding an older cameras.json without remoteHost tolerates the absent field")
+    func remoteHostDecodesOldSchema() throws {
+        let json = """
+        {
+            "id": "33333333-3333-3333-3333-333333333333",
+            "displayName": "Old Cam",
+            "host": "192.168.1.42",
+            "port": 80,
+            "username": "admin",
+            "useHTTPS": false,
+            "preferredCodec": "h264",
+            "channelStreamRotations": {},
+            "dualLensOverrides": [],
+            "gridPreset": "adaptive",
+            "channelOrder": []
+        }
+        """.data(using: .utf8)!
+        let entry = try JSONDecoder().decode(CameraEntry.self, from: json)
+        #expect(entry.remoteHost == nil)
+    }
 }

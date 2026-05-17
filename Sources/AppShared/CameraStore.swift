@@ -86,6 +86,44 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
     /// when older Reolens builds read a newer cameras.json.
     public var homeKitEnabled: Bool = false
 
+    /// 0.7.0 Phase 4b (remote connectivity) — Reolink camera UID,
+    /// fetched on first successful LAN login via the Baichuan
+    /// `msg_id=114` exchange (see
+    /// `Sources/ReolinkBaichuan/BaichuanUID.swift`). The UID is
+    /// the only key needed to look the camera up through Reolink's
+    /// P2P discovery cluster when the LAN endpoint is unreachable
+    /// (user is away from home, on cellular, etc.). nil means
+    /// "not yet captured" — the next successful LAN session will
+    /// populate it. Forward-compatible decode-and-ignore for
+    /// older Reolens builds reading a newer cameras.json.
+    ///
+    /// The UID is **never** shown to the user. It exists to
+    /// preserve the zero-config UX contract: the user adds a
+    /// camera on LAN, Reolens silently remembers the UID, and
+    /// remote access "just works" later without any extra step.
+    public var uid: String? = nil
+
+    /// User-configured WAN hostname (DDNS or static IP) for the
+    /// camera. When set, Reolens treats this as the remote-mode
+    /// fallback path: LAN is tried first, and if it doesn't
+    /// answer within the connect timeout, the session retries
+    /// against `remoteHost` instead. `nil` means "LAN-only" —
+    /// the camera is unreachable when the user is away from
+    /// home.
+    ///
+    /// 0.7.0 ships this as a manual configuration field
+    /// because the zero-config Reolink P2P path turned out to
+    /// be account-gated and not reverse-engineerable without
+    /// shipping Reolink-cloud-account logic. See
+    /// `docs/0.7.0-plan.md` for the full story.
+    ///
+    /// Hostname only (no port); the existing camera ports
+    /// (HTTP/HTTPS via `port`, Baichuan TCP/9000, RTSP/554)
+    /// are reused as-is and the user is expected to forward
+    /// those ports on their router or use the camera's own
+    /// "UPnP / port mapping" feature.
+    public var remoteHost: String? = nil
+
     public init(
         id: UUID = UUID(),
         displayName: String,
@@ -100,7 +138,9 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
         channelOrder: [Int] = [],
         tlsFingerprint: String? = nil,
         hiddenAppBadgeChannels: Set<Int> = [],
-        homeKitEnabled: Bool = false
+        homeKitEnabled: Bool = false,
+        uid: String? = nil,
+        remoteHost: String? = nil
     ) {
         self.id = id
         self.displayName = displayName
@@ -116,6 +156,8 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
         self.tlsFingerprint = tlsFingerprint
         self.hiddenAppBadgeChannels = hiddenAppBadgeChannels
         self.homeKitEnabled = homeKitEnabled
+        self.uid = uid
+        self.remoteHost = remoteHost
     }
 
     /// Codable conformance: serialize the dict with String keys so JSON is round-trip clean.
@@ -128,7 +170,9 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
              channelOrder,
              tlsFingerprint,           // 0.4.1: TOFU TLS pinning
              hiddenAppBadgeChannels,   // 0.4.1: per-channel "hide app badges"
-             homeKitEnabled            // 0.6.0 Slice B2: HomeKit exposure opt-in
+             homeKitEnabled,           // 0.6.0 Slice B2: HomeKit exposure opt-in
+             uid,                      // 0.7.0 Phase 4b: Reolink P2P identifier
+             remoteHost                // 0.7.0 — manual DDNS / WAN host fallback
     }
 
     public init(from decoder: any Decoder) throws {
@@ -174,6 +218,18 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
         // cameras.json without the field decodes cleanly. Per
         // AGENTS.md §7's forward-compatible-decode rule.
         self.homeKitEnabled = (try? c.decodeIfPresent(Bool.self, forKey: .homeKitEnabled)) ?? false
+        // 0.7.0 Phase 4b — optional, decode-and-ignore. Older
+        // Reolens builds reading a newer cameras.json silently
+        // drop the field; the user keeps LAN-only behavior on
+        // those installs while the newer install has remote
+        // access available.
+        self.uid = try? c.decodeIfPresent(String.self, forKey: .uid)
+        // 0.7.0 — manual DDNS / WAN host. Optional + default-nil
+        // so older `cameras.json` files (and older Reolens
+        // builds on the user's other Apple devices) round-trip
+        // cleanly. Older builds see no remoteHost and keep
+        // LAN-only behavior.
+        self.remoteHost = try? c.decodeIfPresent(String.self, forKey: .remoteHost)
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -201,6 +257,14 @@ public struct CameraEntry: Identifiable, Hashable, Sendable, Codable {
         if homeKitEnabled {
             try c.encode(true, forKey: .homeKitEnabled)
         }
+        // 0.7.0 Phase 4b — emit only when a UID has actually
+        // been captured. A camera that's never reached a
+        // successful LAN login stays "uid-less" and the JSON
+        // doesn't gain a noisy `uid: null` line.
+        try c.encodeIfPresent(uid, forKey: .uid)
+        // 0.7.0 — only emit `remoteHost` when set; LAN-only
+        // cameras keep a tidy JSON shape.
+        try c.encodeIfPresent(remoteHost, forKey: .remoteHost)
     }
 }
 
@@ -542,6 +606,24 @@ public final class CameraStore {
         save()
     }
 
+    /// Update the user-configured WAN hostname (DDNS / static
+    /// IP) for a camera. Pass `nil` (or an empty string, which
+    /// is normalised to `nil`) to clear it and return to
+    /// LAN-only behaviour. The change takes effect on the
+    /// next `connect()` — currently-running sessions keep
+    /// their active host until they reconnect.
+    public func setRemoteHost(_ host: String?, for id: CameraEntry.ID) {
+        guard let i = cameras.firstIndex(where: { $0.id == id }) else { return }
+        // Normalise: collapse whitespace-only or empty strings
+        // into nil so the persisted JSON doesn't gain a
+        // semantically-empty `remoteHost: ""` field.
+        let trimmed = host?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = (trimmed?.isEmpty == false) ? trimmed : nil
+        guard cameras[i].remoteHost != normalized else { return }
+        cameras[i].remoteHost = normalized
+        save()
+    }
+
     /// Re-save every known camera password on the requested side
     /// (iCloud-synced or device-local). Use after flipping
     /// `iCloudKeychainSyncEnabled` so existing items move to the
@@ -731,6 +813,13 @@ public final class CameraStore {
         session.dualLensOverride = { [weak self] channel in
             self?.isDualLensOverride(deviceID: id, channel: channel) ?? false
         }
+        // 0.7.0 Phase 4b — back-channel from the session to the
+        // store so a UID captured on first successful Baichuan
+        // login lands in `cameras.json`. Same closure shape as
+        // `dualLensOverride` to keep the wiring uniform.
+        session.onUIDObserved = { [weak self] uid in
+            self?.recordUID(uid, for: id)
+        }
         sessions[id] = session
         return session
     }
@@ -771,6 +860,20 @@ public final class CameraStore {
         guard let i = cameras.firstIndex(where: { $0.id == id }) else { return }
         guard cameras[i].tlsFingerprint != fingerprint else { return }
         cameras[i].tlsFingerprint = fingerprint
+        save()
+    }
+
+    /// 0.7.0 Phase 4b — persist the Reolink P2P UID observed
+    /// during the camera's first successful Baichuan login.
+    /// Idempotent: writing the same UID is a no-op, so the
+    /// CameraSession hook can call it on every login without
+    /// thrashing iCloud sync. The UID is never shown to the user
+    /// — see `CameraEntry.uid` for the rationale.
+    public func recordUID(_ uid: String, for id: CameraEntry.ID) {
+        guard !uid.isEmpty else { return }
+        guard let i = cameras.firstIndex(where: { $0.id == id }) else { return }
+        guard cameras[i].uid != uid else { return }
+        cameras[i].uid = uid
         save()
     }
 

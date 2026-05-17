@@ -42,9 +42,31 @@ public struct TimestampedAIEvent: Sendable, Hashable, Identifiable {
 @Observable
 public final class CameraSession {
     public let entry: CameraEntry
+    /// Original LAN credentials supplied at init time. Kept for
+    /// diagnostics and for the LAN-first retry on every fresh
+    /// `connect()` call. The *active* credentials may swap to a
+    /// remote host (`entry.remoteHost`) at runtime — see
+    /// `activeCredentials`.
     public let credentials: CameraCredentials
-    public let client: CGIClient
-    public let streamURLs: StreamURLs
+    /// Credentials currently in use. Equal to `credentials` for
+    /// LAN-mode sessions; swapped to a `host = entry.remoteHost`
+    /// variant when the connect fallback engages. Read-only
+    /// outside the session.
+    public private(set) var activeCredentials: CameraCredentials
+    /// CGI client bound to `activeCredentials`. Rebuilt on
+    /// LAN→remote (or remote→LAN) fallback. External callers
+    /// access fresh state each read.
+    public private(set) var client: CGIClient
+    /// RTSP/HTTP URL builder bound to `activeCredentials`.
+    /// Rebuilt alongside `client`.
+    public private(set) var streamURLs: StreamURLs
+    /// The mode the *last successful* connect used. Surfaced in
+    /// the UI (sidebar pip) so the user can tell at a glance
+    /// which path the camera is reached over.
+    public private(set) var connectionMode: CameraConnectionMode = .lan
+    /// TLS pinning policy passed at init. Held so the fallback
+    /// path can build a new `CGIClient` with the same setting.
+    private let tlsPolicy: TLSPinningPolicy
 
     public var status: ConnectionStatus = .disconnected
     /// 0.5.0 Theme E — richer step-by-step progress signal for the UI.
@@ -84,6 +106,14 @@ public final class CameraSession {
     private var baichuanTask: Task<Void, Never>?
     private var batteryTask: Task<Void, Never>?
     private var connectTask: Task<Void, Never>?
+    /// 0.7.0 Phase 4b — set after the first successful UID
+    /// fetch within this session's lifetime, so the per-
+    /// reconnect Baichuan loop doesn't re-issue `msg_id=114`
+    /// every time the TCP connection blips. The persisted UID
+    /// on `CameraEntry` is the cross-session source of truth;
+    /// this flag just avoids redundant fetches inside a single
+    /// app run.
+    private var uidCapturedThisSession: Bool = false
     private var connectGeneration: Int = 0
     /// 0.6.0 Slice 14 — polling lifecycle extracted to `PollManager`.
     /// Replaces the prior `pollTask` + `foregroundCGIOperationDepth +
@@ -104,6 +134,8 @@ public final class CameraSession {
     ) {
         self.entry = entry
         self.credentials = credentials
+        self.activeCredentials = credentials
+        self.tlsPolicy = tlsPolicy
         self.client = CGIClient(credentials: credentials, tlsPolicy: tlsPolicy)
         self.streamURLs = StreamURLs(credentials: credentials)
         // PollManager captures `self` weakly so the session can vend
@@ -157,10 +189,33 @@ public final class CameraSession {
         }
     }
 
+    /// Result of one host's attempt loop. Drives the LAN →
+    /// remote fallback decision in `runConnect`.
+    private enum HostAttemptOutcome {
+        /// Connect succeeded — the session is now `.connected`.
+        case succeeded
+        /// Credentials were rejected. Terminal — never falls
+        /// back to remote because the same creds will fail
+        /// there too.
+        case authFailure(reason: String)
+        /// Couldn't reach this host (timeout / network error
+        /// / non-auth error). Caller may try the next host.
+        case unreachable(any Error)
+        /// Overall deadline elapsed while retries were in
+        /// flight. Caller may still try a remote host within
+        /// any remaining time.
+        case deadlineExceeded(lastError: (any Error)?)
+    }
+
     private func runConnect(policy: ConnectRetryPolicy) async {
         status = .connecting
         connectionAttempt = 0
         let deadline = Date().addingTimeInterval(policy.overallDeadlineSeconds)
+
+        // Every connect() starts fresh with the LAN credentials,
+        // even if the previous session failed over to remote.
+        // Moving back home, the user expects LAN to win.
+        switchToHost(credentials.host, mode: .lan)
 
         // iOS only: a missing Local Network permission silently
         // strands every camera request for ~30 s before the
@@ -183,6 +238,77 @@ public final class CameraSession {
             break
         }
 
+        // Attempt 1: LAN. Most cameras succeed here.
+        let lanOutcome = await attemptHostUntilDeadline(
+            mode: .lan,
+            deadline: deadline,
+            policy: policy
+        )
+        switch lanOutcome {
+        case .succeeded:
+            return
+        case .authFailure(let reason):
+            status = .error(reason)
+            connectionStage = .failed(reason: reason)
+            return
+        case .unreachable, .deadlineExceeded:
+            break   // fall through to remote
+        }
+
+        // Attempt 2: WAN, only if the user has configured a
+        // remote host. The earlier zero-config Reolink-P2P path
+        // turned out to be account-gated; this manual DDNS /
+        // static-IP fallback is the 0.7.0 ship.
+        let trimmedRemote = (entry.remoteHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedRemote.isEmpty, !Task.isCancelled {
+            log.info("LAN unreachable; falling back to remote host \(trimmedRemote, privacy: .public)")
+            switchToHost(trimmedRemote, mode: .remote)
+            let remoteOutcome = await attemptHostUntilDeadline(
+                mode: .remote,
+                deadline: deadline,
+                policy: policy
+            )
+            switch remoteOutcome {
+            case .succeeded:
+                return
+            case .authFailure(let reason):
+                status = .error(reason)
+                connectionStage = .failed(reason: reason)
+                return
+            case .unreachable(let err), .deadlineExceeded(let err?):
+                status = .error(String(describing: err))
+                connectionStage = .failed(reason: "Couldn't reach the camera over LAN or its configured remote address. Check the network and try again.")
+                return
+            case .deadlineExceeded(nil):
+                status = .error("Couldn't reach the camera")
+                connectionStage = .failed(reason: "Couldn't reach the camera over LAN or its configured remote address. Check the network and try again.")
+                return
+            }
+        }
+
+        // No remote configured: emit the LAN-only failure as before.
+        switch lanOutcome {
+        case .unreachable(let err), .deadlineExceeded(let err?):
+            status = .error(String(describing: err))
+            connectionStage = .failed(reason: "Couldn't reach the camera (\(String(describing: err))). Try again.")
+        case .deadlineExceeded(nil):
+            status = .error("Couldn't reach the camera")
+            connectionStage = .failed(reason: "Couldn't reach the camera. Try again.")
+        case .succeeded, .authFailure:
+            break   // already handled above
+        }
+    }
+
+    /// Run the per-attempt retry loop against the currently-
+    /// active host (`activeCredentials.host`). Returns when
+    /// either the connect succeeds (terminal), the credentials
+    /// are rejected (terminal), every attempt has failed with
+    /// non-auth errors, or the wall-clock deadline elapses.
+    private func attemptHostUntilDeadline(
+        mode: CameraConnectionMode,
+        deadline: Date,
+        policy: ConnectRetryPolicy
+    ) async -> HostAttemptOutcome {
         var lastError: (any Error)?
         var attempt = 0
         while attempt < policy.maxAttempts, !Task.isCancelled, Date() < deadline {
@@ -219,6 +345,7 @@ public final class CameraSession {
                     log.info("Channel \(ch.channel) name=\(ch.name ?? "<none>", privacy: .public) typeInfo=\(ch.typeInfo ?? "<nil>", privacy: .public) sleep=\(ch.sleep ?? 0) online=\(ch.online)")
                 }
                 connectionStage = .establishingPushChannel
+                connectionMode = mode
                 status = .connected
                 startEventPolling()
                 startBaichuanEvents()
@@ -226,17 +353,14 @@ public final class CameraSession {
                 // the stage to .connected immediately so the UI shows
                 // a working live tile.
                 connectionStage = .connected
-                return
+                return .succeeded
             } catch {
                 lastError = error
                 if Self.isAuthFailure(error) {
                     log.warning("connect attempt \(attempt) auth-failed; stopping retries")
-                    let reason = "Authentication failed — check the password."
-                    status = .error(reason)
-                    connectionStage = .failed(reason: reason)
-                    return
+                    return .authFailure(reason: "Authentication failed — check the password.")
                 }
-                log.warning("connect attempt \(attempt) failed: \(error.localizedDescription, privacy: .public)")
+                log.warning("connect attempt \(attempt) failed (mode=\(String(describing: mode), privacy: .public)): \(error.localizedDescription, privacy: .public)")
                 if attempt >= policy.maxAttempts { break }
                 let backoff = policy.backoffSeconds(attempt: attempt)
                 // Don't sleep past the overall deadline.
@@ -248,15 +372,32 @@ public final class CameraSession {
                 try? await Task.sleep(for: .seconds(effective))
             }
         }
-        if let lastError {
-            let detail = String(describing: lastError)
-            status = .error(detail)
-            if case .failed = connectionStage {
-                // already set to a specific auth failure above
-            } else {
-                connectionStage = .failed(reason: "Couldn't reach the camera (\(detail)). Try again.")
-            }
+        if Date() >= deadline {
+            return .deadlineExceeded(lastError: lastError)
         }
+        if let lastError {
+            return .unreachable(lastError)
+        }
+        // Loop exited without an error captured (cancellation
+        // before the first attempt produced one). Surface as
+        // a deadline-exceeded with no error.
+        return .deadlineExceeded(lastError: nil)
+    }
+
+    /// Rebuild `activeCredentials`, `client`, and `streamURLs`
+    /// for the supplied host. Mode is recorded but only
+    /// committed to `connectionMode` on a successful connect.
+    private func switchToHost(_ host: String, mode: CameraConnectionMode) {
+        let newCreds = CameraCredentials(
+            host: host,
+            port: credentials.port,
+            username: credentials.username,
+            password: credentials.password,
+            useHTTPS: credentials.useHTTPS
+        )
+        self.activeCredentials = newCreds
+        self.client = CGIClient(credentials: newCreds, tlsPolicy: tlsPolicy)
+        self.streamURLs = StreamURLs(credentials: newCreds)
     }
 
     /// "Stop retrying" classifier. 0.5.1: rewritten to inspect the
@@ -342,10 +483,15 @@ public final class CameraSession {
         baichuanTask?.cancel()
         baichuanTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            // Use the host the CGI connect actually succeeded
+            // against — LAN normally, remote (DDNS / WAN) when
+            // the LAN attempt timed out and the fallback fired.
+            // Baichuan rides the same TCP path, so reusing the
+            // active host keeps the two control planes in sync.
             let creds = BaichuanCredentials(
-                host: self.credentials.host,
-                username: self.credentials.username,
-                password: self.credentials.password
+                host: self.activeCredentials.host,
+                username: self.activeCredentials.username,
+                password: self.activeCredentials.password
             )
             var backoffSeconds: UInt64 = 2
             let maxBackoffSeconds: UInt64 = 60
@@ -357,6 +503,22 @@ public final class CameraSession {
                     let deviceName = try await client.login()
                     log.info("Baichuan login OK device=\(deviceName, privacy: .public)")
                     backoffSeconds = 2
+                    // 0.7.0 Phase 4b — opportunistically capture
+                    // the camera UID for the future P2P remote-
+                    // access path. Only fetched when we don't
+                    // already have one stored AND haven't already
+                    // captured it this session; `fetchUID` returns
+                    // "" on failure, which we treat as "try again
+                    // next login" rather than persisting an empty
+                    // string. Never blocks the event stream
+                    // below.
+                    if !self.uidCapturedThisSession, self.entry.uid == nil {
+                        let uid = await client.fetchUID()
+                        if !uid.isEmpty {
+                            self.onUIDObserved?(uid)
+                            self.uidCapturedThisSession = true
+                        }
+                    }
                     // Spin up the battery-info reader alongside alarm
                     // events. Both consume the same unsolicited push
                     // stream — the hub multiplexes msgID=33 (motion)
@@ -521,6 +683,16 @@ public final class CameraSession {
     /// channel settings to force dual-lens rendering. This closure is set
     /// up from `ContentView` at session-binding time.
     public var dualLensOverride: (@MainActor (Int) -> Bool)?
+
+    /// 0.7.0 Phase 4b — back-channel from the session to the
+    /// store so a freshly-fetched Reolink P2P UID can be
+    /// persisted to `cameras.json` without the session itself
+    /// taking a hard reference to `CameraStore`. Wired in
+    /// `CameraStore.session(for:)`, mirrored on the same pattern
+    /// as `dualLensOverride`. Idempotent on the store side, so
+    /// invoking it on every successful login (rather than only
+    /// the first one) doesn't thrash iCloud sync.
+    public var onUIDObserved: (@MainActor (String) -> Void)?
 
     /// Authoritative "does this camera have two physical lenses on one
     /// stream" check. Checks the user-supplied manual override first, then

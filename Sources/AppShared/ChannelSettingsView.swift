@@ -39,6 +39,19 @@ public struct ChannelSettingsView: View {
     @State private var privacyBackground: PrivacyZoneBackgroundImage?
     @State private var isLoadingPrivacyBackground = false
 
+    /// Local edit buffer for `CameraEntry.remoteHost`. Synced
+    /// from the store on appear and on `cameraDidChange`; pushed
+    /// back to the store on submit/commit. Keeping the edit
+    /// local avoids re-rendering the whole `Form` on every
+    /// keystroke and means the user's in-flight edit isn't lost
+    /// when iCloud-sync pushes an unrelated field update.
+    @State private var remoteHostDraft: String = ""
+    /// True when `remoteHostDraft` has diverged from the
+    /// persisted value — controls whether the Save button is
+    /// active.
+    @State private var remoteHostIsDirty: Bool = false
+    @State private var showRemoteHostHelp: Bool = false
+
     public init(session: CameraSession, channel: ChannelStatus) {
         self.session = session
         self.channel = channel
@@ -203,6 +216,13 @@ public struct ChannelSettingsView: View {
                     LabeledContent("Hardware", value: info.hardVer ?? "—")
                 }
             }
+            // 0.7.0 — manual DDNS / WAN-host fallback. Per-
+            // camera (not per-channel) but rendered here so
+            // there's a single discoverable place to edit a
+            // camera's network configuration. The field
+            // applies to the camera entry as a whole; the
+            // change takes effect on the next reconnect.
+            cameraConnectionSection
         }
         .formStyle(.grouped)
         // 0.5.0 fix — key the load on the (camera, channel) pair so
@@ -337,6 +357,87 @@ public struct ChannelSettingsView: View {
         } catch {
             // Probe failure isn't fatal — just leave the section hidden.
         }
+    }
+
+    /// "Camera connection" — per-camera settings rendered
+    /// alongside per-channel ones. Currently just the WAN
+    /// fallback host; other camera-wide network settings can
+    /// land here later.
+    private var cameraConnectionSection: some View {
+        Section {
+            TextField("Remote address (optional)", text: $remoteHostDraft, prompt: Text("example.duckdns.org"))
+                .textContentType(.URL)
+                .autocorrectionDisabled(true)
+                #if os(iOS)
+                .keyboardType(.URL)
+                .textInputAutocapitalization(.never)
+                #endif
+                .onSubmit { saveRemoteHost() }
+                .onChange(of: remoteHostDraft) { _, _ in
+                    remoteHostIsDirty = (remoteHostDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                                         != (currentEntry?.remoteHost ?? ""))
+                }
+            HStack {
+                Button {
+                    showRemoteHostHelp.toggle()
+                } label: {
+                    Label(showRemoteHostHelp ? "Hide setup notes" : "How does this work?", systemImage: "info.circle")
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.borderless)
+                Spacer()
+                Button("Save") {
+                    saveRemoteHost()
+                }
+                .disabled(!remoteHostIsDirty)
+            }
+            if showRemoteHostHelp {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Reolens reaches your camera over the LAN by default. When you're away from home, it can dial a public hostname instead — typically a DDNS name (`duckdns.org`, Cloudflare, no-ip.com) that points at your router's WAN IP.")
+                    Text("You'll need to forward the camera's ports on your router: 80/443 (HTTP/HTTPS for the API), 554 (RTSP for video), and 9000 (Baichuan, for events and battery info).")
+                        .padding(.top, 2)
+                    Text("Leave blank for LAN-only.")
+                        .padding(.top, 2)
+                        .foregroundStyle(.secondary)
+                }
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .padding(.vertical, 4)
+            }
+        } header: {
+            Text("Camera connection")
+        }
+        .onAppear { syncRemoteHostDraftFromStore() }
+        // Re-sync when the entry mutates from elsewhere (iCloud
+        // pushes, another window editing the same camera). The
+        // store's @Observable conformance triggers a body
+        // re-render; on each render we reconcile our draft if
+        // the user isn't mid-edit.
+        .onChange(of: store.cameras) { _, _ in
+            if !remoteHostIsDirty { syncRemoteHostDraftFromStore() }
+        }
+    }
+
+    /// The user's current `CameraEntry` from the store
+    /// (resolved by id — the entry on `session` is a snapshot
+    /// taken at session creation and may be stale).
+    private var currentEntry: CameraEntry? {
+        store.cameras.first(where: { $0.id == session.entry.id })
+    }
+
+    private func syncRemoteHostDraftFromStore() {
+        remoteHostDraft = currentEntry?.remoteHost ?? ""
+        remoteHostIsDirty = false
+    }
+
+    private func saveRemoteHost() {
+        let trimmed = remoteHostDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        store.setRemoteHost(trimmed.isEmpty ? nil : trimmed, for: session.entry.id)
+        // The store will normalise empties to nil. Reflect the
+        // canonical value back into the draft so the dirty flag
+        // clears even when the user typed whitespace-only.
+        remoteHostDraft = currentEntry?.remoteHost ?? ""
+        remoteHostIsDirty = false
     }
 
     @ViewBuilder

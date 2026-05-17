@@ -26,14 +26,15 @@ extension BaichuanClient {
         // Register the unsolicited-message listener BEFORE sending the request,
         // so any fast push that arrives immediately after the camera accepts
         // the subscription doesn't slip through unobserved.
-        let raw = subscribe()
+        let raw = await subscribe()
 
+        let msgNum = await nextMessageNumber()
         let header = BcHeader(
             msgID: BcMessageID.motionRequest,
             bodyLength: 0,
             channelID: channelID,
             streamType: 0,
-            msgNum: nextMessageNumber(),
+            msgNum: msgNum,
             responseCode: 0,
             msgClass: BcConstants.classModernWithOffset,
             payloadOffset: 0

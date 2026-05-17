@@ -1,5 +1,4 @@
 import Foundation
-import Network
 import OSLog
 
 private let log = Logger(subsystem: "com.reolens.baichuan", category: "client")
@@ -42,252 +41,91 @@ public struct BaichuanCredentials: Sendable {
     }
 }
 
-/// Actor-isolated Baichuan client. One instance per camera/hub.
+/// Actor-isolated Baichuan control plane. One instance per
+/// camera/hub.
 ///
-/// Current scope:
-///   - Open TCP connection on port 9000
-///   - Negotiate encryption (Unencrypted / BCEncrypt / AES) via legacy login
-///   - Send modern login with MD5'd `{user}{nonce}` and `{password}{nonce}`
-///   - Receive `DeviceInfo` reply confirming login
-///   - Provide an `AsyncStream<BcMessage>` of incoming messages for subscribers
+/// As of Phase 3c, `BaichuanClient` is a thin wrapper that
+/// delegates the wire-level work to an `any BcMessageTransport`.
+/// The transport — `LANTransport` for the TCP/9000 path,
+/// `RemoteTransport` for the future BcUdp-over-hole-punch path —
+/// owns the socket, the receive loop, the reply-slot map, the
+/// rolling message-num counter, and the negotiated cipher.
 ///
-/// Future:
-///   - msg_id=31 motion subscription
-///   - msg_id=33 AlarmEventList
-///   - msg_id=272/273 findAlarmVideo (historical event tags for recordings)
-///   - msg_id=201/202 talkback (capture mic + ADPCM encode)
-///   - msg_id=252/253 BatteryInfo + wake_op for battery cameras
+/// What stays on `BaichuanClient`:
+///
+/// - The login state machine (`BaichuanLogin`) and its
+///   higher-level subscribers (`BaichuanEvents`,
+///   `BaichuanBattery`, `BaichuanTalkback`, `BaichuanUID`,
+///   `BaichuanAlarmVideo`). These read/write transport state
+///   through the methods below — never directly — so they're
+///   transport-agnostic.
+/// - The `BaichuanCredentials` used by `BaichuanLogin` to compute
+///   MD5'd nonce hashes; kept here so consumers that already
+///   read `client.credentials` continue to work.
+///
+/// Pre-3c instances created via `init(credentials:)` get a
+/// `LANTransport` for free, preserving every call site in the
+/// codebase. The `lan(credentials:)` factory is the new
+/// preferred entry point; `remote(...)` lands with Phase 3d.
 public actor BaichuanClient {
 
     public let credentials: BaichuanCredentials
-    private var connection: NWConnection?
-    private var cipher: BcCipher = .unencrypted
-    private var nextMsgNum: UInt16 = 0
-    private var readBuffer: Data = Data()
-    private var replySlots: [UInt16: AsyncStream<BcMessage>.Continuation] = [:]
-    private var unsolicitedContinuations: [UUID: AsyncStream<BcMessage>.Continuation] = [:]
-    private var receiveLoopStarted = false
-    private var isClosed = false
+    private let transport: any BcMessageTransport
 
+    /// LAN-only convenience init for backward compatibility.
+    /// Equivalent to `BaichuanClient.lan(credentials:)`.
     public init(credentials: BaichuanCredentials) {
         self.credentials = credentials
+        self.transport = LANTransport(credentials: credentials)
+    }
+
+    /// Designated init taking an explicit transport. Use the
+    /// `lan(...)` / `remote(...)` factories rather than calling
+    /// this directly unless you have a custom transport (tests
+    /// inject scripted transports through this surface).
+    public init(credentials: BaichuanCredentials, transport: any BcMessageTransport) {
+        self.credentials = credentials
+        self.transport = transport
+    }
+
+    /// Build a client that talks to the camera over a LAN TCP
+    /// connection — the existing pre-3c behaviour. Equivalent to
+    /// the bare `init(credentials:)` form.
+    public static func lan(credentials: BaichuanCredentials) -> BaichuanClient {
+        BaichuanClient(credentials: credentials, transport: LANTransport(credentials: credentials))
     }
 
     public func connect() async throws {
-        guard connection == nil else { return }
-        let host = NWEndpoint.Host(credentials.host)
-        let port = NWEndpoint.Port(rawValue: credentials.port) ?? .init(integerLiteral: 9000)
-        // Host is the user's LAN endpoint — `.private` so it's
-        // elided in sysdiagnose / Console.app exports.
-        log.info("Connecting to \(self.credentials.host, privacy: .private):\(self.credentials.port)")
-        let conn = NWConnection(host: host, port: port, using: .tcp)
-        self.connection = conn
-
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, any Error>) in
-            let box = ContinuationBox(cont)
-            conn.stateUpdateHandler = { state in
-                switch state {
-                case .ready: box.success(())
-                case .failed(let err): box.failure(BaichuanError.connectionFailed("\(err)"))
-                case .cancelled: box.failure(BaichuanError.cancelled)
-                case .waiting(let err):
-                    box.failure(BaichuanError.connectionFailed("waiting: \(err)"))
-                default: break
-                }
-            }
-            conn.start(queue: .global(qos: .userInitiated))
-        }
-        conn.stateUpdateHandler = { _ in }
-        log.info("TCP connection ready, starting receive loop")
-        startReceiveLoop()
+        try await transport.connect()
+        log.info("Baichuan transport ready")
     }
 
-    /// Subscribe to all incoming messages (server-initiated and unmatched
-    /// replies). The returned stream finishes when the connection closes.
-    public func subscribe() -> AsyncStream<BcMessage> {
-        let (stream, continuation) = AsyncStream<BcMessage>.makeStream(bufferingPolicy: .unbounded)
-        let id = UUID()
-        unsolicitedContinuations[id] = continuation
-        continuation.onTermination = { @Sendable [weak self] _ in
-            Task { await self?.removeSubscriber(id: id) }
-        }
-        return stream
+    public func subscribe() async -> AsyncStream<BcMessage> {
+        await transport.subscribe()
     }
 
-    private func removeSubscriber(id: UUID) {
-        unsolicitedContinuations.removeValue(forKey: id)
+    public func close() async {
+        await transport.close()
     }
 
-    public func close() {
-        guard !isClosed else { return }
-        isClosed = true
-        connection?.cancel()
-        connection = nil
-        for (_, cont) in replySlots {
-            cont.finish()
-        }
-        replySlots.removeAll()
-        for (_, cont) in unsolicitedContinuations {
-            cont.finish()
-        }
-        unsolicitedContinuations.removeAll()
-    }
-
-    // MARK: - Send / await reply
-
-    /// Send a message and wait for the reply with the same `msg_num`.
-    ///
-    /// Registration happens synchronously inside the actor before the send is
-    /// kicked off, so a reply that arrives before we'd otherwise be ready
-    /// can't slip through unnoticed.
-    /// Send a message and wait for the reply with the same `msg_num`.
-    ///
-    /// Reply slot is implemented as an `AsyncStream` continuation so that a
-    /// response which arrives BEFORE we get to the `iter.next()` is buffered
-    /// in the stream — no race window where a fast reply gets dispatched as
-    /// "unsolicited" before we're ready.
     @discardableResult
-    public func sendAndAwait(_ message: BcMessage, timeout: TimeInterval = 8, stage: String = "request") async throws -> BcMessage {
-        let msgNum = message.header.msgNum
-        let bytes = message.encode(cipher: cipher)
-        guard let connection else { throw BaichuanError.connectionFailed("Not connected") }
-
-        // Register the slot synchronously so any reply that arrives during
-        // send is buffered.
-        let (stream, continuation) = AsyncStream<BcMessage>.makeStream(bufferingPolicy: .bufferingOldest(1))
-        replySlots[msgNum] = continuation
-        defer {
-            replySlots.removeValue(forKey: msgNum)
-            continuation.finish()
-        }
-
-        // Send synchronously (still actor-isolated). Hex dump is
-        // diagnostic-only; mark `.private` so it doesn't leak the
-        // protocol's auth state into sysdiagnose, and drop to
-        // `.debug` so it only fires when developers enable
-        // subsystem-level verbose logging.
-        log.debug("TX msgNum=\(msgNum) stage=\(stage, privacy: .public) bytes=\(bytes.count) hex=\(bytes.prefix(20).map { String(format: "%02x", $0) }.joined(separator: " "), privacy: .private)")
-        do {
-            try await sendRaw(bytes, via: connection)
-            log.info("TX done msgNum=\(msgNum)")
-        } catch {
-            log.error("TX failed msgNum=\(msgNum): \(error.localizedDescription, privacy: .public)")
-            throw error
-        }
-
-        // Race the reply against a timeout.
-        let result = await withTaskGroup(of: BcMessage?.self) { group in
-            group.addTask {
-                var iter = stream.makeAsyncIterator()
-                return await iter.next()
-            }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(timeout))
-                return nil
-            }
-            let first = await group.next().flatMap { $0 }
-            group.cancelAll()
-            return first
-        }
-        guard let msg = result else {
-            throw BaichuanError.timedOut(stage: stage)
-        }
-        return msg
+    public func sendAndAwait(
+        _ message: BcMessage,
+        timeout: TimeInterval = 8,
+        stage: String = "request"
+    ) async throws -> BcMessage {
+        try await transport.sendAndAwait(message, timeout: timeout, stage: stage)
     }
 
-    /// Allocate a fresh `msg_num` (16-bit rolling counter). Replies are
-    /// matched by this number.
-    public func nextMessageNumber() -> UInt16 {
-        let n = nextMsgNum
-        nextMsgNum &+= 1
-        return n
+    public func nextMessageNumber() async -> UInt16 {
+        await transport.nextMessageNumber()
     }
 
-    public func currentCipher() -> BcCipher { cipher }
-    public func setCipher(_ new: BcCipher) { self.cipher = new }
-
-    private func sendRaw(_ bytes: Data, via connection: NWConnection) async throws {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, any Error>) in
-            let box = ContinuationBox(cont)
-            connection.send(content: bytes, completion: .contentProcessed { error in
-                if let error { box.failure(BaichuanError.connectionFailed("send: \(error)")) }
-                else { box.success(()) }
-            })
-        }
+    public func currentCipher() async -> BcCipher {
+        await transport.currentCipher()
     }
 
-    // MARK: - Receive
-
-    private func startReceiveLoop() {
-        guard !receiveLoopStarted, let connection else { return }
-        receiveLoopStarted = true
-        scheduleReceive(on: connection)
-    }
-
-    private func scheduleReceive(on connection: NWConnection) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
-            guard let self else { return }
-            Task { await self.handleReceived(data: data, isComplete: isComplete, error: error) }
-        }
-    }
-
-    private var totalBytesReceived = 0
-    private func handleReceived(data: Data?, isComplete: Bool, error: NWError?) {
-        if let data, !data.isEmpty {
-            totalBytesReceived += data.count
-            if totalBytesReceived <= 1024 {
-                let hex = data.prefix(40).map { String(format: "%02x", $0) }.joined(separator: " ")
-                // Hex dump is diagnostic-only; mark `.private` so it
-                // doesn't surface protocol bytes in sysdiagnose.
-                log.debug("RX \(data.count) bytes (total=\(self.totalBytesReceived)): \(hex, privacy: .private)\(data.count > 40 ? "..." : "")")
-            }
-            readBuffer.append(data)
-            while !readBuffer.isEmpty {
-                guard let (msg, consumed) = BcMessage.decode(from: readBuffer, cipher: cipher) else {
-                    log.info("Partial frame, waiting for more bytes (have \(self.readBuffer.count))")
-                    break
-                }
-                log.info("Decoded msgID=\(msg.header.msgID) class=0x\(String(msg.header.msgClass, radix: 16)) msgNum=\(msg.header.msgNum) code=\(msg.header.responseCode) bodyLen=\(msg.header.bodyLength)")
-                readBuffer.removeFirst(consumed)
-                dispatch(msg)
-            }
-        }
-        if let error {
-            log.warning("Receive error: \(error.localizedDescription, privacy: .public)")
-        }
-        if isComplete {
-            log.warning("TCP receive reports complete (peer closed)")
-        }
-        if isComplete || error != nil {
-            close()
-            return
-        }
-        if let connection { scheduleReceive(on: connection) }
-    }
-
-    private func dispatch(_ msg: BcMessage) {
-        // Reply to a pending request?
-        if let slot = replySlots[msg.header.msgNum] {
-            slot.yield(msg)
-            return
-        }
-        // Server-initiated push (events, etc.)
-        for (_, sub) in unsolicitedContinuations {
-            sub.yield(msg)
-        }
-    }
-
-    // MARK: - Sendable continuation box
-
-    private final class ContinuationBox<T: Sendable>: @unchecked Sendable {
-        private var continuation: CheckedContinuation<T, any Error>?
-        private let lock = NSLock()
-        init(_ cont: CheckedContinuation<T, any Error>) { self.continuation = cont }
-        func success(_ value: T) { take()?.resume(returning: value) }
-        func failure(_ error: any Error) { take()?.resume(throwing: error) }
-        private func take() -> CheckedContinuation<T, any Error>? {
-            lock.lock(); defer { lock.unlock() }
-            let c = continuation; continuation = nil; return c
-        }
+    public func setCipher(_ new: BcCipher) async {
+        await transport.setCipher(new)
     }
 }

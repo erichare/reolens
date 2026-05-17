@@ -9,12 +9,13 @@ extension BaichuanClient {
     /// queries that need to identify the specific paired camera under a
     /// Home Hub (e.g. `findAlarmVideo`). Empty string if not available.
     public func fetchUID(channelID: UInt8 = 0) async -> String {
+        let msgNum = await nextMessageNumber()
         let header = BcHeader(
             msgID: BcMessageID.uid,
             bodyLength: 0,
             channelID: channelID,
             streamType: 0,
-            msgNum: nextMessageNumber(),
+            msgNum: msgNum,
             responseCode: 0,
             msgClass: BcConstants.classModernWithOffset,
             payloadOffset: 0

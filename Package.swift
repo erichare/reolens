@@ -21,13 +21,28 @@ let package = Package(
         .library(name: "ReolinkAPI", targets: ["ReolinkAPI"]),
         .library(name: "ReolinkStreaming", targets: ["ReolinkStreaming"]),
         .library(name: "ReolinkBaichuan", targets: ["ReolinkBaichuan"]),
+        // 0.7.0 — Reolink UDP P2P wire format. Pure value-type
+        // codec; transport / discovery / NAT-traversal layers
+        // sit on top in later phases. See
+        // `docs/remote-connectivity.md`.
+        .library(name: "ReolinkBcUdp", targets: ["ReolinkBcUdp"]),
+        // 0.7.0 Phase 2 — discovery client + transport surface
+        // for the Reolink P2P service. Depends on ReolinkBcUdp
+        // for the wire codec.
+        .library(name: "ReolinkP2P", targets: ["ReolinkP2P"]),
         .library(name: "AppShared", targets: ["AppShared"]),
         // 0.6.4 — Minimal watchOS-facing surface used by the
         // companion Watch App target in `ReolensiOS.xcodeproj`.
         // Depends only on `ReolinkAPI` (pure HTTP+JSON) to avoid
         // dragging UIKit/AppKit-leaning code into the watch build.
         .library(name: "AppWatch", targets: ["AppWatch"]),
-        .executable(name: "Reolens", targets: ["Reolens"])
+        .executable(name: "Reolens", targets: ["Reolens"]),
+        // 0.7.0 — small diagnostic CLI for end-to-end smoke
+        // tests of the remote-connectivity stack against a real
+        // Reolink camera. Not shipped to users; lives in the
+        // package so `swift run RemoteSmoke <uid> <user> <pass>`
+        // works from a checkout.
+        .executable(name: "RemoteSmoke", targets: ["RemoteSmoke"])
     ],
     dependencies: [
         // Sparkle 2 powers the in-app updater. The SPM artifact is an
@@ -69,6 +84,43 @@ let package = Package(
                 // enabling it explicitly is rejected by the toolchain.
                 // Keep ExistentialAny as an opt-in until the codebase is
                 // fully migrated.
+                .enableUpcomingFeature("ExistentialAny")
+            ]
+        ),
+        .target(
+            // 0.7.0 Phase 1 (remote connectivity) — BcUdp wire
+            // codec. Pure value-type encode/decode of the three
+            // packet kinds (Disc / Data / Ack) Reolink uses when
+            // the camera is reached over UDP via their P2P
+            // service. No networking, no actors, no transport.
+            // See `docs/remote-connectivity.md`.
+            name: "ReolinkBcUdp",
+            path: "Sources/ReolinkBcUdp",
+            swiftSettings: [
+                .enableUpcomingFeature("ExistentialAny")
+            ]
+        ),
+        .target(
+            // 0.7.0 Phase 2 (remote connectivity) — discovery
+            // client + BcUdp transport protocol. Depends on the
+            // pure-codec ReolinkBcUdp module for the wire shapes;
+            // adds the actor + state machine that looks a camera
+            // up by UID via the `p2p*.reolink.com` cluster.
+            // Concrete NWConnection-backed transport lands in a
+            // follow-up; this phase ships the actor with a stub-
+            // able transport surface so the fallback / retry
+            // logic is fully testable today.
+            name: "ReolinkP2P",
+            // 0.7.0 Phase 3d — `RemoteTransport` conforms to
+            // `BcMessageTransport` from ReolinkBaichuan, so the
+            // P2P module gains a Baichuan dependency. The
+            // direction is "Baichuan defines the control-plane
+            // protocol; P2P provides a transport that satisfies
+            // it" — kept acyclic by leaving Baichuan unaware of
+            // the concrete remote-transport type.
+            dependencies: ["ReolinkBcUdp", "ReolinkBaichuan"],
+            path: "Sources/ReolinkP2P",
+            swiftSettings: [
                 .enableUpcomingFeature("ExistentialAny")
             ]
         ),
@@ -130,6 +182,18 @@ let package = Package(
                 .enableUpcomingFeature("ExistentialAny")
             ]
         ),
+        .executableTarget(
+            // 0.7.0 — diagnostic CLI for end-to-end smoke
+            // tests of `RemoteTransport` against a real
+            // Reolink camera. Run as:
+            //   swift run RemoteSmoke <uid> <username> <password>
+            name: "RemoteSmoke",
+            dependencies: ["ReolinkP2P", "ReolinkBaichuan", "ReolinkBcUdp"],
+            path: "Sources/RemoteSmoke",
+            swiftSettings: [
+                .enableUpcomingFeature("ExistentialAny")
+            ]
+        ),
         .testTarget(
             name: "ReolinkAPITests",
             dependencies: ["ReolinkAPI"],
@@ -144,6 +208,23 @@ let package = Package(
             name: "ReolinkBaichuanTests",
             dependencies: ["ReolinkBaichuan", "ReolinkAPI"],
             path: "Tests/ReolinkBaichuanTests"
+        ),
+        .testTarget(
+            // 0.7.0 Phase 1 — BcUdp codec round-trips. Pinned
+            // by structural property tests (encode → decode is
+            // identity) plus byte-layout tests that assert each
+            // field lives at the documented offset.
+            name: "ReolinkBcUdpTests",
+            dependencies: ["ReolinkBcUdp"],
+            path: "Tests/ReolinkBcUdpTests"
+        ),
+        .testTarget(
+            // 0.7.0 Phase 2 — discovery client fallback /
+            // redirect / timeout behavior, driven by a stub
+            // transport so the suite runs offline.
+            name: "ReolinkP2PTests",
+            dependencies: ["ReolinkP2P", "ReolinkBcUdp"],
+            path: "Tests/ReolinkP2PTests"
         ),
         // End-to-end integration test target. Drives the full
         // ReolinkAPI client through a mocked Reolink device using
