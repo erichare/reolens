@@ -38,15 +38,28 @@ import ReolinkP2P
 @main
 struct RemoteSmoke {
     static func main() async {
-        let args = CommandLine.arguments
-        guard args.count == 4 else {
-            print("usage: swift run RemoteSmoke <uid> <username> <password>")
-            print("  e.g. swift run RemoteSmoke 9527000I500W1NSQ admin secret")
+        let rawArgs = CommandLine.arguments
+        var verbose = false
+        var positional: [String] = []
+        for arg in rawArgs.dropFirst() {
+            if arg == "--verbose" || arg == "-v" {
+                verbose = true
+            } else {
+                positional.append(arg)
+            }
+        }
+        guard positional.count == 3 else {
+            print("usage: swift run RemoteSmoke [--verbose] <uid> <username> <password>")
+            print("  e.g. swift run RemoteSmoke -v 9527000I500W1NSQ admin secret")
             exit(2)
         }
-        let uid = args[1]
-        let username = args[2]
-        let password = args[3]
+        let uid = positional[0]
+        let username = positional[1]
+        let password = positional[2]
+        if verbose {
+            PosixBcUdpTransport.verboseLogging = true
+            print("[verbose] enabled — every outbound + inbound BcUdp packet will be hex-dumped")
+        }
 
         await run(uid: uid, username: username, password: password)
     }

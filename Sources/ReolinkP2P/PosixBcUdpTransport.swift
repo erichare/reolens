@@ -43,6 +43,14 @@ public struct PosixBcUdpTransport: BcUdpTransport {
 
     public init() {}
 
+    /// When set, every outbound packet's bytes are printed to
+    /// stdout before send and every received packet's bytes are
+    /// printed after receive. Off by default; flipped on in
+    /// diagnostic builds (e.g. `RemoteSmoke --verbose`) so
+    /// development can compare our wire bytes against captured
+    /// official-client traffic.
+    public static nonisolated(unsafe) var verboseLogging: Bool = false
+
     public func sendAndAwaitReply(
         _ packet: BcUdpPacket,
         to host: String,
@@ -50,6 +58,10 @@ public struct PosixBcUdpTransport: BcUdpTransport {
         timeout: Duration
     ) async throws -> BcUdpPacket {
         let bytes = packet.encode()
+        if Self.verboseLogging {
+            print("[posix-udp] → \(host):\(port) (\(bytes.count) bytes)")
+            print("[posix-udp]   \(Self.hexDump(bytes))")
+        }
         let timeoutMillis = Self.millisFromDuration(timeout)
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<BcUdpPacket, any Error>) in
             // Hop to a background queue — POSIX recv blocks the
@@ -148,10 +160,23 @@ public struct PosixBcUdpTransport: BcUdpTransport {
 
         // 6. Decode the BcUdp packet.
         let payload = Data(bytes: buf, count: received)
+        if verboseLogging {
+            print("[posix-udp] ← \(host):\(port) (\(payload.count) bytes)")
+            print("[posix-udp]   \(hexDump(payload))")
+        }
         guard let (packet, _) = BcUdpPacket.decode(from: payload) else {
             throw BcUdpTransportError.malformedReply(host: host, port: port)
         }
         return packet
+    }
+
+    /// One-line hex dump suitable for terminal output. Shows
+    /// the first 96 bytes (enough for a Disc header + the
+    /// first chunk of payload); longer packets get an ellipsis.
+    private static func hexDump(_ data: Data) -> String {
+        let preview = data.prefix(96)
+        let hex = preview.map { String(format: "%02x", $0) }.joined(separator: " ")
+        return data.count > 96 ? "\(hex) … (\(data.count) total)" : hex
     }
 
     /// Resolve a hostname to an IPv4 `sockaddr_in` via
