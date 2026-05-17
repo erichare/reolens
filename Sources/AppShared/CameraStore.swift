@@ -600,6 +600,24 @@ public final class CameraStore {
         save()
     }
 
+    /// Update the user-configured WAN hostname (DDNS / static
+    /// IP) for a camera. Pass `nil` (or an empty string, which
+    /// is normalised to `nil`) to clear it and return to
+    /// LAN-only behaviour. The change takes effect on the
+    /// next `connect()` — currently-running sessions keep
+    /// their active host until they reconnect.
+    public func setRemoteHost(_ host: String?, for id: CameraEntry.ID) {
+        guard let i = cameras.firstIndex(where: { $0.id == id }) else { return }
+        // Normalise: collapse whitespace-only or empty strings
+        // into nil so the persisted JSON doesn't gain a
+        // semantically-empty `remoteHost: ""` field.
+        let trimmed = host?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = (trimmed?.isEmpty == false) ? trimmed : nil
+        guard cameras[i].remoteHost != normalized else { return }
+        cameras[i].remoteHost = normalized
+        save()
+    }
+
     /// Re-save every known camera password on the requested side
     /// (iCloud-synced or device-local). Use after flipping
     /// `iCloudKeychainSyncEnabled` so existing items move to the
