@@ -33,8 +33,8 @@ targets:
       path: Resources/Info.plist
       properties:
         CFBundleDisplayName: Reolens
-        CFBundleShortVersionString: "0.6.2"
-        CFBundleVersion: "12"
+        CFBundleShortVersionString: "0.6.5"
+        CFBundleVersion: "15"
         # iOS 11+ requires apps using asset-catalog icons to also
         # declare CFBundleIconName so the OS / App Store knows which
         # icon set to consult at runtime. Without this key, ASC's
@@ -203,8 +203,8 @@ targets:
       path: Widgets/Info.plist
       properties:
         CFBundleDisplayName: Reolens Widgets
-        CFBundleShortVersionString: "0.6.2"
-        CFBundleVersion: "12"
+        CFBundleShortVersionString: "0.6.5"
+        CFBundleVersion: "15"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     entitlements:
