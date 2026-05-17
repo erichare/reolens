@@ -105,17 +105,26 @@ public actor P2PDiscovery {
 
         let request = DiscoveryXML.LookupRequest(uid: uid, clientID: clientIDProvider())
         // `senderID` doubles as the cipher offset for the request
-        // payload AND a server-side client-class filter. The 2026-
-        // 05-17 byte-level diff against the official Reolink
-        // macOS app's traffic showed every working request uses
-        // the form `0x003D_XXXX` — high 16 bits pinned to
-        // `0x003D` (= 61, meaning unclear; likely a "macOS
-        // client" or similar class marker). Random 32-bit values
-        // get silently dropped by the discovery server.
+        // payload AND a server-side filter. Byte-level diff
+        // against the official Reolink macOS app's 2026-05-16/17
+        // traffic shows every working request has the form
+        // `0x00_3D_0X_YY` where:
         //
-        // Low 16 bits stay random per-lookup so request/reply
-        // pairs remain correlatable.
-        let senderID: UInt32 = (Self.clientClassMarker << 16) | UInt32.random(in: 0...0xFFFF)
+        //   byte 3 (MSB) = 0x00 (always)
+        //   byte 2       = 0x3D (client-class marker)
+        //   byte 1       = 0x09-0x0C (observed range; very likely
+        //                  a slow-growing per-app-uptime counter)
+        //   byte 0 (LSB) = random per-request
+        //
+        // Random values across the full 32-bit space (or even
+        // full 16-bit space on byte 1) are silently dropped.
+        // Pin byte 1 to `0x0C` (the most recently-observed value
+        // — the safer choice over picking a smaller / older
+        // counter the server may have aged out). Randomize the
+        // low byte per-lookup so request/reply pairs remain
+        // correlatable.
+        let lowByte = UInt32.random(in: 0...0xFF)
+        let senderID: UInt32 = (Self.clientClassMarker << 16) | (Self.uptimeCounterByte << 8) | lowByte
         // `requestToken` is per-request and always non-zero in
         // captured traffic. 2026-05-16 smoke test had the server
         // silently dropping our queries when the token was 0,
@@ -220,4 +229,12 @@ public actor P2PDiscovery {
     /// (iOS / Android / Windows app) we may need to vary it
     /// too; for now we pin to the observed macOS value.
     static let clientClassMarker: UInt32 = 0x0000_003D
+
+    /// Bits 8-15 of the senderID. Observed range across
+    /// working captures: `0x09-0x0C`. Best hypothesis: a
+    /// slow-growing per-process-uptime counter (seconds /
+    /// minutes since the app launched). Pinning to `0x0C`
+    /// (most recently observed) is the safer choice; the
+    /// server may age out older values from its allow-list.
+    static let uptimeCounterByte: UInt32 = 0x0C
 }
