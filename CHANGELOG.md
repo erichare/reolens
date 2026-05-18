@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.6] — 2026-05-18
+
+Fixes the *third* layer of the silently-broken iOS push notification
+saga. 0.6.4 fixed the macOS CloudKit-entitlement probe and 0.6.5
+fixed the missing `com.apple.application-identifier` entitlement —
+both real bugs, both shipping fixes. But TestFlight iPhone users
+were still reporting "push notifications work when Reolens is open
+on iPhone, but never when the app is minimized." The synthetic
+"Send test event via CloudKit" button on macOS produced a perfect
+end-to-end test (record published, iPhone silent push received,
+local notification posted), yet real motion events on real cameras
+never reached the iPhone.
+
+The root cause was in `EventNotifier.notify()` on macOS:
+`classify(...)` returns `.suppressedForLog` whenever the event's
+category is muted on this device (notifyAI / notifyMotion /
+notifyPerTag), and the previous `notify()` short-circuited the
+entire pipeline at that branch — logging the drop and returning
+*before* the CloudKit relay branch ran. Because `notifyMotion`
+defaults to OFF ("motion-only events tend to flood when sustained"),
+every plain-motion event from every macOS install with default
+settings was being dropped before publication. The synthetic test
+event sidestepped this because `MotionRelayPublisherSection.send
+TestEvent` calls `CloudKitMotionEventPublisher.publish()` directly
+without going through `notify()`.
+
+The comment on the relay branch claimed it "stays outside the local
+notification authorization gates", but the implementation didn't
+match — the early returns sat above it. This release makes the
+implementation match the documented intent.
+
+### Fixed
+
+- **CloudKit relay no longer blocked by local-only category mutes**
+  ([`Sources/AppShared/EventNotifier.swift`](Sources/AppShared/EventNotifier.swift)).
+  The relay branch now runs whenever the publisher toggle is on and
+  the per-camera mute (which is synced across devices) hasn't been
+  flipped — *independent* of the local notifyAI / notifyMotion /
+  notifyPerTag toggles. The receiving device (iOS, in
+  `AppDelegate.postLocalNotification`) already applies its own
+  per-category preferences before posting, so a Mac with motion
+  notifications muted at the desk can still relay motion events to
+  an iPhone whose owner wants to be paged when away.
+
+### Internal
+
+- New `EventNotifier.throttleKey(for:)` static helper. Derives the
+  cooldown key directly from `event.kind` so the relay branch in
+  `notify()` has a stable key for both `.composed` and
+  `.suppressedForLog` classifications. Unit-tested for stability
+  against the key embedded in `classify`'s `.composed` result so
+  the two can't drift apart.
+
 ## [0.6.5] — 2026-05-17
 
 Real fix for the silently-broken CloudKit motion-event relay. 0.6.4

@@ -50,6 +50,95 @@ struct EventNotifierPerTagMuteTests {
     }
 }
 
+/// 0.6.6 — `throttleKey(for:)` underpins the bug fix for
+/// "iOS push notifications don't arrive when the app is minimized".
+/// Before the fix, `notify()` only computed the throttle key inside
+/// `classify`'s `.composed` branch. When a category was locally
+/// muted (notifyAI / notifyMotion / notifyPerTag → `.suppressedForLog`),
+/// `notify()` short-circuited and the CloudKit relay never ran — so
+/// iPhone subscribers never received silent pushes for plain motion
+/// (which defaults to muted on macOS). The static helper guarantees
+/// the relay branch has a stable key regardless of local mute state,
+/// and the receiving device applies its own per-category preferences
+/// when posting the notification from the silent push.
+@Suite("EventNotifier throttle key derivation")
+struct EventNotifierThrottleKeyTests {
+
+    @Test("motionStart event yields stable channel-scoped key")
+    func motionStartKey() {
+        let event = BaichuanEvent(channelID: 0, kind: .motionStart, raw: "")
+        #expect(EventNotifier.throttleKey(for: event) == "0-motion")
+    }
+
+    @Test("AI event yields channel-and-tag-scoped key")
+    func aiEventKey() {
+        let event = BaichuanEvent(channelID: 2, kind: .ai("people"), raw: "")
+        #expect(EventNotifier.throttleKey(for: event) == "2-ai-people")
+    }
+
+    @Test("motionStop and other event kinds yield nil")
+    func nonNotifiableKindsYieldNil() {
+        let stop = BaichuanEvent(channelID: 0, kind: .motionStop, raw: "")
+        let other = BaichuanEvent(channelID: 1, kind: .other, raw: "")
+        #expect(EventNotifier.throttleKey(for: stop) == nil)
+        #expect(EventNotifier.throttleKey(for: other) == nil)
+    }
+
+    @Test("throttleKey matches the key embedded in classify's .composed result")
+    @MainActor
+    func matchesComposedClassification() {
+        let notifier = EventNotifier.shared
+        let originalAI = notifier.notifyAI
+        let originalMotion = notifier.notifyMotion
+        defer {
+            notifier.notifyAI = originalAI
+            notifier.notifyMotion = originalMotion
+        }
+        // Ensure category toggles are ON so classify returns .composed.
+        notifier.notifyAI = true
+        notifier.notifyMotion = true
+
+        let cases: [(BaichuanEvent, String)] = [
+            (BaichuanEvent(channelID: 0, kind: .motionStart, raw: ""), "0-motion"),
+            (BaichuanEvent(channelID: 3, kind: .motionStart, raw: ""), "3-motion"),
+            (BaichuanEvent(channelID: 1, kind: .ai("vehicle"), raw: ""), "1-ai-vehicle"),
+            (BaichuanEvent(channelID: 4, kind: .ai("dog_cat"), raw: ""), "4-ai-dog_cat"),
+        ]
+        for (event, expectedKey) in cases {
+            #expect(EventNotifier.throttleKey(for: event) == expectedKey)
+            let result = notifier.classify(event: event, cameraName: "Test")
+            if case .composed(_, _, let composedKey, _) = result {
+                #expect(composedKey == expectedKey)
+                #expect(EventNotifier.throttleKey(for: event) == composedKey)
+            } else {
+                Issue.record("Expected .composed for \(event.kind), got \(result)")
+            }
+        }
+    }
+
+    @Test("throttleKey is still computable when category mute would suppress local post")
+    @MainActor
+    func keyAvailableEvenWhenLocallyMuted() {
+        let notifier = EventNotifier.shared
+        let originalMotion = notifier.notifyMotion
+        defer { notifier.notifyMotion = originalMotion }
+        // Mute plain motion locally — this is the default-OFF state
+        // that historically caused real motion events to bypass the
+        // relay entirely. The relay key must still be derivable.
+        notifier.notifyMotion = false
+        let event = BaichuanEvent(channelID: 0, kind: .motionStart, raw: "")
+        let result = notifier.classify(event: event, cameraName: "Test")
+        // classify returns suppressedForLog — but the throttle key
+        // helper sidesteps classify and still produces the key the
+        // relay cooldown needs.
+        if case .suppressedForLog = result {
+            #expect(EventNotifier.throttleKey(for: event) == "0-motion")
+        } else {
+            Issue.record("Expected .suppressedForLog when notifyMotion is off, got \(result)")
+        }
+    }
+}
+
 /// Validates that the SharedContainer write path used by the
 /// notifier produces deduplicatable records — content-addressed
 /// based on `(cameraID, channel, truncated timestamp, aiTags)`.
