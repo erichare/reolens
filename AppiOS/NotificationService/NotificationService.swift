@@ -11,12 +11,12 @@
 //       subscription's NotificationInfo sets
 //       `shouldSendMutableContent = true`, which causes iOS to
 //       launch this extension before displaying the notification.
-//    2. We parse the CKQueryNotification payload, read inline record
-//       fields (detection, channel) populated by `desiredKeys`, and
-//       rewrite the subscription's literal "Motion detected" body
-//       with a specific title like "Person detected".
+//    2. We parse the CKQueryNotification payload to recover the
+//       triggering record's ID.
 //    3. We fetch the full record from the user's private CloudKit
-//       database to pull the snapshot CKAsset and attach it.
+//       database, then rewrite the subscription's literal "Motion
+//       detected" body with a specific title like "Person detected"
+//       (from `detection`) and attach the snapshot CKAsset.
 //    4. `contentHandler` is invoked with the enriched content. If we
 //       run out of time, `serviceExtensionTimeWillExpire` flushes
 //       whatever has been built so far — the user still sees a
@@ -95,34 +95,34 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             return
         }
 
-        // Step 1 — synchronously enrich title/body from inline record
-        // fields. These are populated by `desiredKeys` on the
-        // subscription, so they cost no network round trip.
-        applyInlineFieldEnrichment(notification: notification, content: bestAttempt)
-
-        // Step 2 — asynchronously fetch the full record to download
-        // the snapshot CKAsset. CKAssets aren't embedded in the
-        // desired-keys push payload; they require a record fetch.
+        // Fetch the full record. The subscription no longer sets
+        // `desiredKeys` (see v4 note in MotionEventRelay.swift), so
+        // every enrichment field — title, body, and snapshot asset —
+        // comes from this fetch. CKAssets always require a fetch
+        // anyway; folding the other fields in costs nothing extra.
         // The NSE has a ~30 s budget; if the fetch overruns,
         // `serviceExtensionTimeWillExpire` delivers whatever has been
         // built so far. We use the completion-handler API so the
         // entire flow stays on a single CloudKit queue — no Task /
         // actor hop needed for the non-Sendable mutable content.
         guard let recordID = notification.recordID else {
-            log.info("No recordID on CKQueryNotification; delivering inline-only")
+            log.info("No recordID on CKQueryNotification; delivering unenriched")
             deliver(bestAttempt)
             return
         }
 
         let container = CKContainer(identifier: Self.containerID)
         let db = container.privateCloudDatabase
-        let recordKeySnapshot = Self.recordKeySnapshot
         db.fetch(withRecordID: recordID) { [weak self] record, error in
             guard let self else { return }
             if let error {
-                self.log.warning("NSE snapshot fetch failed: \(error.localizedDescription, privacy: .public)")
-            } else if let record, let asset = record[recordKeySnapshot] as? CKAsset, let assetURL = asset.fileURL {
-                Self.attach(snapshotURL: assetURL, to: bestAttempt, log: self.log)
+                self.log.warning("NSE record fetch failed: \(error.localizedDescription, privacy: .public)")
+            } else if let record {
+                self.enrich(from: record, content: bestAttempt)
+                if let asset = record[Self.recordKeySnapshot] as? CKAsset,
+                   let assetURL = asset.fileURL {
+                    Self.attach(snapshotURL: assetURL, to: bestAttempt, log: self.log)
+                }
             }
             self.deliver(bestAttempt)
         }
@@ -151,13 +151,12 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         handler(content)
     }
 
-    private func applyInlineFieldEnrichment(
-        notification: CKQueryNotification,
+    private func enrich(
+        from record: CKRecord,
         content: UNMutableNotificationContent
     ) {
-        let fields = notification.recordFields ?? [:]
-        let detection = fields[Self.recordKeyDetection] as? String
-        let channel = fields[Self.recordKeyChannel] as? Int
+        let detection = record[Self.recordKeyDetection] as? String
+        let channel = record[Self.recordKeyChannel] as? Int
 
         if let detection {
             content.title = title(forDetection: detection)
@@ -171,7 +170,7 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         // tap delegate in AppShared reads `cameraID` / `channelID` /
         // `eventTime` keys (see EventNotifier.userInfoCameraIDKey).
         var enrichedUserInfo = content.userInfo
-        if let cameraIDString = fields[Self.recordKeyCameraID] as? String {
+        if let cameraIDString = record[Self.recordKeyCameraID] as? String {
             enrichedUserInfo["cameraID"] = cameraIDString
         }
         if let channel {

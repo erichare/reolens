@@ -383,13 +383,23 @@ public actor CloudKitMotionEventSubscriber {
     ///     for the basic title/body. The NSE rewrites the title to
     ///     "Person detected" / "Vehicle detected" / etc and attaches
     ///     the snapshot. See `AppiOS/NotificationService/`.
+    ///   - **v4** — drops `desiredKeys`. CloudKit stores those on the
+    ///     internal `_Sub_Trigger` system record type as
+    ///     `Notif_Additional_Field_*`; those additions don't always
+    ///     promote cleanly with a schema deploy, leaving Production
+    ///     subscription saves rejected with "Cannot Create Or Modify
+    ///     Field 'Notif_Additional_Field_0'". The NSE already has to
+    ///     fetch the record for the `snapshot` CKAsset (assets are
+    ///     never inlined), so inlining the other fields was only a
+    ///     marginal latency win.
     ///
     /// Legacy IDs are deleted on install — see
     /// `installSubscriptionIfNeeded()`.
-    private let subscriptionID = "com.reolens.motionEvent.v3"
+    private let subscriptionID = "com.reolens.motionEvent.v4"
     private let legacySubscriptionIDs = [
         "com.reolens.motionEvent.v1",
         "com.reolens.motionEvent.v2",
+        "com.reolens.motionEvent.v3",
     ]
     private let log = Logger(subsystem: "com.reolens.Reolens", category: "MotionRelay")
 
@@ -430,7 +440,7 @@ public actor CloudKitMotionEventSubscriber {
         // Subscription on *any* new MotionEvent record (predicate is
         // `TRUEPREDICATE` — we want every event).
         //
-        // 0.6.7 — three knobs on `notificationInfo`:
+        // Two knobs on `notificationInfo`:
         //
         //   1. `alertBody` / `soundName` / `shouldBadge` — flips the
         //      push from silent background-wake to a user-visible
@@ -441,12 +451,10 @@ public actor CloudKitMotionEventSubscriber {
         //      displaying the banner, so the NSE can rewrite the
         //      title with detection-specific text and attach the
         //      snapshot. See `AppiOS/NotificationService/`.
-        //   3. `desiredKeys` — embeds the listed record fields in
-        //      the push payload itself, so the NSE has them inline
-        //      without needing a CKDatabase fetch for the basic
-        //      title/body. The CKAsset snapshot is NOT inlined
-        //      (CKAssets always require a record fetch); the NSE
-        //      does that separately.
+        //
+        // The NSE fetches the record from CKDatabase to read the
+        // snapshot asset and the other fields; we intentionally do
+        // not set `desiredKeys` (see the v4 note above).
         //
         // `shouldSendContentAvailable = true` is intentionally left
         // ON alongside `alertBody` so the host app still receives
@@ -469,15 +477,10 @@ public actor CloudKitMotionEventSubscriber {
         info.alertBody = "Motion detected"
         info.soundName = "default"
         info.shouldBadge = true
-        info.desiredKeys = [
-            MotionEvent.RecordKey.cameraID,
-            MotionEvent.RecordKey.channel,
-            MotionEvent.RecordKey.detection,
-        ]
         subscription.notificationInfo = info
         do {
             _ = try await db.save(subscription)
-            log.info("Motion-event CKQuerySubscription installed (v3 alert push + mutable content)")
+            log.info("Motion-event CKQuerySubscription installed (v4 alert push + mutable content)")
             await RelayDiagnostics.shared.recordSubscriptionInstall(outcome: .installed)
         } catch let error as CKError where error.code == .serverRejectedRequest {
             // CloudKit returns this when the subscription already
