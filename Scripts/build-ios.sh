@@ -273,6 +273,8 @@ PROFILE_NAME=""
 PROFILE_UUID=""
 WIDGETS_PROFILE_NAME=""
 WIDGETS_PROFILE_UUID=""
+NSE_PROFILE_NAME=""
+NSE_PROFILE_UUID=""
 if [[ -n "${AC_API_KEY_ID:-}" && -n "${AC_API_KEY_P8_PATH:-}" ]]; then
     echo "==> Ensuring App Store provisioning profile via ASC API (main app)"
     export PLATFORM=IOS
@@ -303,6 +305,30 @@ if [[ -n "${AC_API_KEY_ID:-}" && -n "${AC_API_KEY_P8_PATH:-}" ]]; then
     echo "    using widgets profile: ${WIDGETS_PROFILE_NAME} (${WIDGETS_PROFILE_UUID})"
     export PROFILE_NAME="${SAVED_PROFILE_NAME}"
     export PLATFORM=IOS
+
+    # 0.6.7 — Notification Service Extension target (NSE). Same
+    # rationale as widgets above: distinct bundle id
+    # (com.reolens.Reolens.iOS.NotificationService) requires a
+    # distinct provisioning profile. The App ID must already exist
+    # in the developer portal with iCloud + App Groups capabilities
+    # configured — `asc_ensure_profile.py` can't create bundle ids
+    # under an App-Manager-role ASC API key, but it CAN create the
+    # profile once the bundle id exists. If you hit "bundleId not
+    # registered" at this step, register the App ID manually at
+    # https://developer.apple.com/account/resources/identifiers/list/bundleId
+    # — see the script's own 403 error message for the exact UI
+    # steps.
+    echo "==> Ensuring App Store provisioning profile via ASC API (notification service extension)"
+    SAVED_PROFILE_NAME="${PROFILE_NAME}"
+    export PLATFORM=IOS_NOTIFICATION_SERVICE
+    export IOS_NOTIFICATION_SERVICE_BUNDLE_ID="${IOS_NOTIFICATION_SERVICE_BUNDLE_ID:-com.reolens.Reolens.iOS.NotificationService}"
+    unset PROFILE_NAME
+    NSE_HELPER_OUT="$(python3 "${REPO_ROOT}/Scripts/asc_ensure_profile.py")"
+    NSE_PROFILE_NAME="$(printf '%s\n' "${NSE_HELPER_OUT}" | sed -n '1p')"
+    NSE_PROFILE_UUID="$(printf '%s\n' "${NSE_HELPER_OUT}" | sed -n '3p')"
+    echo "    using NSE profile: ${NSE_PROFILE_NAME} (${NSE_PROFILE_UUID})"
+    export PROFILE_NAME="${SAVED_PROFILE_NAME}"
+    export PLATFORM=IOS
 fi
 
 echo "==> Archiving for iphoneos"
@@ -328,6 +354,13 @@ if [[ -n "${PROFILE_NAME}" ]]; then
         SIGN_BUILD_SETTINGS+=(
             "REOLENS_IOS_WIDGETS_PROFILE_NAME=${WIDGETS_PROFILE_NAME}"
             "REOLENS_IOS_WIDGETS_PROFILE_UUID=${WIDGETS_PROFILE_UUID}"
+        )
+    fi
+    # 0.6.7 — same plumbing as widgets, for the NSE.
+    if [[ -n "${NSE_PROFILE_NAME}" ]]; then
+        SIGN_BUILD_SETTINGS+=(
+            "REOLENS_IOS_NOTIFICATION_SERVICE_PROFILE_NAME=${NSE_PROFILE_NAME}"
+            "REOLENS_IOS_NOTIFICATION_SERVICE_PROFILE_UUID=${NSE_PROFILE_UUID}"
         )
     fi
 else
@@ -396,6 +429,14 @@ EXPORT_PROFILE="${PROFILE_UUID:-${PROFILE_NAME:-Reolens iOS App Store}}"
 # "no devices" reason the main app does).
 WIDGETS_BUNDLE_ID="${IOS_WIDGETS_BUNDLE_ID:-com.reolens.Reolens.iOS.Widgets}"
 WIDGETS_PROFILE_FOR_EXPORT="${WIDGETS_PROFILE_UUID:-${WIDGETS_PROFILE_NAME:-Reolens iOS Widgets App Store}}"
+# 0.6.7 — emit a third <key>...</key><string>...</string> pair for
+# the Notification Service Extension so xcodebuild's -exportArchive
+# step signs the NSE bundle with the dedicated profile. Without it,
+# export falls back to automatic signing for the NSE (which fails
+# on CI for the same "no devices" reason the main app and widgets
+# would).
+NSE_BUNDLE_ID="${IOS_NOTIFICATION_SERVICE_BUNDLE_ID:-com.reolens.Reolens.iOS.NotificationService}"
+NSE_PROFILE_FOR_EXPORT="${NSE_PROFILE_UUID:-${NSE_PROFILE_NAME:-Reolens iOS Notification Service App Store}}"
 cat > "${EXPORT_OPTIONS}" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -417,6 +458,8 @@ cat > "${EXPORT_OPTIONS}" <<PLIST
         <string>${EXPORT_PROFILE}</string>
         <key>${WIDGETS_BUNDLE_ID}</key>
         <string>${WIDGETS_PROFILE_FOR_EXPORT}</string>
+        <key>${NSE_BUNDLE_ID}</key>
+        <string>${NSE_PROFILE_FOR_EXPORT}</string>
     </dict>
     <key>uploadSymbols</key>
     <true/>

@@ -365,7 +365,32 @@ public enum CloudKitAvailability {
 /// and the `CKDatabaseNotification` → local notification fan-out.
 public actor CloudKitMotionEventSubscriber {
     private let containerID: String
-    private let subscriptionID = "com.reolens.motionEvent.v1"
+    /// Subscription ID history:
+    ///
+    ///   - **v1** (0.4.1) — content-available-only silent push. iOS
+    ///     aggressively throttles silent pushes (and drops them
+    ///     entirely when the app is suspended or force-quit), so
+    ///     motion events from a Mac publisher reliably failed to
+    ///     surface on iPhone/iPad.
+    ///   - **v2** (0.6.7) — added `alertBody` so the push is a
+    ///     user-visible alert APNs delivers regardless of app state.
+    ///     Banner showed the literal "Motion detected" string with
+    ///     no snapshot.
+    ///   - **v3** (0.6.7) — adds `shouldSendMutableContent = true`
+    ///     so iOS launches the Notification Service Extension before
+    ///     showing the banner, and `desiredKeys` so the NSE has the
+    ///     record fields inline without needing a CKDatabase fetch
+    ///     for the basic title/body. The NSE rewrites the title to
+    ///     "Person detected" / "Vehicle detected" / etc and attaches
+    ///     the snapshot. See `AppiOS/NotificationService/`.
+    ///
+    /// Legacy IDs are deleted on install — see
+    /// `installSubscriptionIfNeeded()`.
+    private let subscriptionID = "com.reolens.motionEvent.v3"
+    private let legacySubscriptionIDs = [
+        "com.reolens.motionEvent.v1",
+        "com.reolens.motionEvent.v2",
+    ]
     private let log = Logger(subsystem: "com.reolens.Reolens", category: "MotionRelay")
 
     public init(containerID: String = "iCloud.com.reolens.Reolens") {
@@ -388,12 +413,49 @@ public actor CloudKitMotionEventSubscriber {
         }
         let container = CKContainer(identifier: containerID)
         let db = container.privateCloudDatabase
+        // 0.6.7 — best-effort delete of legacy v1 subscription so
+        // users upgrading from <=0.6.6 don't keep a parallel silent-
+        // push subscription firing alongside the new alert-push one.
+        // Errors are ignored: if the legacy subscription is already
+        // gone (or never existed), the delete is a no-op.
+        for legacyID in legacySubscriptionIDs {
+            do {
+                try await db.deleteSubscription(withID: legacyID)
+                log.info("Removed legacy motion-event subscription \(legacyID, privacy: .public)")
+            } catch {
+                // Most common case is `unknownItem` for a never-installed
+                // ID; ignore quietly.
+            }
+        }
         // Subscription on *any* new MotionEvent record (predicate is
-        // `TRUEPREDICATE` — we want every event). The notificationInfo
-        // marks it as a silent push so iOS can wake the app
-        // briefly without alerting the user (we post the local
-        // notification ourselves from the fetched record, with the
-        // user's local notification preferences applied).
+        // `TRUEPREDICATE` — we want every event).
+        //
+        // 0.6.7 — three knobs on `notificationInfo`:
+        //
+        //   1. `alertBody` / `soundName` / `shouldBadge` — flips the
+        //      push from silent background-wake to a user-visible
+        //      alert that APNs delivers regardless of app state
+        //      (background, closed, force-quit).
+        //   2. `shouldSendMutableContent = true` — causes iOS to
+        //      launch the Notification Service Extension before
+        //      displaying the banner, so the NSE can rewrite the
+        //      title with detection-specific text and attach the
+        //      snapshot. See `AppiOS/NotificationService/`.
+        //   3. `desiredKeys` — embeds the listed record fields in
+        //      the push payload itself, so the NSE has them inline
+        //      without needing a CKDatabase fetch for the basic
+        //      title/body. The CKAsset snapshot is NOT inlined
+        //      (CKAssets always require a record fetch); the NSE
+        //      does that separately.
+        //
+        // `shouldSendContentAvailable = true` is intentionally left
+        // ON alongside `alertBody` so the host app still receives
+        // `didReceiveRemoteNotification` in background — it uses
+        // that wake-up to update widgets, the in-app notification
+        // log, and per-camera health badges. The duplicate local
+        // UNNotification post in that handler is suppressed (see
+        // `AppDelegate.postLocalNotification`) so the user sees a
+        // single, NSE-enriched banner — not two.
         let predicate = NSPredicate(value: true)
         let subscription = CKQuerySubscription(
             recordType: MotionEvent.recordType,
@@ -403,10 +465,19 @@ public actor CloudKitMotionEventSubscriber {
         )
         let info = CKQuerySubscription.NotificationInfo()
         info.shouldSendContentAvailable = true
+        info.shouldSendMutableContent = true
+        info.alertBody = "Motion detected"
+        info.soundName = "default"
+        info.shouldBadge = true
+        info.desiredKeys = [
+            MotionEvent.RecordKey.cameraID,
+            MotionEvent.RecordKey.channel,
+            MotionEvent.RecordKey.detection,
+        ]
         subscription.notificationInfo = info
         do {
             _ = try await db.save(subscription)
-            log.info("Motion-event CKQuerySubscription installed")
+            log.info("Motion-event CKQuerySubscription installed (v3 alert push + mutable content)")
             await RelayDiagnostics.shared.recordSubscriptionInstall(outcome: .installed)
         } catch let error as CKError where error.code == .serverRejectedRequest {
             // CloudKit returns this when the subscription already

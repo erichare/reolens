@@ -17,6 +17,8 @@ settings:
     REOLENS_IOS_APP_PROFILE_UUID: ""
     REOLENS_IOS_WIDGETS_PROFILE_NAME: ""
     REOLENS_IOS_WIDGETS_PROFILE_UUID: ""
+    REOLENS_IOS_NOTIFICATION_SERVICE_PROFILE_NAME: ""
+    REOLENS_IOS_NOTIFICATION_SERVICE_PROFILE_UUID: ""
 packages:
   Reolens:
     path: ..
@@ -178,6 +180,9 @@ targets:
       - target: ReolensiOSWidgets
         embed: true
         codeSign: true
+      - target: ReolensiOSNotificationService
+        embed: true
+        codeSign: true
   # ------------------------------------------------------------------
   # WidgetKit + ActivityKit extension (0.5.0).
   #
@@ -245,6 +250,61 @@ targets:
         - variable: _XCWidgetKind
           value: io.reolens.widget.cameraSnapshot
           isEnabled: true
+  # ------------------------------------------------------------------
+  # Notification Service Extension (0.6.7).
+  #
+  # iOS launches this extension before displaying any push that has
+  # `mutable-content: 1` set. Our CKQuerySubscription (see
+  # CloudKitMotionEventSubscriber) sets `shouldSendMutableContent =
+  # true`, so every relayed motion-event push arrives here first.
+  # The extension enriches the subscription's generic "Motion
+  # detected" alertBody with a detection-specific title ("Person
+  # detected", "Vehicle detected", …) and downloads the snapshot
+  # CKAsset from the user's private CloudKit database to attach as
+  # a rich thumbnail.
+  #
+  # The extension has tight memory + time budgets (~24 MB / 30 s) so
+  # we deliberately avoid importing AppShared — the few constants we
+  # need (container ID + record field names) are duplicated as
+  # static strings in NotificationService.swift, marked as needing
+  # to stay in sync with AppShared/MotionEventRelay.swift.
+  # ------------------------------------------------------------------
+  ReolensiOSNotificationService:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: NotificationService
+    info:
+      path: NotificationService/Info.plist
+      properties:
+        CFBundleDisplayName: Reolens Notification Service
+        CFBundleShortVersionString: "0.6.6"
+        CFBundleVersion: "16"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).NotificationService"
+    entitlements:
+      path: NotificationService/ReolensiOSNotificationService.entitlements
+      properties:
+        com.apple.developer.icloud-container-identifiers:
+          - "iCloud.com.reolens.Reolens"
+        com.apple.developer.icloud-services:
+          - CloudKit
+        com.apple.security.application-groups:
+          - group.com.reolens.Reolens
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.reolens.Reolens.iOS.NotificationService
+        PRODUCT_NAME: ReolensiOSNotificationService
+        MARKETING_VERSION: "0.6.6"
+        CURRENT_PROJECT_VERSION: "16"
+        DEVELOPMENT_TEAM: 5M9UT7VQ8Q
+        CODE_SIGN_STYLE: Automatic
+        PROVISIONING_PROFILE_SPECIFIER: "$(REOLENS_IOS_NOTIFICATION_SERVICE_PROFILE_NAME)"
+        PROVISIONING_PROFILE: "$(REOLENS_IOS_NOTIFICATION_SERVICE_PROFILE_UUID)"
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: YES
   # ------------------------------------------------------------------
   # XCUITest target (0.6.0 plan §D).
   #

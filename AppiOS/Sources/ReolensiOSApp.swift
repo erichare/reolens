@@ -382,17 +382,22 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 content.attachments = [attachment]
             }
         }
-        let request = UNNotificationRequest(
-            identifier: event.id.uuidString,
-            content: content,
-            trigger: nil
-        )
-        let addError: (any Error)? = await withCheckedContinuation { (cont: CheckedContinuation<(any Error)?, Never>) in
-            UNUserNotificationCenter.current().add(request) { error in
-                cont.resume(returning: error)
-            }
-        }
-        log.info("Posted relayed motion notification (channel \(event.channel), detection \(event.detection, privacy: .public))")
+        // 0.6.7 — `content` is built for parity with the in-app
+        // notification log (and a future Notification Service
+        // Extension that will use it to enrich the system-delivered
+        // alert push). We DO NOT add it as a UNNotificationRequest:
+        // the v2 CKQuerySubscription now delivers the push as a
+        // user-visible alert via APNs (see
+        // CloudKitMotionEventSubscriber.installSubscriptionIfNeeded),
+        // and posting a second local notification here would surface
+        // two banners for the same event. We still feed the
+        // notification log, widget container, and per-camera health
+        // badge below so those features keep working for relayed
+        // events. `content` is intentionally unused at runtime today
+        // — keeping the construction in place so the NSE follow-up
+        // can adopt it without re-deriving the same fields.
+        _ = content
+        log.info("Relayed motion received (channel \(event.channel), detection \(event.detection, privacy: .public)) — alert push handled by APNs")
 
         // 0.6.0 — record the relayed event into the user-facing
         // notification log so iPhone/iPad users see CloudKit-delivered
@@ -408,7 +413,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             title: title,
             body: cameraName,
             thumbnailRelativePath: nil,
-            deliveryStatus: addError == nil ? .posted : .failed
+            deliveryStatus: .posted
         )
         await NotificationHistory.shared.record(postedRecord)
 
