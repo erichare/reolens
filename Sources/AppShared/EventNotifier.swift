@@ -263,23 +263,35 @@ public final class EventNotifier {
             return
         }
 
-        // Suppressed-but-loggable kinds: the user has muted the
-        // category. Record so they can see it in the notification log
-        // and understand WHY a real event didn't surface.
-        if case .suppressedForLog(let syntheticTitle, let tag, let reason) = classification {
-            await logDroppedEvent(
-                event: event,
-                cameraID: cameraID,
-                cameraName: cameraName,
-                title: syntheticTitle,
-                tag: tag,
-                reason: reason
-            )
-            return
-        }
+        // Stable throttle key derived from event kind. Used for both
+        // the local-notification and CloudKit-relay cooldown maps so
+        // that a category mute on this device (which lands the event
+        // in `.suppressedForLog`) still produces a usable key for the
+        // relay branch below — the original code only computed the
+        // throttle key inside `.composed`, which meant any locally
+        // muted event silently lost its key and never reached the
+        // relay.
+        guard let throttleKey = Self.throttleKey(for: event) else { return }
 
-        guard case .composed(let title, let body, let throttleKey, let tag) = classification else {
-            return
+        // Pull title/body/tag out of the classification so every
+        // early-exit log entry below uses the same strings the user
+        // sees in the notification banner (or would see, if not
+        // muted). `body` only matters for the `.composed` branch
+        // since `.suppressedForLog` never reaches the local-post path.
+        let title: String
+        let body: String
+        let tag: String?
+        switch classification {
+        case .composed(let t, let b, _, let tg):
+            title = t
+            body = b
+            tag = tg
+        case .suppressedForLog(let synth, let tg, _):
+            title = synth
+            body = cameraName
+            tag = tg
+        case .ignored:
+            return  // unreachable; handled at the top
         }
 
         // 0.5.1 — per-camera notification toggle (defaults to ON,
@@ -290,6 +302,12 @@ public final class EventNotifier {
         // 0.6.3 — checked at channel granularity so a user can mute
         // a single camera under a hub. Device-level mute supersedes
         // the channel state (see `CameraNotificationPreferences`).
+        //
+        // Because per-camera state syncs across devices, a per-camera
+        // mute is a "silence everywhere" signal — it blocks BOTH the
+        // local notification AND the CloudKit relay. The per-category
+        // mutes below (notifyAI / notifyMotion / notifyPerTag) are
+        // per-device and only block the local notification.
         guard CameraNotificationPreferences.isNotificationsEnabledOffMainActor(
             for: cameraID,
             channel: Int(event.channelID)
@@ -305,16 +323,38 @@ public final class EventNotifier {
             return
         }
 
+        // The local-category mute reason, if any. `.suppressedForLog`
+        // is produced by `classify` when the user has turned off this
+        // device's per-category toggle (notifyAI / notifyMotion /
+        // notifyPerTag). It suppresses the LOCAL banner only — the
+        // CloudKit relay is a separate channel, and the receiving
+        // device (iOS, via `AppDelegate.postLocalNotification`)
+        // applies its own per-category preferences before posting.
+        // 0.6.6 fix: the previous version short-circuited the entire
+        // notify() at the `.suppressedForLog` branch, silently
+        // disabling the relay whenever the Mac had any category
+        // muted — and `notifyMotion` defaults to OFF, so every
+        // plain-motion event was being dropped before reaching
+        // CloudKit. iPhone subscribers consequently saw zero silent
+        // pushes from real motion even though the test-event button
+        // (which bypasses `notify()`) worked end-to-end.
+        let locallySuppressedReason: NotificationRecord.DeliveryStatus?
+        if case .suppressedForLog(_, _, let reason) = classification {
+            locallySuppressedReason = reason
+        } else {
+            locallySuppressedReason = nil
+        }
+
         let relayAllowed: Bool
         #if os(macOS)
         // Relay to the user's other Apple devices via CloudKit IF
-        // the user has opted in. This stays outside the local
-        // notification authorization gates so an opted-in Mac can
-        // still publish events when local banners are muted, but it
-        // now shares the same burst throttle. Before this, a single
-        // sustained event could spawn dozens of snapshot downloads,
-        // saturating the hub and making foreground Search/RTSP feel
-        // painfully slow.
+        // the user has opted in. INDEPENDENT of this device's
+        // per-category notification toggles — the receiving device
+        // applies its own preferences. A Mac with notifyMotion off
+        // can therefore still publish motion events that an iPhone
+        // with notifyMotion on will surface as a banner. The shared
+        // throttle key still prevents a sustained motion burst from
+        // flooding the relay.
         relayAllowed = MotionEventRelaySettings.publisherEnabled
             && consumeRelayCooldown(for: throttleKey)
         #else
@@ -324,20 +364,29 @@ public final class EventNotifier {
         // 0.6.0 — split the three gates apart so the notification log
         // can record the specific failure reason. The combined boolean
         // still drives the post-or-skip decision.
+        //
+        // Only consume the local-notification cooldown when we'd
+        // actually post locally — otherwise a locally-muted event
+        // would burn the 30 s window and throttle the next legitimate
+        // event that follows it.
         let masterEnabled = enabled
         let permissionGranted = permissionStatus == .authorized
-        let throttleOK = consumeLocalNotificationCooldown(for: throttleKey)
-        let localNotificationAllowed = masterEnabled && permissionGranted && throttleOK
+        let throttleOK: Bool
+        if locallySuppressedReason == nil {
+            throttleOK = consumeLocalNotificationCooldown(for: throttleKey)
+        } else {
+            throttleOK = false
+        }
+        let localNotificationAllowed = locallySuppressedReason == nil
+            && masterEnabled
+            && permissionGranted
+            && throttleOK
 
-        guard relayAllowed || localNotificationAllowed else {
-            let reason: NotificationRecord.DeliveryStatus
-            if !masterEnabled {
-                reason = .globallyDisabled
-            } else if !permissionGranted {
-                reason = .permissionDenied
-            } else {
-                reason = .throttledCooldown
-            }
+        // Log the category-mute drop reason so the user still sees
+        // the event in the notification log with the right "muted"
+        // tag. We log even if the relay is going to publish — the
+        // local log records what happened on THIS device.
+        if let reason = locallySuppressedReason {
             await logDroppedEvent(
                 event: event,
                 cameraID: cameraID,
@@ -346,6 +395,27 @@ public final class EventNotifier {
                 tag: tag,
                 reason: reason
             )
+        }
+
+        guard relayAllowed || localNotificationAllowed else {
+            if locallySuppressedReason == nil {
+                let reason: NotificationRecord.DeliveryStatus
+                if !masterEnabled {
+                    reason = .globallyDisabled
+                } else if !permissionGranted {
+                    reason = .permissionDenied
+                } else {
+                    reason = .throttledCooldown
+                }
+                await logDroppedEvent(
+                    event: event,
+                    cameraID: cameraID,
+                    cameraName: cameraName,
+                    title: title,
+                    tag: tag,
+                    reason: reason
+                )
+            }
             return
         }
 
@@ -683,6 +753,21 @@ public final class EventNotifier {
             return (title, body, key)
         }
         return ("", "", "")
+    }
+
+    /// Stable throttle key derived purely from `event.kind` and the
+    /// channel ID. Same value `classify(...)` returns inside
+    /// `.composed`, but also valid for events the user has muted
+    /// locally (which `classify` returns as `.suppressedForLog`) so
+    /// the CloudKit relay branch in `notify(...)` can still cooldown-
+    /// gate publication. Returns nil for non-notifiable kinds
+    /// (motion-stop, other).
+    nonisolated public static func throttleKey(for event: BaichuanEvent) -> String? {
+        switch event.kind {
+        case .ai(let tag): return "\(event.channelID)-ai-\(tag)"
+        case .motionStart: return "\(event.channelID)-motion"
+        case .motionStop, .other: return nil
+        }
     }
 
     private func consumeLocalNotificationCooldown(for key: String) -> Bool {
