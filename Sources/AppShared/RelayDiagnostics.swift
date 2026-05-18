@@ -49,6 +49,20 @@ public struct RelayDiagnosticsState: Codable, Sendable, Equatable {
     /// Rolling 24-hour window of receipt timestamps, oldest first.
     public var silentPushReceiptsLast24h: [Date]
 
+    // MARK: Record decode failures (iOS subscriber side)
+    /// When the most recent `MotionEvent.decode(record:)` failure
+    /// happened on this device. A non-nil value means the CloudKit
+    /// payload arrived but the schema didn't match — typically the
+    /// Production schema is missing a field that exists in
+    /// Development. Cleared by `reset()` only; a successful decode
+    /// does not clear it so the user can still see "yesterday's
+    /// banner was dropped because of a schema mismatch."
+    public var lastDecodeFailureAt: Date?
+    /// Field name (e.g. "channel") or symbolic label ("recordID",
+    /// "recordType=Foo") describing which part of the record failed
+    /// to decode. Surfaced verbatim in the diagnostics UI.
+    public var lastDecodeFailureField: String?
+
     public init(
         lastAPNSRegistrationAt: Date? = nil,
         lastAPNSTokenByteCount: Int? = nil,
@@ -62,7 +76,9 @@ public struct RelayDiagnosticsState: Codable, Sendable, Equatable {
         lastPublisherSaveSucceeded: Bool? = nil,
         publisherSaveCountLast24h: Int = 0,
         lastSilentPushAt: Date? = nil,
-        silentPushReceiptsLast24h: [Date] = []
+        silentPushReceiptsLast24h: [Date] = [],
+        lastDecodeFailureAt: Date? = nil,
+        lastDecodeFailureField: String? = nil
     ) {
         self.lastAPNSRegistrationAt = lastAPNSRegistrationAt
         self.lastAPNSTokenByteCount = lastAPNSTokenByteCount
@@ -77,6 +93,8 @@ public struct RelayDiagnosticsState: Codable, Sendable, Equatable {
         self.publisherSaveCountLast24h = publisherSaveCountLast24h
         self.lastSilentPushAt = lastSilentPushAt
         self.silentPushReceiptsLast24h = silentPushReceiptsLast24h
+        self.lastDecodeFailureAt = lastDecodeFailureAt
+        self.lastDecodeFailureField = lastDecodeFailureField
     }
 }
 
@@ -200,6 +218,23 @@ public actor RelayDiagnostics {
         if state.lastPublisherSaveSucceeded == true {
             state.publisherSaveCountLast24h += 1
         }
+        persist()
+    }
+
+    public func recordDecodeFailure(field: String, at now: Date = Date()) {
+        state.lastDecodeFailureAt = now
+        state.lastDecodeFailureField = field
+        persist()
+    }
+
+    /// Called on every successful `MotionEvent.decode(record:)`.
+    /// Clears a sticky decode-failure flag so the diagnostics row
+    /// auto-recovers once Production schema is back in sync, mirroring
+    /// the APNS-success-clears-failure pattern above.
+    public func recordDecodeSuccess() {
+        guard state.lastDecodeFailureAt != nil else { return }
+        state.lastDecodeFailureAt = nil
+        state.lastDecodeFailureField = nil
         persist()
     }
 

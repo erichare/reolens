@@ -43,6 +43,14 @@ public struct MotionEvent: Sendable, Equatable {
     /// Optional file URL to a JPEG snapshot. Publisher uploads as
     /// `CKAsset`; receivers download lazily.
     public let snapshotFileURL: URL?
+    /// Display name of the camera (or channel within a hub) at the
+    /// moment the event fired. The publisher knows this — it has the
+    /// full local camera list — so we embed it in the CKRecord rather
+    /// than asking the receiver to look it up. Receiving devices use
+    /// this for the notification body and the notification-history
+    /// row; if absent (legacy records pre-`cameraName`-field deploy),
+    /// callers fall back to "Channel <n+1>".
+    public let cameraName: String?
 
     public init(
         id: UUID = UUID(),
@@ -50,7 +58,8 @@ public struct MotionEvent: Sendable, Equatable {
         channel: Int,
         detection: String,
         timestamp: Date,
-        snapshotFileURL: URL? = nil
+        snapshotFileURL: URL? = nil,
+        cameraName: String? = nil
     ) {
         self.id = id
         self.cameraID = cameraID
@@ -58,6 +67,7 @@ public struct MotionEvent: Sendable, Equatable {
         self.detection = detection
         self.timestamp = timestamp
         self.snapshotFileURL = snapshotFileURL
+        self.cameraName = cameraName
     }
 
     // MARK: CloudKit record bridge
@@ -72,6 +82,10 @@ public struct MotionEvent: Sendable, Equatable {
         public static let detection = "detection"
         public static let timestamp = "timestamp"
         public static let snapshot = "snapshot"
+        /// Added so the relayed notification body can render
+        /// "Front Door" instead of "Channel 14". Optional — legacy
+        /// records before this field was deployed still decode.
+        public static let cameraName = "cameraName"
     }
 
     /// Build a `CKRecord` for publication. Record name is the
@@ -88,29 +102,93 @@ public struct MotionEvent: Sendable, Equatable {
         if let snapshotFileURL {
             record[RecordKey.snapshot] = CKAsset(fileURL: snapshotFileURL)
         }
+        if let cameraName, !cameraName.isEmpty {
+            record[RecordKey.cameraName] = cameraName as NSString
+        }
         return record
     }
 
     /// Decode a `CKRecord` into a `MotionEvent`. Returns nil if any
     /// required field is missing — the receiver silently drops
     /// malformed records rather than crashing on a schema mismatch.
+    ///
+    /// Callers that want to know *why* a record was dropped (for
+    /// logging, diagnostics, or surfacing "schema mismatch" in the
+    /// settings UI) should use `decode(record:)` instead and inspect
+    /// the `.failure` case.
     public init?(record: CKRecord) {
-        guard record.recordType == Self.recordType,
-              let cameraIDString = record[RecordKey.cameraID] as? String,
-              let cameraID = UUID(uuidString: cameraIDString),
-              let channel = record[RecordKey.channel] as? Int,
-              let detection = record[RecordKey.detection] as? String,
-              let timestamp = record[RecordKey.timestamp] as? Date,
-              let id = UUID(uuidString: record.recordID.recordName) else {
+        switch Self.decode(record: record) {
+        case .success(let event):
+            self = event
+        case .failure:
             return nil
         }
+    }
+
+    /// Result-returning sibling of `init?(record:)`. The failure case
+    /// names the specific field (or symbolic label) that didn't
+    /// decode, which is the lever the diagnostics UI uses to tell the
+    /// user "production schema is missing field X" rather than the
+    /// generic "no events received." See `RelayDiagnostics.recordDecodeFailure`.
+    public static func decode(record: CKRecord) -> Result<MotionEvent, MotionEventDecodeFailure> {
+        guard record.recordType == Self.recordType else {
+            return .failure(.wrongRecordType(actual: record.recordType))
+        }
+        guard let cameraIDString = record[RecordKey.cameraID] as? String,
+              let cameraID = UUID(uuidString: cameraIDString) else {
+            return .failure(.missingField(RecordKey.cameraID))
+        }
+        guard let channel = record[RecordKey.channel] as? Int else {
+            return .failure(.missingField(RecordKey.channel))
+        }
+        guard let detection = record[RecordKey.detection] as? String else {
+            return .failure(.missingField(RecordKey.detection))
+        }
+        guard let timestamp = record[RecordKey.timestamp] as? Date else {
+            return .failure(.missingField(RecordKey.timestamp))
+        }
+        // The publisher uses content-addressed SHA-256 record names
+        // for dedup (see `MotionEventRecordID.recordName(...)`), not
+        // UUID strings, so we map via the helper rather than
+        // `UUID(uuidString:)`. Legacy records written by `toRecord()`
+        // still round-trip cleanly because the helper short-circuits
+        // when the name is already a valid UUID.
+        let id = MotionEventRecordID.stableUUID(fromRecordName: record.recordID.recordName)
         let asset = record[RecordKey.snapshot] as? CKAsset
-        self.id = id
-        self.cameraID = cameraID
-        self.channel = channel
-        self.detection = detection
-        self.timestamp = timestamp
-        self.snapshotFileURL = asset?.fileURL
+        let cameraName = (record[RecordKey.cameraName] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        return .success(
+            MotionEvent(
+                id: id,
+                cameraID: cameraID,
+                channel: channel,
+                detection: detection,
+                timestamp: timestamp,
+                snapshotFileURL: asset?.fileURL,
+                cameraName: cameraName
+            )
+        )
+    }
+}
+
+/// Reason a `MotionEvent.decode(record:)` call rejected a `CKRecord`.
+/// Used by the iOS subscriber to surface specific schema-drift
+/// failures in `RelayDiagnostics` rather than silently dropping
+/// records. `label` is the user-visible string (a field name like
+/// `"channel"`, or a symbolic label).
+///
+/// Note: the recordName is never a failure — `MotionEventRecordID.stableUUID(fromRecordName:)`
+/// always produces a valid UUID, whether the name is a literal UUID
+/// (legacy `toRecord()` path) or a SHA-256 hex hash (the deduped
+/// production path). Any byte sequence maps to a stable UUID.
+public enum MotionEventDecodeFailure: Error, Sendable, Equatable {
+    case wrongRecordType(actual: String)
+    case missingField(String)
+
+    public var label: String {
+        switch self {
+        case .wrongRecordType(let actual): return "recordType=\(actual)"
+        case .missingField(let name): return name
+        }
     }
 }
 
@@ -270,6 +348,9 @@ public actor CloudKitMotionEventPublisher: MotionEventPublisher {
         if let snapshotFileURL = event.snapshotFileURL {
             record[MotionEvent.RecordKey.snapshot] = CKAsset(fileURL: snapshotFileURL)
         }
+        if let cameraName = event.cameraName, !cameraName.isEmpty {
+            record[MotionEvent.RecordKey.cameraName] = cameraName as NSString
+        }
         return record
     }
 
@@ -294,6 +375,9 @@ public actor CloudKitMotionEventPublisher: MotionEventPublisher {
         record["suppressedSinceLast"] = suppressed as NSNumber
         if let snapshotFileURL = event.snapshotFileURL {
             record[MotionEvent.RecordKey.snapshot] = CKAsset(fileURL: snapshotFileURL)
+        }
+        if let cameraName = event.cameraName, !cameraName.isEmpty {
+            record[MotionEvent.RecordKey.cameraName] = cameraName as NSString
         }
         return record
     }
@@ -508,7 +592,21 @@ public actor CloudKitMotionEventSubscriber {
         let db = container.privateCloudDatabase
         do {
             let record = try await db.record(for: recordID)
-            return MotionEvent(record: record)
+            switch MotionEvent.decode(record: record) {
+            case .success(let event):
+                await RelayDiagnostics.shared.recordDecodeSuccess()
+                return event
+            case .failure(let failure):
+                // Schema drift between Development and Production is
+                // the typical cause here — Production was never
+                // promoted, or a field type doesn't match. Surface
+                // the offending field through RelayDiagnostics so the
+                // settings screen can show "schema mismatch on
+                // channel" rather than a silent zero-pushes count.
+                log.warning("MotionEvent decode dropped \(recordID.recordName, privacy: .private): \(failure.label, privacy: .public)")
+                await RelayDiagnostics.shared.recordDecodeFailure(field: failure.label)
+                return nil
+            }
         } catch {
             log.warning("Fetch motion event \(recordID.recordName, privacy: .private) failed: \(error.localizedDescription, privacy: .public)")
             return nil

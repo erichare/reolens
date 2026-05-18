@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import CloudKit
 @testable import AppShared
 
 /// 0.5.0 Theme B3 — the CloudKit motion-event relay grew three
@@ -158,5 +159,177 @@ struct CloudKitAccountIdentityGuardTests {
         default:
             Issue.record("Expected enrollAndAllow after reset, got \(decision)")
         }
+    }
+}
+
+/// 0.6.8 — `MotionEvent.decode(record:)` surfaces *which* field is
+/// missing so the iOS subscriber's diagnostics row can tell the user
+/// "schema mismatch on field X" instead of silently dropping the
+/// record. These tests pin one failure case per field so a future
+/// schema change can't quietly regress the visibility.
+@Suite("MotionEvent.decode — per-field failure surfacing")
+struct MotionEventDecodeTests {
+
+    private static let validCameraID = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
+    private static let validRecordID = UUID(uuidString: "44444444-4444-4444-4444-444444444444")!
+
+    /// Build a fully-populated `CKRecord` matching the published
+    /// schema. Individual tests selectively erase fields to exercise
+    /// each failure branch.
+    private static func makeValidRecord() -> CKRecord {
+        let id = CKRecord.ID(recordName: validRecordID.uuidString)
+        let r = CKRecord(recordType: MotionEvent.recordType, recordID: id)
+        r[MotionEvent.RecordKey.cameraID] = validCameraID.uuidString as NSString
+        r[MotionEvent.RecordKey.channel] = 2 as NSNumber
+        r[MotionEvent.RecordKey.detection] = "people" as NSString
+        r[MotionEvent.RecordKey.timestamp] = Date(timeIntervalSince1970: 1_700_000_000) as NSDate
+        return r
+    }
+
+    @Test("Fully-populated record decodes to .success")
+    func happyPath() {
+        let result = MotionEvent.decode(record: Self.makeValidRecord())
+        guard case .success(let event) = result else {
+            Issue.record("Expected .success, got \(result)")
+            return
+        }
+        #expect(event.cameraID == Self.validCameraID)
+        #expect(event.channel == 2)
+        #expect(event.detection == "people")
+        #expect(event.id == Self.validRecordID)
+    }
+
+    @Test(
+        "Missing required field produces .missingField with that field's name",
+        arguments: [
+            MotionEvent.RecordKey.cameraID,
+            MotionEvent.RecordKey.channel,
+            MotionEvent.RecordKey.detection,
+            MotionEvent.RecordKey.timestamp,
+        ]
+    )
+    func missingField(field: String) {
+        let record = Self.makeValidRecord()
+        record[field] = nil
+        let result = MotionEvent.decode(record: record)
+        guard case .failure(let failure) = result else {
+            Issue.record("Expected .failure for missing \(field), got \(result)")
+            return
+        }
+        #expect(failure == .missingField(field))
+        #expect(failure.label == field)
+    }
+
+    @Test("Wrong recordType produces .wrongRecordType carrying the actual type")
+    func wrongRecordType() {
+        let id = CKRecord.ID(recordName: Self.validRecordID.uuidString)
+        let r = CKRecord(recordType: "SomeOtherType", recordID: id)
+        let result = MotionEvent.decode(record: r)
+        guard case .failure(.wrongRecordType(let actual)) = result else {
+            Issue.record("Expected .wrongRecordType, got \(result)")
+            return
+        }
+        #expect(actual == "SomeOtherType")
+    }
+
+    @Test("Non-UUID recordName (SHA-256 hex hash) decodes to a stable derived UUID")
+    func contentAddressedRecordNameDecodes() {
+        // 64-char hex string — what the deduped publisher path actually
+        // writes. Pre-fix the decoder rejected these as malformed.
+        let hashName = MotionEventRecordID.recordName(
+            cameraID: Self.validCameraID,
+            channel: 0,
+            detection: "people",
+            timestamp: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        let id = CKRecord.ID(recordName: hashName)
+        let r = CKRecord(recordType: MotionEvent.recordType, recordID: id)
+        r[MotionEvent.RecordKey.cameraID] = Self.validCameraID.uuidString as NSString
+        r[MotionEvent.RecordKey.channel] = 0 as NSNumber
+        r[MotionEvent.RecordKey.detection] = "people" as NSString
+        r[MotionEvent.RecordKey.timestamp] = Date() as NSDate
+        guard case .success(let event) = MotionEvent.decode(record: r) else {
+            Issue.record("Expected .success for content-addressed recordName")
+            return
+        }
+        // Stable: a second decode of the same record produces the
+        // same id — this is the invariant NotificationHistory dedup
+        // relies on.
+        guard case .success(let again) = MotionEvent.decode(record: r) else {
+            Issue.record("Second decode should also succeed")
+            return
+        }
+        #expect(event.id == again.id)
+    }
+
+    @Test("Distinct record names map to distinct UUIDs")
+    func distinctRecordNamesDistinctUUIDs() {
+        let a = MotionEventRecordID.stableUUID(fromRecordName: "abc123")
+        let b = MotionEventRecordID.stableUUID(fromRecordName: "abc124")
+        #expect(a != b)
+    }
+
+    @Test("UUID-string recordName round-trips unchanged through stableUUID")
+    func uuidRecordNamePassthrough() {
+        let original = Self.validRecordID
+        let derived = MotionEventRecordID.stableUUID(fromRecordName: original.uuidString)
+        #expect(derived == original)
+    }
+
+    @Test("Non-UUID cameraID string is reported as missing cameraID field")
+    func malformedCameraIDIsReportedAsMissing() {
+        let record = Self.makeValidRecord()
+        record[MotionEvent.RecordKey.cameraID] = "not-a-uuid" as NSString
+        let result = MotionEvent.decode(record: record)
+        #expect(result == .failure(.missingField(MotionEvent.RecordKey.cameraID)))
+    }
+
+    @Test("init?(record:) is a thin pass-through over decode")
+    func initIsPassthrough() {
+        #expect(MotionEvent(record: Self.makeValidRecord()) != nil)
+        let broken = Self.makeValidRecord()
+        broken[MotionEvent.RecordKey.channel] = nil
+        #expect(MotionEvent(record: broken) == nil)
+    }
+
+    @Test("cameraName field round-trips through toRecord + decode")
+    func cameraNameRoundTrip() {
+        let event = MotionEvent(
+            id: Self.validRecordID,
+            cameraID: Self.validCameraID,
+            channel: 13,
+            detection: "people",
+            timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+            snapshotFileURL: nil,
+            cameraName: "Front Door"
+        )
+        let record = event.toRecord()
+        guard case .success(let decoded) = MotionEvent.decode(record: record) else {
+            Issue.record("Expected .success")
+            return
+        }
+        #expect(decoded.cameraName == "Front Door")
+    }
+
+    @Test("Record without cameraName field still decodes (legacy compat)")
+    func legacyRecordWithoutCameraNameStillDecodes() {
+        let record = Self.makeValidRecord()
+        #expect(record[MotionEvent.RecordKey.cameraName] == nil)
+        guard case .success(let decoded) = MotionEvent.decode(record: record) else {
+            Issue.record("Expected .success for legacy record")
+            return
+        }
+        #expect(decoded.cameraName == nil)
+    }
+
+    @Test("Empty cameraName is normalized to nil")
+    func emptyCameraNameNormalizedToNil() {
+        let record = Self.makeValidRecord()
+        record[MotionEvent.RecordKey.cameraName] = "" as NSString
+        guard case .success(let decoded) = MotionEvent.decode(record: record) else {
+            Issue.record("Expected .success")
+            return
+        }
+        #expect(decoded.cameraName == nil)
     }
 }

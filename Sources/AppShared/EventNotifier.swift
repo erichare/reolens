@@ -451,6 +451,7 @@ public final class EventNotifier {
             await relayToCloudKit(
                 event: event,
                 cameraID: cameraID,
+                cameraName: cameraName,
                 snapshotFileURL: attachment?.url
             )
         }
@@ -676,7 +677,12 @@ public final class EventNotifier {
     /// relay is opportunistic; the local notification is the source
     /// of truth on this device.
     #if os(macOS)
-    private func relayToCloudKit(event: BaichuanEvent, cameraID: UUID, snapshotFileURL: URL?) async {
+    private func relayToCloudKit(
+        event: BaichuanEvent,
+        cameraID: UUID,
+        cameraName: String,
+        snapshotFileURL: URL?
+    ) async {
         let detection: String
         switch event.kind {
         case .ai(let tag): detection = tag
@@ -688,7 +694,8 @@ public final class EventNotifier {
             channel: Int(event.channelID),
             detection: detection,
             timestamp: Date(),
-            snapshotFileURL: snapshotFileURL
+            snapshotFileURL: snapshotFileURL,
+            cameraName: cameraName
         )
         let publisher = CloudKitMotionEventPublisher()
         await publisher.publish(payload)

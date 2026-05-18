@@ -52,10 +52,16 @@ public struct RelayDiagnosticsSection: View {
             badge: silentPushBadge,
             detail: silentPushDetail
         )
+        DiagnosticsRow(
+            label: "Schema decode",
+            badge: decodeBadge,
+            detail: decodeDetail
+        )
         footerHelp(
             "Push notifications on iPhone / iPad ride through Apple's CloudKit on your own iCloud account. " +
             "If APNS is not registered or the CloudKit subscription failed, this device can't receive motion events from your Mac. " +
-            "If you see APNS green and the subscription green but zero silent pushes in 24 h, the issue is likely on the publisher (Mac) side — turn on the macOS “Relay motion events to my other Apple devices” toggle and keep the Mac running."
+            "If you see APNS green and the subscription green but zero silent pushes in 24 h, the issue is likely on the publisher (Mac) side — turn on the macOS “Relay motion events to my other Apple devices” toggle and keep the Mac running. " +
+            "A red “Schema decode” row means CloudKit Production is missing a field that the app needs — see docs/TESTFLIGHT_NOTIFICATIONS.md → Deploying schema changes."
         )
     }
     #endif
@@ -157,7 +163,7 @@ public struct RelayDiagnosticsSection: View {
             return "Not yet attempted. The subscription installs on first launch after notification permission."
         }
         let outcome = state.lastSubscriptionInstallOutcome ?? "unknown"
-        return "\(outcome.capitalized) \(DiagnosticsFormatter.relative(from: at))"
+        return "\(DiagnosticsFormatter.humanize(outcome)) \(DiagnosticsFormatter.relative(from: at))"
     }
 
     private var silentPushBadge: DiagnosticsBadge {
@@ -186,6 +192,26 @@ public struct RelayDiagnosticsSection: View {
         }
         return "\(n) received"
     }
+
+    private var decodeBadge: DiagnosticsBadge {
+        if state.lastDecodeFailureAt != nil { return .failure }
+        // No failure ever, and at least one push arrived → decoded
+        // cleanly. Without any pushes there's no signal either way.
+        if state.lastSilentPushAt != nil { return .success }
+        return .pending
+    }
+
+    private var decodeDetail: String {
+        if let at = state.lastDecodeFailureAt {
+            let field = state.lastDecodeFailureField ?? "unknown field"
+            return "Schema mismatch on '\(field)' \(DiagnosticsFormatter.relative(from: at)). " +
+                "Production schema is likely missing this field — deploy from CloudKit Console."
+        }
+        if state.lastSilentPushAt != nil {
+            return "Recent records decoded cleanly."
+        }
+        return "No records decoded yet."
+    }
     #endif
 
     #if os(macOS)
@@ -202,7 +228,7 @@ public struct RelayDiagnosticsSection: View {
             return "No publish attempts yet. Enable the toggle above and trigger a motion event on a camera."
         }
         let outcome = state.lastPublisherSaveOutcome ?? "unknown"
-        return "\(outcome.capitalized.replacingOccurrences(of: "_", with: " ")) \(DiagnosticsFormatter.relative(from: at))"
+        return "\(DiagnosticsFormatter.humanize(outcome)) \(DiagnosticsFormatter.relative(from: at))"
     }
 
     private var publisherCountBadge: DiagnosticsBadge {
@@ -272,5 +298,32 @@ enum DiagnosticsFormatter {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
         return formatter.localizedString(for: date, relativeTo: now)
+    }
+
+    /// Render an outcome rawValue (e.g. "noEntitlement",
+    /// "rateLimitedSuppressed") as a human-readable phrase
+    /// ("No entitlement", "Rate limited suppressed"). The values stored
+    /// in `RelayDiagnosticsState` are camelCase rawValues from the
+    /// `RelayPublisherOutcome` / `RelaySubscriptionOutcome` enums, so a
+    /// naive `.capitalized` mashes them into one word. CKError messages
+    /// (which arrive prefixed with whitespace or punctuation) are
+    /// returned unchanged.
+    static func humanize(_ raw: String) -> String {
+        // Don't reformat anything that looks like a CKError text:
+        // those contain spaces, parens, or punctuation already.
+        if raw.contains(" ") || raw.contains(":") {
+            return raw
+        }
+        var spaced = ""
+        for char in raw {
+            if char.isUppercase, !spaced.isEmpty {
+                spaced.append(" ")
+                spaced.append(Character(char.lowercased()))
+            } else {
+                spaced.append(char)
+            }
+        }
+        guard let first = spaced.first else { return spaced }
+        return first.uppercased() + spaced.dropFirst()
     }
 }

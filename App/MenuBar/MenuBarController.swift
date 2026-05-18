@@ -356,13 +356,19 @@ private struct MenuBarPopoverView: View {
     }
 
     /// Primary label shown on the popover row's first line. Channel
-    /// name wins; "Camera <N>" fallback keeps multi-channel hubs
-    /// readable even when the per-channel name field is empty.
+    /// name wins; otherwise we compose `<hub displayName> · Channel <n+1>`
+    /// so a 24-channel NVR doesn't render every row as a bare
+    /// "Camera 14" — Reolink firmware leaves per-channel `name` blank
+    /// for many users even when the hub itself has been named.
     private static func primaryLabel(for entry: PopoverEvent) -> String {
         if let name = entry.channelName {
             return name
         }
-        return "Camera \(entry.channelIndex + 1)"
+        let device = entry.deviceName.trimmingCharacters(in: .whitespaces)
+        if device.isEmpty {
+            return "Channel \(entry.channelIndex + 1)"
+        }
+        return "\(device) · Channel \(entry.channelIndex + 1)"
     }
 
     /// Secondary-line detection label. Prefers the AI tag rendered

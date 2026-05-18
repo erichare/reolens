@@ -29,7 +29,12 @@ struct RecordingsView: View {
     @State private var loader: RecordingsLoader
     @State private var pendingScrollTarget: Date?
     @State private var playedScrollTarget: Bool = false
+    /// 0.7.0 — playback now flows through the shared `RecordingPlayer
+    /// Sheet` in AppShared. The macOS-local save-to-disk flow still
+    /// uses its own legacy sheet for the NSSavePanel + trim path,
+    /// which lives behind `nowSaving` below.
     @State private var nowPlaying: PlayableRecording?
+    @State private var nowSaving: LegacySaveRecording?
     @State private var showRawResponse = false
     /// AI-event filter chips. Empty set means "no filter — show
     /// everything". Persists across view rebuilds via parent
@@ -164,6 +169,9 @@ struct RecordingsView: View {
         }
         .sheet(item: $nowPlaying) { recording in
             RecordingPlayerSheet(recording: recording)
+        }
+        .sheet(item: $nowSaving) { recording in
+            RecordingSaveSheet(recording: recording)
         }
         .sheet(isPresented: $showingBookmarks) {
             // 0.5.1 — scope to this channel so a multi-channel hub
@@ -461,19 +469,21 @@ struct RecordingsView: View {
             }
         } else {
             List(filteredFiles) { file in
-                // 0.6.0 — wrap the row body in a Button so the whole
-                // row is a click target. The previous `.onTapGesture`
-                // approach on macOS only fired on the rowActions
-                // buttons because macOS `List` selection intercepts
-                // taps on the surrounding row content before
-                // `.onTapGesture` sees them.
+                // 0.7.0 — full-row click target. The previous
+                // wrap-in-Button approach left Spacer regions
+                // unclickable because macOS Buttons hit-test the
+                // visible content shape, not the frame. Pushing
+                // `.contentShape(.rect)` into the label (the row
+                // HStack) makes the entire row width clickable,
+                // including the gap before the ellipsis menu.
                 Button {
                     preview(file)
                 } label: {
                     fileRow(file)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
-                .contentShape(.rect)
                 .contextMenu {
                     Button {
                         preview(file)
@@ -526,6 +536,13 @@ struct RecordingsView: View {
 
     @ViewBuilder
     private func fileRow(_ file: SearchFile) -> some View {
+        // 0.7.0 — no inline Menu. The previous `rowActions` ellipsis
+        // Menu hijacked the row's click area on macOS (Menus capture
+        // hits aggressively, even more than Buttons), so users had to
+        // aim for the leading play glyph. Quality-specific actions
+        // live on the right-click context menu and inside the player
+        // sheet's Export menu — both more discoverable than a buried
+        // ellipsis affordance.
         HStack(spacing: 12) {
             Image(systemName: "play.rectangle.fill")
                 .font(.title2)
@@ -537,7 +554,6 @@ struct RecordingsView: View {
             Spacer()
             detectionTags(for: file)
             sizeColumn(for: file)
-            rowActions(file)
         }
         .padding(.vertical, 4)
     }
@@ -595,40 +611,13 @@ struct RecordingsView: View {
         }
     }
 
-    /// Per-row action menu — only the ellipsis-menu remains. The
-    /// inline play button was removed in 0.6.0 because:
-    ///   (a) the whole row is already the play target via the outer
-    ///       `Button` wrapper in the list builder, and
-    ///   (b) on macOS, an inner SwiftUI `Button` inside a `List` row
-    ///       captures the entire row's hit area for itself — so the
-    ///       outer row Button only fired when the user happened to
-    ///       hit the small play glyph. Pruning it makes the whole
-    ///       row click reliable; the menu still exposes
-    ///       quality-specific download/preview actions.
-    @ViewBuilder
-    private func rowActions(_ file: SearchFile) -> some View {
-        let hasSub = loader.subFileMatch(for: file) != nil
-        Menu {
-            Button("Preview (Low Quality)", systemImage: "play.circle") {
-                preview(file)
-            }
-            .disabled(!hasSub)
-            Divider()
-            Button("Download Low Quality…", systemImage: "arrow.down.circle") {
-                saveToDisk(file, quality: .low)
-            }
-            .disabled(!hasSub)
-            Button("Download High Quality…", systemImage: "arrow.down.circle.fill") {
-                saveToDisk(file, quality: .high)
-            }
-        } label: {
-            Image(systemName: "ellipsis.circle")
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help("More actions")
-    }
+    // 0.7.0 — `rowActions` (the ellipsis Menu) was removed entirely.
+    // It hijacked the row's click area on macOS — Menus inside List
+    // rows capture hits even on their non-label regions, so the
+    // outer row Button only fired when the user happened to hit the
+    // leading play glyph. The same quality-specific actions live on
+    // the right-click context menu and the player sheet's Export
+    // menu, both of which leave the row tap target clean.
 
     /// Detection tag pipeline:
     ///   1. First check `file.triggers` (the `Search`-response bitfield). On
@@ -704,25 +693,43 @@ struct RecordingsView: View {
         return parts.joined(separator: " · ")
     }
 
-    /// In-app preview: stream the SUB version (small, fast). Falls back to
-    /// main only if no sub-stream file matches by start time.
+    /// In-app preview: open the new shared `RecordingPlayerSheet`.
+    /// Streaming starts on `.task` via `RecordingPlaybackEngine` so
+    /// first-frame latency is ~1 round trip instead of "full
+    /// download." Both quality variants are pre-resolved here so the
+    /// player's in-header toggle is immediately available.
     private func preview(_ file: SearchFile) {
-        let target = loader.subFileMatch(for: file) ?? file
-        let isSub = loader.subFileMatch(for: file) != nil
+        let subFile = loader.subFileMatch(for: file)
+        let preferred = store.preferences.defaultRecordingQuality
         Task {
             let token = await session.client.currentToken?.name
             let creds = await session.client.credentials
-            let url = StreamURLs(credentials: creds).recordingDownload(
-                source: target.name,
-                output: target.name,
-                token: token
+            let urls = StreamURLs(credentials: creds)
+            let highVariant = PlayableRecording.Variant(
+                url: urls.recordingDownload(source: file.name, output: file.name, token: token),
+                file: file
             )
-            log.info("Preview channel=\(self.channel.channel) source=\(target.name, privacy: .public) quality=\(isSub ? "sub" : "main", privacy: .public) size=\(target.size ?? -1)")
-            // PASS THE TARGET FILE, NOT THE ROW'S MAIN FILE. The progress
-            // denominator reads `recording.file.size` — if we hand the main
-            // file in, the bar measures a ~1.4 MB sub stream against the
-            // ~23 MB main total and never visibly fills.
-            nowPlaying = PlayableRecording(file: target, url: url, isHighQuality: !isSub)
+            let lowVariant = subFile.map { sub in
+                PlayableRecording.Variant(
+                    url: urls.recordingDownload(source: sub.name, output: sub.name, token: token),
+                    file: sub
+                )
+            }
+            let recording = PlayableRecording(
+                id: "\(self.channel.channel):\(file.name)",
+                displayName: file.name,
+                cameraID: self.session.entry.id,
+                cameraName: self.session.entry.displayName,
+                channel: self.channel.channel,
+                startDate: file.startDate,
+                endDate: file.endDate,
+                detections: self.loader.effectiveDetections(for: file),
+                highQuality: highVariant,
+                lowQuality: lowVariant,
+                initialQuality: preferred
+            )
+            log.info("Preview channel=\(self.channel.channel) source=\(file.name, privacy: .public) initialQuality=\(preferred.rawValue, privacy: .public) hasSub=\(subFile != nil)")
+            nowPlaying = recording
         }
     }
 
@@ -774,7 +781,7 @@ struct RecordingsView: View {
                 let hi = max(lo, bookmarkRange.upperBound - fileStart.timeIntervalSince1970)
                 return lo...hi
             }()
-            nowPlaying = PlayableRecording(
+            nowSaving = LegacySaveRecording(
                 file: source,
                 url: url,
                 isHighQuality: quality == .high,

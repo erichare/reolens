@@ -2,9 +2,6 @@ import SwiftUI
 import OSLog
 import ReolinkAPI
 import ReolinkStreaming
-#if canImport(AVKit)
-import AVKit
-#endif
 
 private let log = Logger(subsystem: "com.reolens.app", category: "all-recordings.subviews")
 
@@ -55,129 +52,9 @@ internal struct TodayDigestRow: View {
     }
 }
 
-/// Cross-platform preview sheet for the All Recordings list.
-///
-/// For HTTP URLs (camera CGI `cmd=Download`) we route through
-/// `RecordingDownloader` first: AVPlayer's progressive-HTTP code path
-/// gives up on Reolink's CGI response (no `Accept-Ranges`, omitted
-/// `Content-Type`, no `Content-Length` on Home Hub Pro) and renders
-/// a slashed-player icon. Downloading the whole clip to a cache file
-/// first and then handing that local URL to `AVPlayer` always works
-/// and is a no-op on the second tap thanks to the downloader's
-/// content-stable disk cache.
-///
-/// For `file://` URLs we play directly — the bookmark path passes a
-/// local file that's already on disk.
-internal struct RecordingPreviewSheet: View {
-    let url: URL
-    let title: String
-    let onDismiss: () -> Void
-
-    @State private var downloader = RecordingDownloader()
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text(title).font(.headline).lineLimit(1)
-                Spacer()
-                Button("Close", action: onDismiss).keyboardShortcut(.escape, modifiers: [])
-            }
-            .padding(12)
-            content
-        }
-        .frame(minWidth: 520, minHeight: 360)
-        .task(id: url) {
-            // Local files (already-downloaded bookmarks) play
-            // directly; only remote CGI URLs go through the
-            // downloader.
-            if !url.isFileURL {
-                downloader.start(url: url)
-            }
-        }
-        .onDisappear { downloader.cancel() }
-    }
-
-    @ViewBuilder
-    private var content: some View {
-        #if canImport(AVKit)
-        if url.isFileURL {
-            AVPlayerStreamView(url: url)
-                .frame(minWidth: 480, minHeight: 270)
-        } else {
-            switch downloader.state {
-            case .idle, .downloading:
-                downloadingPanel
-            case .ready:
-                if let localURL = downloader.localURL {
-                    AVPlayerStreamView(url: localURL)
-                        .frame(minWidth: 480, minHeight: 270)
-                } else {
-                    ContentUnavailableView("Couldn't open clip", systemImage: "play.slash")
-                }
-            case .failed(let message):
-                ContentUnavailableView {
-                    Label("Couldn't play this recording", systemImage: "exclamationmark.triangle")
-                } description: {
-                    Text(message).font(.caption).textSelection(.enabled)
-                } actions: {
-                    Button("Retry") { downloader.start(url: url) }
-                }
-            }
-        }
-        #else
-        ContentUnavailableView("Playback unavailable", systemImage: "play.slash")
-        #endif
-    }
-
-    private var downloadingPanel: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "arrow.down.circle")
-                .font(.system(size: 36))
-                .foregroundStyle(.secondary)
-            Text("Loading recording…").font(.headline)
-            let received = downloader.bytesReceived
-            let total = max(downloader.totalBytes, received)
-            if total > 0 {
-                ProgressView(value: min(1.0, Double(received) / Double(max(total, 1))))
-                    .frame(maxWidth: 320)
-                Text("\(byteString(received)) of \(byteString(total))")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            } else {
-                ProgressView().controlSize(.regular)
-                Text("Starting…")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(20)
-    }
-
-    private func byteString(_ n: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: n, countStyle: .file)
-    }
-}
-
-#if canImport(AVKit)
-import AVKit
-
-internal struct AVPlayerStreamView: View {
-    let url: URL
-    @State private var player: AVPlayer?
-
-    var body: some View {
-        VideoPlayer(player: player)
-            .onAppear {
-                let item = AVPlayerItem(url: url)
-                let p = AVPlayer(playerItem: item)
-                player = p
-                p.play()
-            }
-            .onDisappear {
-                player?.pause()
-                player = nil
-            }
-    }
-}
-#endif
+// 0.7.0 — `RecordingPreviewSheet` and its embedded
+// `AVPlayerStreamView` lived here as a third, lower-fidelity playback
+// surface (no quality switching, no export, full-download-before-
+// play). The shared `RecordingPlayerSheet` in
+// `Sources/AppShared/Playback/` replaces it; both AllRecordings and
+// per-camera lists now flow through one path.

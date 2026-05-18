@@ -122,10 +122,34 @@ public struct SettingsDisplayBucket: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+
+            DefaultRecordingQualitySection(preferences: store.preferences)
         }
     }
 
     private var bindable: Bindable<CameraStore> { Bindable(store) }
+}
+
+/// 0.7.0 — Default playback quality picker. Lives in its own small
+/// view so the `@Bindable` for `AppPreferences` (which is `@Observable`
+/// in its own right) can drive the Picker selection through SwiftUI's
+/// projected-binding sugar without needing a passthrough on
+/// `CameraStore`.
+private struct DefaultRecordingQualitySection: View {
+    @Bindable var preferences: AppPreferences
+
+    var body: some View {
+        Section("Recordings playback") {
+            Picker("Default quality", selection: $preferences.defaultRecordingQuality) {
+                ForEach(RecordingQuality.allCases, id: \.self) { quality in
+                    Text(quality.longLabel).tag(quality)
+                }
+            }
+            Text("Quality used when you tap a recording. You can still switch in the player. Low (sub stream) starts dramatically faster; High (main stream) is full resolution.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+    }
 }
 
 // MARK: - 4. Background & Storage

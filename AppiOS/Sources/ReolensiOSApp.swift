@@ -302,7 +302,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     private func postLocalNotification(for event: MotionEvent) async {
         // Honor master + per-tag user preferences before posting.
         let notifier = EventNotifier.shared
-        let cameraNameFallback = "Camera \(event.channel + 1)"
+        // Prefer the publisher-supplied name embedded in the CKRecord.
+        // Falls back to "Camera <n+1>" only for legacy records written
+        // before the `cameraName` field was deployed to Production.
+        let cameraNameFallback = event.cameraName ?? "Camera \(event.channel + 1)"
         let detection = ReolinkAPI.DetectionType.fromReolinkString(event.detection)
         let syntheticTitle: String
         if let detection {
@@ -349,13 +352,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             if !motionOn { await logDrop(.motionMutedGlobally); return }
         }
         let title = syntheticTitle
-        let cameraName = await MainActor.run {
-            // Without the camera list at hand here, fall back to a
-            // generic body — the CameraStore is owned by the SwiftUI
-            // scene, not this AppDelegate. The notification tap
-            // routing still uses the camera UUID to navigate.
-            "Camera \(event.channel + 1)"
-        }
+        let cameraName = cameraNameFallback
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = cameraName

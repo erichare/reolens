@@ -465,20 +465,48 @@ struct RecordingsView: View {
     }
 
     private func playEntry(file: SearchFile, sub: SearchFile?, preferSub: Bool) {
-        let target = (preferSub ? sub : file) ?? file
+        // 0.7.0 — unified shared player. Build both quality variants
+        // up front so the player's in-header toggle is available
+        // without re-resolving credentials mid-playback. `preferSub`
+        // becomes the seed `initialQuality`; the user can still flip
+        // in the player.
         Task {
             let credentials = await session.client.credentials
             let urls = StreamURLs(credentials: credentials)
             let token = await session.client.currentToken?.name
-            let url = urls.recordingDownload(source: target.name, token: token)
-            await MainActor.run {
-                nowPlaying = PlayableRecording(
-                    id: target.name,
-                    url: url,
-                    displayName: target.name,
-                    detections: loader.effectiveDetections(for: file),
-                    startDate: target.startDate
+            let highVariant = PlayableRecording.Variant(
+                url: urls.recordingDownload(source: file.name, output: file.name, token: token),
+                file: file
+            )
+            let lowVariant = sub.map { sub in
+                PlayableRecording.Variant(
+                    url: urls.recordingDownload(source: sub.name, output: sub.name, token: token),
+                    file: sub
                 )
+            }
+            let initialQuality: RecordingQuality
+            if preferSub, lowVariant != nil {
+                initialQuality = .low
+            } else if !preferSub {
+                initialQuality = .high
+            } else {
+                initialQuality = lowVariant != nil ? .low : .high
+            }
+            let recording = PlayableRecording(
+                id: "\(channel.channel):\(file.name)",
+                displayName: file.name,
+                cameraID: session.entry.id,
+                cameraName: session.entry.displayName,
+                channel: channel.channel,
+                startDate: file.startDate,
+                endDate: file.endDate,
+                detections: loader.effectiveDetections(for: file),
+                highQuality: highVariant,
+                lowQuality: lowVariant,
+                initialQuality: initialQuality
+            )
+            await MainActor.run {
+                nowPlaying = recording
             }
         }
     }
@@ -610,164 +638,8 @@ private extension DetectionType {
     }
 }
 
-struct PlayableRecording: Identifiable, Hashable {
-    let id: String
-    let url: URL
-    let displayName: String
-    let detections: [DetectionType]
-    let startDate: Date?
-}
-
-/// Download-then-play sheet for Reolink recordings — see the long
-/// header comment a few revisions ago. Briefly: AVPlayer can't
-/// negotiate Reolink's CGI Download endpoint reliably, so we
-/// download the file via RecordingDownloader (parallel HTTP Range,
-/// auth-correct) and play the local file with AVPlayer.
-struct RecordingPlayerSheet: View {
-    let recording: PlayableRecording
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var downloader = RecordingDownloader()
-
-    var body: some View {
-        NavigationStack {
-            content
-                .navigationTitle(headerTitle)
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Done") { dismiss() }
-                    }
-                }
-                .task {
-                    downloader.start(url: recording.url)
-                }
-                .onDisappear {
-                    downloader.cancel()
-                    // Note: NO cleanupTempFile() here. The downloader
-                    // promotes completed files to the cache directory
-                    // (see RecordingDownloader.promoteToCache), so a
-                    // re-tap on the same recording later is a cache
-                    // hit. cleanupTempFile() is now also cache-aware
-                    // and won't delete cached files, but skipping the
-                    // call entirely keeps the intent obvious.
-                }
-        }
-    }
-
-    @ViewBuilder
-    private var content: some View {
-        switch downloader.state {
-        case .idle:
-            ProgressView("Preparing…")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        case .downloading:
-            downloadProgress
-        case .ready:
-            if let localURL = downloader.localURL {
-                // Use AVPlayerViewController directly (not SwiftUI's
-                // VideoPlayer wrapper). VideoPlayer + @State<AVPlayer>
-                // had a race where the player binding flickered between
-                // body re-renders — symptom: image flashed for a frame,
-                // then "Starting playback…" returned. AVPlayerViewController
-                // owns its own player and binds on appear; no SwiftUI
-                // intermediate state to lose.
-                AVPlayerHostView(url: localURL)
-                    .ignoresSafeArea(.container, edges: .bottom)
-            } else {
-                ProgressView("Starting playback…")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        case .failed(let message):
-            ContentUnavailableView {
-                Label("Couldn't download this recording", systemImage: "exclamationmark.triangle")
-            } description: {
-                VStack(spacing: 8) {
-                    Text("The camera or hub refused the download request.")
-                    Text(message)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
-                }
-            } actions: {
-                Button("Try Again") {
-                    downloader.start(url: recording.url)
-                }
-                .buttonStyle(.borderedProminent)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var downloadProgress: some View {
-        VStack(spacing: 24) {
-            Image(systemName: "arrow.down.circle")
-                .font(.system(size: 64))
-                .foregroundStyle(.tint)
-                .symbolEffect(.pulse, options: .repeating)
-            VStack(spacing: 8) {
-                Text("Downloading recording")
-                    .font(.headline)
-                Text(byteCountLabel)
-                    .font(.callout.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-            if downloader.totalBytes > 0 {
-                ProgressView(value: Double(downloader.bytesReceived), total: Double(downloader.totalBytes))
-                    .frame(maxWidth: 320)
-            } else {
-                ProgressView()
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(.horizontal, 40)
-    }
-
-    private var byteCountLabel: String {
-        let formatter = ByteCountFormatter()
-        formatter.allowedUnits = [.useMB, .useKB]
-        formatter.countStyle = .file
-        let received = formatter.string(fromByteCount: downloader.bytesReceived)
-        guard downloader.totalBytes > 0 else { return received }
-        let total = formatter.string(fromByteCount: downloader.totalBytes)
-        return "\(received) of \(total)"
-    }
-
-    private var headerTitle: String {
-        recording.startDate?.formatted(date: .abbreviated, time: .shortened)
-            ?? recording.displayName
-    }
-}
-
-/// AVPlayerViewController wrapped for SwiftUI. Mirrors the macOS app's
-/// `AVPlayerHostView` (NSViewRepresentable wrapping AVPlayerView). Owns
-/// its own AVPlayer rather than receiving one from SwiftUI @State,
-/// which avoids a binding race where the player reference could go
-/// nil between body re-renders, briefly showing the camera frame then
-/// reverting to "Starting playback…".
-private struct AVPlayerHostView: UIViewControllerRepresentable {
-    let url: URL
-
-    func makeUIViewController(context: Context) -> AVPlayerViewController {
-        let controller = AVPlayerViewController()
-        controller.player = AVPlayer(url: url)
-        controller.showsPlaybackControls = true
-        // Auto-play once the system has the controller in its view
-        // hierarchy. Calling play() before that point silently no-ops
-        // on some firmware.
-        DispatchQueue.main.async {
-            controller.player?.play()
-        }
-        return controller
-    }
-
-    func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
-        // If the URL changed (different recording on the same sheet),
-        // swap the player. Same-URL re-binds are no-ops.
-        let currentURL = (controller.player?.currentItem?.asset as? AVURLAsset)?.url
-        guard currentURL != url else { return }
-        controller.player = AVPlayer(url: url)
-        controller.player?.play()
-    }
-}
+// 0.7.0 — the iOS-local `PlayableRecording`, `RecordingPlayerSheet`,
+// and `AVPlayerHostView` types lived here until this rewrite. They
+// are now centralized in `Sources/AppShared/Playback/` so iOS and
+// macOS share one streaming player with identical behaviour, quality
+// switching, and export destinations.

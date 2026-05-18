@@ -37,7 +37,7 @@ public struct AllRecordingsView: View {
     @State private var errorMessage: String?
     @State private var aiFilter: Set<DetectionType> = []
     @State private var cameraFilter: Set<CameraFilterBar.CameraChannelKey> = []
-    @State private var nowPlaying: PreviewTarget?
+    @State private var nowPlaying: PlayableRecording?
     @State private var bookmarkToast: String?
     /// 0.5.1 — `EventSummarizer`-produced digest of the day's events.
     /// Recomputed after every reload; falls back to a count-based
@@ -74,15 +74,6 @@ public struct AllRecordingsView: View {
     /// `deviceID` and we look up the matching session.
     private func session(for cameraKey: CameraFilterBar.CameraChannelKey) -> CameraSession? {
         sessions.first(where: { $0.entry.id == cameraKey.deviceID })
-    }
-
-    /// Lightweight playback target. Mirrors a slice of macOS's
-    /// `PlayableRecording` so AllRecordingsView can stay cross-platform
-    /// without dragging in the macOS view's heavier download-state type.
-    private struct PreviewTarget: Identifiable, Hashable {
-        let id: String
-        let url: URL
-        let title: String
     }
 
     /// 0.5.1 — Unified row type so bookmarks and recordings share one
@@ -187,8 +178,8 @@ public struct AllRecordingsView: View {
         .task(id: searchQuery) {
             await runIndexSearch()
         }
-        .sheet(item: $nowPlaying) { rec in
-            RecordingPreviewSheet(url: rec.url, title: rec.title) { nowPlaying = nil }
+        .sheet(item: $nowPlaying) { recording in
+            RecordingPlayerSheet(recording: recording)
         }
     }
 
@@ -955,14 +946,42 @@ public struct AllRecordingsView: View {
         }
     }
 
+    /// Construct a `PlayableRecording` for a bookmark replay. Both
+    /// the local-file path (offline) and the streaming path (bookmark
+    /// not yet downloaded) route through this so the player sheet
+    /// gets a consistent shape regardless of where the bytes come
+    /// from. AllRecordings only ships main-stream URLs for bookmarks;
+    /// `lowQuality` stays nil.
+    private func bookmarkPlayable(
+        _ bm: RecordingBookmark,
+        cameraKey: CameraFilterBar.CameraChannelKey,
+        url: URL,
+        sourceFileName: String? = nil
+    ) -> PlayableRecording {
+        PlayableRecording(
+            id: "bm:\(bm.id.uuidString)",
+            displayName: sourceFileName ?? bm.sourceFileName ?? "Bookmark",
+            cameraID: cameraKey.deviceID,
+            cameraName: cameraKey.label,
+            channel: cameraKey.channel,
+            startDate: bm.startDate,
+            endDate: bm.endDate,
+            detections: bm.aiTagsAtMark.compactMap(DetectionType.init(rawValue:)),
+            highQuality: .init(url: url, file: nil),
+            lowQuality: nil,
+            initialQuality: .high,
+            initialTrim: nil
+        )
+    }
+
     private func playBookmark(_ bm: RecordingBookmark, cameraKey: CameraFilterBar.CameraChannelKey) {
         // 1. Local copy wins — offline, no network, fastest start.
         let localURL = BookmarkAutoDownloader.localFileURL(for: bm)
         if FileManager.default.fileExists(atPath: localURL.path) {
-            nowPlaying = PreviewTarget(
-                id: "bm:\(bm.id.uuidString)",
-                url: localURL,
-                title: "\(cameraKey.label) — bookmark"
+            nowPlaying = bookmarkPlayable(
+                bm,
+                cameraKey: cameraKey,
+                url: localURL
             )
             return
         }
@@ -1004,10 +1023,11 @@ public struct AllRecordingsView: View {
             )
             // Open the player immediately on the streaming URL —
             // user sees video right away.
-            nowPlaying = PreviewTarget(
-                id: "bm:\(bm.id.uuidString)",
+            nowPlaying = bookmarkPlayable(
+                bm,
+                cameraKey: cameraKey,
                 url: streamURL,
-                title: "\(cameraKey.label) — bookmark"
+                sourceFileName: fileName
             )
             // Fire-and-forget the background download for offline-
             // next-time. Idempotent via `tasksInFlight` so it's safe
@@ -1056,7 +1076,26 @@ public struct AllRecordingsView: View {
                 output: file.name,
                 token: token
             )
-            nowPlaying = PreviewTarget(id: row.id, url: url, title: row.cameraKey.label)
+            // AllRecordingsLoader fetches the main stream only, so
+            // the All Recordings rows expose just `highQuality`. The
+            // per-camera Recordings tab — which loads both streams —
+            // is where the user gets the in-player Low/High toggle.
+            // Future enhancement: have the loader fan out across
+            // sub-streams too so this view has parity.
+            let recording = PlayableRecording(
+                id: row.id,
+                displayName: file.name,
+                cameraID: row.cameraKey.deviceID,
+                cameraName: row.cameraKey.label,
+                channel: row.cameraKey.channel,
+                startDate: file.startDate,
+                endDate: file.endDate,
+                detections: file.triggers,
+                highQuality: .init(url: url, file: file),
+                lowQuality: nil,
+                initialQuality: .high
+            )
+            nowPlaying = recording
         }
     }
 

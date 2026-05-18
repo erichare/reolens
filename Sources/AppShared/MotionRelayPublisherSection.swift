@@ -74,7 +74,8 @@ public struct MotionRelayPublisherSection: View {
             cameraID: UUID(),
             channel: 0,
             detection: "test",
-            timestamp: Date()
+            timestamp: Date(),
+            cameraName: "Relay test"
         )
         let publisher = CloudKitMotionEventPublisher()
         await publisher.publish(event)

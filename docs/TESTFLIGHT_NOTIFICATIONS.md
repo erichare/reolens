@@ -119,6 +119,88 @@ If notifications aren't arriving:
   sync via `NSUbiquitousKeyValueStore` across all your devices. If you
   muted a camera on the Mac, the iPhone honors that mute.
 
+## Deploying schema changes (maintainer-only)
+
+CloudKit stores two separate schemas per container — **Development**
+and **Production** — and TestFlight / App Store / Developer-ID DMG
+builds all run against Production. Development auto-creates record
+types and fields the first time the app writes them; Production is
+**locked** and never auto-creates anything. A release that adds a new
+`MotionEvent` field will compile and run fine on dev builds but fail
+silently on every release-signed device until the schema is promoted.
+
+The on-device **Settings → Motion Notifications → Push diagnostics**
+screen surfaces these failures: a red "Schema decode" row with text
+like `Schema mismatch on 'channel' 3m ago` means Production is
+missing a field. The macOS publisher row likewise turns red with a
+`Did not find record type: MotionEvent` outcome when the record type
+itself was never promoted.
+
+To deploy:
+
+1. One-time machine setup — save a CloudKit management token:
+
+   ```sh
+   xcrun cktool save-token --type management
+   # paste a token from https://icloud.developer.apple.com/dashboard
+   ```
+
+2. Snapshot the current Development schema into the repo so the
+   committed `.ckdb` file is the source of truth for future diffs:
+
+   ```sh
+   export CKTOOL_TEAM_ID=5M9UT7VQ8Q
+   export CKTOOL_CONTAINER=iCloud.com.reolens.Reolens
+   Scripts/deploy-cloudkit-schema.sh export
+   git add CloudKit/MotionEvent.ckdb && git commit -m 'chore: snapshot CloudKit schema'
+   ```
+
+3. Promote Development → Production:
+
+   ```sh
+   Scripts/deploy-cloudkit-schema.sh promote
+   ```
+
+   The script prompts for `y/N` because the deploy is a one-way write
+   to Production; recovery requires a counter-deploy.
+
+4. Verify in the CloudKit Console (Schema → Record Types →
+   `MotionEvent` → toggle Production) that all six fields are
+   present: `cameraID` (String), `channel` (Int(64)), `detection`
+   (String), `timestamp` (Date/Time), `snapshot` (Asset), and
+   `cameraName` (String, optional — receivers fall back to
+   "Channel <n+1>" if it's missing on a record). Then trigger a test
+   motion event and watch the diagnostics row flip back to green
+   within ~10s.
+
+To check whether the live Development schema has drifted from the
+committed file (e.g. a new field appeared from running a fresh build
+against Dev) without overwriting the snapshot, run
+`Scripts/deploy-cloudkit-schema.sh diff`.
+
+### Adding a new field
+
+CloudKit Development normally auto-creates fields the first time the
+app writes them. But Reolens has no Mac binary that publishes to Dev:
+the release DMG hits Production, and ad-hoc-signed local builds drop
+the iCloud entitlement entirely (see `App/Reolens.dev.entitlements`).
+So adding a field requires either the Console or `cktool`:
+
+**Console (easiest):**
+1. <https://icloud.developer.apple.com> → container → environment toggle
+   to **Development**.
+2. Schema → Record Types → `MotionEvent` → Add Field → name + type → Save.
+3. Schema → Deploy Schema Changes → Development → Production → Deploy.
+
+**`cktool` (reproducible):**
+1. `Scripts/deploy-cloudkit-schema.sh export` — pull current Dev to
+   `CloudKit/MotionEvent.ckdb`.
+2. Edit the file to add the new field. The format is human-readable;
+   model the new line on the existing field entries.
+3. `Scripts/deploy-cloudkit-schema.sh push` — import the edited file
+   back to Dev.
+4. `Scripts/deploy-cloudkit-schema.sh promote` — Dev → Production.
+
 ## What this setup does **not** give you
 
 - **Notifications without a Mac at home.** There's no iOS-only path today.

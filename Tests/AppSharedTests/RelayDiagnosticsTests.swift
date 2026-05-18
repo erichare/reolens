@@ -108,12 +108,56 @@ struct RelayDiagnosticsTests {
         #expect(state.lastSilentPushAt == now)
     }
 
+    @Test(
+        "humanize splits camelCase outcome rawValues",
+        arguments: [
+            ("noEntitlement", "No entitlement"),
+            ("rateLimitedSuppressed", "Rate limited suppressed"),
+            ("alreadyRegistered", "Already registered"),
+            ("saved", "Saved"),
+            ("Trying to initialize a container without an application id", "Trying to initialize a container without an application id"),
+        ]
+    )
+    func humanizeCamelCase(input: String, expected: String) {
+        #expect(DiagnosticsFormatter.humanize(input) == expected)
+    }
+
+    @Test("recordDecodeFailure captures field + timestamp")
+    func decodeFailureCaptured() async {
+        let diag = await Self.makeFresh()
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        await diag.recordDecodeFailure(field: "channel", at: now)
+        let state = await diag.snapshot()
+        #expect(state.lastDecodeFailureField == "channel")
+        #expect(state.lastDecodeFailureAt == now)
+    }
+
+    @Test("recordDecodeSuccess auto-clears a prior decode failure")
+    func decodeSuccessClearsFailure() async {
+        let diag = await Self.makeFresh()
+        await diag.recordDecodeFailure(field: "channel")
+        await diag.recordDecodeSuccess()
+        let state = await diag.snapshot()
+        #expect(state.lastDecodeFailureAt == nil)
+        #expect(state.lastDecodeFailureField == nil)
+    }
+
+    @Test("recordDecodeSuccess on a clean state is a no-op")
+    func decodeSuccessNoopOnCleanState() async {
+        let diag = await Self.makeFresh()
+        await diag.recordDecodeSuccess()
+        let state = await diag.snapshot()
+        #expect(state.lastDecodeFailureAt == nil)
+        #expect(state.lastDecodeFailureField == nil)
+    }
+
     @Test("Reset clears all persisted state")
     func resetClears() async {
         let diag = await Self.makeFresh()
         await diag.recordAPNSRegistered(tokenByteCount: 32)
         await diag.recordPublisherSave(outcome: .saved)
         await diag.recordSilentPushReceived()
+        await diag.recordDecodeFailure(field: "channel")
         await diag.reset()
         let state = await diag.snapshot()
         #expect(state == RelayDiagnosticsState())

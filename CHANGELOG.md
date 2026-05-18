@@ -7,6 +7,136 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.9] — 2026-05-18
+
+Fourth (and hopefully final) layer of the iOS push-notification saga.
+After 0.6.4–0.6.6 fixed the macOS entitlement chain so the publisher
+could actually write to CloudKit, the relayed events landed on iOS
+but rendered as the wrong text: banners said "Channel 14" instead of
+"Front Door", and the in-app notification log was missing every
+deduped event entirely. The macOS popover row labelled every
+unnamed hub channel "Camera N". Three separate root causes, all
+exposed by adding the diagnostic visibility this release also ships.
+
+The first bug was a 0.5.0 latent: `MotionEvent.init?(record:)`
+required the CKRecord's `recordName` to parse as a UUID, but the
+content-addressed dedup path
+(`MotionEventRecordID.recordName(cameraID:channel:detection:timestamp:)`)
+emits a 64-char SHA-256 hex string. Every deduped relay event has
+silently failed the host-app decoder since the dedup path landed —
+the NSE still produced banners because it reads CKRecord fields
+directly, but the host-app `NotificationHistory` fan-out at
+[AppiOS/Sources/ReolensiOSApp.swift](AppiOS/Sources/ReolensiOSApp.swift)
+got nothing. New `MotionEventRecordID.stableUUID(fromRecordName:)`
+parses legacy UUID names directly and deterministically derives a
+v5-shaped UUID from any other input — same recordName always yields
+the same `event.id`, so dedup keys on the receiver still work.
+
+The second was that the publisher never embedded the camera name in
+the relayed record. The NSE couldn't import AppShared (memory
+budget), and the iOS host app didn't have the macOS publisher's
+local camera list, so both surfaces fell back to "Channel <n+1>" /
+"Camera <n+1>". 0.6.9 adds a new optional `cameraName` field to the
+`MotionEvent` CKRecord type. The publisher reads it from
+`EventNotifier.notify(... cameraName:)`, which already had the live
+name; the NSE and the iOS host app both prefer it when present and
+fall back to the channel number when it isn't. **The new field
+needs to be promoted to CloudKit Production** before iOS will see
+real names — see
+[docs/TESTFLIGHT_NOTIFICATIONS.md](docs/TESTFLIGHT_NOTIFICATIONS.md)
+→ "Adding a new field" for the Console or `cktool` path.
+
+The third — when the per-channel `name` is empty on a Reolink NVR
+sub-channel (firmware leaves it blank in many setups), the macOS
+popover printed a bare "Camera 14". It now composes
+`<hub displayName> · Channel <n+1>` so the user knows which device
+fired, even before they name the channels.
+
+### Added
+
+- **Schema-decode diagnostic row.** The iOS Push diagnostics screen
+  now surfaces decode failures alongside APNS, subscription, and
+  silent-push status. Red row text reads "Schema mismatch on
+  '<field>' Nm ago" so the user (and any future investigator) sees
+  which CloudKit field Production is missing rather than a silent
+  zero-pushes count
+  ([`Sources/AppShared/RelayDiagnosticsSection.swift`](Sources/AppShared/RelayDiagnosticsSection.swift),
+  [`Sources/AppShared/RelayDiagnostics.swift`](Sources/AppShared/RelayDiagnostics.swift)).
+  Auto-clears on the next successful decode (same pattern as the
+  APNS row), so the relay self-heals once a real event arrives.
+- **`MotionEvent.cameraName: String?`.** New optional field on the
+  CKRecord schema. The macOS publisher embeds the live name from
+  `EventNotifier.notify(... cameraName:)`; the NSE and iOS host app
+  prefer it for the notification body and the
+  `NotificationHistory` row
+  ([`Sources/AppShared/MotionEventRelay.swift`](Sources/AppShared/MotionEventRelay.swift),
+  [`AppiOS/NotificationService/NotificationService.swift`](AppiOS/NotificationService/NotificationService.swift),
+  [`AppiOS/Sources/ReolensiOSApp.swift`](AppiOS/Sources/ReolensiOSApp.swift)).
+  The field is optional so legacy records written before the
+  Production schema deploy still decode and render with the
+  pre-0.6.9 channel-number fallback.
+- **`Scripts/deploy-cloudkit-schema.sh`.** Wraps `xcrun cktool` with
+  `export` / `push` / `promote` / `diff` subcommands. Existed for
+  the Production schema deploy; this release also adds `push` so
+  field additions can be made via a hand-edited `.ckdb` without
+  needing a dev-signed Mac binary capable of writing to CloudKit
+  Development (the local non-release build drops iCloud, so the
+  "let the app create the field" loop is unavailable). Docs in
+  [`docs/TESTFLIGHT_NOTIFICATIONS.md`](docs/TESTFLIGHT_NOTIFICATIONS.md)
+  → "Deploying schema changes".
+
+### Fixed
+
+- **Deduped relay events now decode on iOS.**
+  `MotionEvent.init?(record:)` was silently rejecting every record
+  whose `recordName` was a content-addressed SHA-256 hash —
+  i.e., every event from the deduped publisher path since 0.5.0.
+  Replaced with `MotionEventRecordID.stableUUID(fromRecordName:)`
+  so legacy UUID-named records and hash-named records both produce
+  a stable `event.id`. The pre-existing UUID round-trip is
+  preserved bit-for-bit; only previously-rejected hash names now
+  succeed
+  ([`Sources/AppShared/MotionEventRelayHardening.swift`](Sources/AppShared/MotionEventRelayHardening.swift),
+  [`Sources/AppShared/MotionEventRelay.swift`](Sources/AppShared/MotionEventRelay.swift)).
+- **iOS banner body shows the camera name** instead of "Channel 14"
+  whenever the CKRecord carries `cameraName` (requires the schema
+  deploy). Falls back to the channel-number string on legacy
+  records, so no regression for events published before the field
+  promotion.
+- **macOS popover** now reads `<hub displayName> · Channel <n+1>`
+  for unnamed sub-channels instead of "Camera <n+1>", so 24-channel
+  NVR rows are recognizable even before the user sets per-channel
+  names
+  ([`App/MenuBar/MenuBarController.swift`](App/MenuBar/MenuBarController.swift)).
+- **`No entitlement`, not `Noentitlement`.** Outcome rawValues like
+  `noEntitlement` / `rateLimitedSuppressed` were rendered via
+  `String.capitalized`, which doesn't split camelCase — every label
+  came out as one mashed word. New `DiagnosticsFormatter.humanize`
+  splits on uppercase boundaries and is a no-op on raw CKError
+  strings (which already contain spaces)
+  ([`Sources/AppShared/RelayDiagnosticsSection.swift`](Sources/AppShared/RelayDiagnosticsSection.swift)).
+
+### Internal
+
+- `MotionEvent.decode(record:) -> Result<MotionEvent, MotionEventDecodeFailure>`
+  replaces the multi-`guard` implicit failure in `init?(record:)`.
+  `init?` is now a thin pass-through that discards the reason. The
+  failure cases (`wrongRecordType`, `missingField(String)`) carry
+  the offending label so OSLog warnings and the diagnostics row
+  both name the exact problem rather than reporting "no events."
+- `RelayDiagnostics` gained `recordDecodeFailure(field:)` and
+  `recordDecodeSuccess()` writers and two new fields on the
+  persisted state. The existing reset-on-success contract is
+  preserved.
+- Test coverage: `MotionEventDecodeTests` (parameterized per-field
+  missing-field cases, wrong recordType, malformed cameraID, deduped
+  hash-name round-trip, dedup invariant, UUID passthrough, cameraName
+  round-trip + legacy-compat + empty normalization) and the
+  expanded `RelayDiagnosticsTests` cover the new
+  `recordDecodeFailure` / `recordDecodeSuccess` paths and the
+  `humanize` formatter. 27 tests across the touched suites, all
+  passing under `swift test`.
+
 ## [0.6.6] — 2026-05-18
 
 Fixes the *third* layer of the silently-broken iOS push notification

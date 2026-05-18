@@ -54,11 +54,12 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
 
     /// Mirrors of `MotionEvent.RecordKey.*` in AppShared. Pinned to
     /// strings so the NSE doesn't pull the AppShared module just for
-    /// four constants.
+    /// five constants.
     private static let recordKeyDetection = "detection"
     private static let recordKeyChannel = "channel"
     private static let recordKeyCameraID = "cameraID"
     private static let recordKeySnapshot = "snapshot"
+    private static let recordKeyCameraName = "cameraName"
 
     private let log = Logger(
         subsystem: "com.reolens.Reolens",
@@ -157,12 +158,22 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     ) {
         let detection = record[Self.recordKeyDetection] as? String
         let channel = record[Self.recordKeyChannel] as? Int
+        let cameraName = (record[Self.recordKeyCameraName] as? String)
+            .flatMap { $0.isEmpty ? nil : $0 }
 
         if let detection {
             content.title = title(forDetection: detection)
         }
-        if let channel {
+        // Prefer the publisher-supplied camera name when present.
+        // Falls back to "Channel <n+1>" so legacy records written
+        // before the `cameraName` field was promoted to Production
+        // still produce a readable banner.
+        if let cameraName {
+            content.body = cameraName
+        } else if let channel {
             content.body = "Channel \(channel + 1)"
+        }
+        if let channel {
             content.threadIdentifier = "ch-\(channel)"
         }
         // Carry the camera UUID + channel + event time forward in

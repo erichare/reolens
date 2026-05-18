@@ -1,5 +1,4 @@
 import SwiftUI
-import AVKit
 import OSLog
 import ReolinkAPI
 import AppShared
@@ -11,7 +10,7 @@ private let log = Logger(subsystem: "com.reolens.app", category: "recordings.pla
 /// macOS recording-playback sheet + its supporting data type
 /// (`PlayableRecording`), the small `RawResponseView` debug helper,
 /// and the AVKit `NSViewRepresentable` bridge. No behavior change.
-struct PlayableRecording: Identifiable, Hashable {
+struct LegacySaveRecording: Identifiable, Hashable {
     let file: SearchFile
     let url: URL
     let isHighQuality: Bool
@@ -45,20 +44,13 @@ struct PlayableRecording: Identifiable, Hashable {
     var isSaving: Bool { saveDestination != nil }
 }
 
-struct RecordingPlayerSheet: View {
-    let recording: PlayableRecording
+struct RecordingSaveSheet: View {
+    let recording: LegacySaveRecording
     @Environment(\.dismiss) private var dismiss
     @State private var downloader = RecordingDownloader()
     @State private var startedAt: Date?
-    /// True once the save-to-disk move has finished. We keep the sheet open
-    /// for a moment afterward so the user sees the "done" state.
     @State private var saveCompletedAt: URL?
     @State private var saveError: String?
-    /// 0.5.0 Theme A3 — captured `AVPlayer` from the host view, used
-    /// to drive the custom `ScrubberView` underneath. Stays nil
-    /// until the AVPlayer is created in `AVPlayerHostView.makeNSView`.
-    @State private var activePlayer: AVPlayer?
-    @State private var assetDurationSeconds: TimeInterval = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -66,7 +58,7 @@ struct RecordingPlayerSheet: View {
             Divider()
             content
         }
-        .frame(minWidth: 800, idealHeight: 540)
+        .frame(minWidth: 600, idealHeight: 420)
         .task(id: recording.id) {
             startedAt = Date()
             downloader.start(url: recording.url)
@@ -76,14 +68,7 @@ struct RecordingPlayerSheet: View {
                 moveToSaveDestination(dest: dest)
             }
         }
-        .onDisappear {
-            downloader.cancel()
-            // The downloader's cache promotes successful downloads
-            // into ~/Library/Caches/Reolens/recordings/ — re-tapping
-            // the same recording later is a cache hit. cleanupTempFile
-            // is now cache-aware (no-op for cached files), but skipping
-            // the call entirely keeps intent obvious.
-        }
+        .onDisappear { downloader.cancel() }
     }
 
     private var header: some View {
@@ -120,41 +105,14 @@ struct RecordingPlayerSheet: View {
                 } description: {
                     Text(saveError).font(.caption).textSelection(.enabled)
                 }
-            } else if recording.isSaving, let dest = saveCompletedAt {
+            } else if let dest = saveCompletedAt {
                 savedPanel(at: dest)
-            } else if recording.isSaving {
-                downloadingPanel
-            } else if let localURL = downloader.localURL {
-                VStack(spacing: 0) {
-                    AVPlayerHostView(url: localURL) { player in
-                        activePlayer = player
-                        Task {
-                            let asset = AVURLAsset(url: localURL)
-                            if let dur = try? await asset.load(.duration) {
-                                assetDurationSeconds = CMTimeGetSeconds(dur)
-                            }
-                        }
-                    }
-                    .frame(minWidth: 720, minHeight: 405)
-                    // 0.5.0 Theme A3 — custom scrubber with the
-                    // thumbnail rail. Sits below the native AVPlayer
-                    // view; the native controls stay visible as a
-                    // fallback so users with VoiceOver or other
-                    // accessibility tools always have native chrome.
-                    if let activePlayer, assetDurationSeconds > 0 {
-                        ScrubberView(
-                            player: activePlayer,
-                            segmentID: recording.file.name,
-                            durationSeconds: assetDurationSeconds
-                        )
-                    }
-                }
             } else {
                 downloadingPanel
             }
         case .failed(let message):
             ContentUnavailableView {
-                Label(recording.isSaving ? "Couldn't download recording" : "Couldn't play this recording", systemImage: "exclamationmark.triangle")
+                Label("Couldn't download recording", systemImage: "exclamationmark.triangle")
             } description: {
                 Text(message).font(.caption).textSelection(.enabled)
             } actions: {
@@ -196,13 +154,10 @@ struct RecordingPlayerSheet: View {
         if let trim = recording.bookmarkTrim {
             Task { @MainActor in
                 do {
-                    try await ClipExporter.export(
+                    _ = try await ClipExporter.export(
                         sources: [.init(url: localURL, range: trim)],
                         to: dest
                     )
-                    // The exporter writes directly to `dest`. Remove
-                    // the (now redundant) temp file so we don't leave
-                    // multi-hundred-MB downloads on disk.
                     try? FileManager.default.removeItem(at: localURL)
                     saveCompletedAt = dest
                 } catch {
@@ -311,37 +266,7 @@ struct RawResponseView: View {
     }
 }
 
-/// macOS AVPlayer host that auto-plays the URL when shown.
-struct AVPlayerHostView: NSViewRepresentable {
-    let url: URL
-    /// 0.5.0 Theme A3 — when non-nil, the host writes the active
-    /// `AVPlayer` here so the surrounding sheet can drive its own
-    /// custom scrubber (`ScrubberView`) against the same playback
-    /// instance. Native controls also stay visible for fallback.
-    let playerSink: ((AVPlayer) -> Void)?
-
-    init(url: URL, playerSink: ((AVPlayer) -> Void)? = nil) {
-        self.url = url
-        self.playerSink = playerSink
-    }
-
-    func makeNSView(context: Context) -> AVPlayerView {
-        let view = AVPlayerView()
-        view.controlsStyle = .floating
-        view.showsFrameSteppingButtons = true
-        let player = AVPlayer(url: url)
-        view.player = player
-        player.play()
-        playerSink?(player)
-        return view
-    }
-
-    func updateNSView(_ nsView: AVPlayerView, context: Context) {
-        if let current = (nsView.player?.currentItem?.asset as? AVURLAsset)?.url, current != url {
-            let player = AVPlayer(url: url)
-            nsView.player = player
-            player.play()
-            playerSink?(player)
-        }
-    }
-}
+// 0.7.0 — `AVPlayerHostView` lived here as the macOS NSViewRepresentable
+// for AVPlayer playback. Playback now flows through the shared
+// `AVPlayerSurface` view in `Sources/AppShared/Playback/`, which
+// drives both iOS and macOS off one engine.

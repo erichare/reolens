@@ -33,6 +33,44 @@ public enum MotionEventRecordID {
         // collision-resistant for our cardinality.
         return digest.map { String(format: "%02x", $0) }.joined()
     }
+
+    /// Map a CloudKit record name onto a stable `UUID` for use as
+    /// `MotionEvent.id`. The publisher's two paths produce different
+    /// record-name formats:
+    ///
+    ///   - **Legacy** (`MotionEvent.toRecord()`): a UUID string. Round-
+    ///     trip cleanly via `UUID(uuidString:)`.
+    ///   - **Deduped** (`recordName(cameraID:channel:detection:timestamp:)`):
+    ///     a 64-char SHA-256 hex hash. The original decoder rejected
+    ///     these outright because they aren't UUID-shaped, which made
+    ///     every prod-deduped event silently fail `MotionEvent.init?(record:)`
+    ///     after 0.5.0. This helper salvages them by deterministically
+    ///     hashing the record name into a UUIDv5-shaped value — same
+    ///     input always produces the same UUID, so dedup keyed on
+    ///     `event.id` (e.g. `NotificationHistory`) keeps working.
+    ///
+    /// The output is RFC-4122 v5-shaped (version + variant bits set)
+    /// but is not a true name-based UUID — there's no namespace UUID,
+    /// just a one-way map from `recordName` → 128 bits. That's
+    /// sufficient for our uniqueness guarantee.
+    public static func stableUUID(fromRecordName name: String) -> UUID {
+        if let parsed = UUID(uuidString: name) {
+            return parsed
+        }
+        let digest = SHA256.hash(data: Data(name.utf8))
+        var bytes = Array(digest.prefix(16))
+        // RFC 4122 v5 version (high nibble of byte 6) + IETF variant
+        // (top two bits of byte 8). Without these the result is a
+        // 128-bit blob, not a structurally-valid UUID.
+        bytes[6] = (bytes[6] & 0x0F) | 0x50
+        bytes[8] = (bytes[8] & 0x3F) | 0x80
+        return UUID(uuid: (
+            bytes[0], bytes[1], bytes[2], bytes[3],
+            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[8], bytes[9], bytes[10], bytes[11],
+            bytes[12], bytes[13], bytes[14], bytes[15]
+        ))
+    }
 }
 
 // MARK: - Token bucket rate limiter

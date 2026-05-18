@@ -41,6 +41,19 @@ public final class AppPreferences {
         }
     }
 
+    /// Default quality for tap-to-play across both per-camera and
+    /// All Recordings lists. The player sheet still exposes a toggle
+    /// so the user can override per-clip; this is just the seed
+    /// value. Defaults to `.low` because sub-stream first-frame
+    /// latency on LAN is dramatically faster than main-stream and
+    /// most users open recordings to triage motion events rather
+    /// than to evaluate detail.
+    public var defaultRecordingQuality: RecordingQuality {
+        didSet {
+            defaults.set(defaultRecordingQuality.rawValue, forKey: Self.defaultRecordingQualityKey)
+        }
+    }
+
     /// 0.6.0 — iOS / iPadOS "restore last camera on launch" memory.
     /// Set by the platform shell whenever the user navigates into a
     /// camera detail view; read on first appear to push that camera
@@ -67,6 +80,8 @@ public final class AppPreferences {
         self.defaults = defaults
         self.developerMode = defaults.bool(forKey: Self.developerModeKey)
         self.showCameraNameOnFeed = defaults.bool(forKey: Self.showCameraNameKey)
+        self.defaultRecordingQuality = (defaults.string(forKey: Self.defaultRecordingQualityKey)
+            .flatMap(RecordingQuality.init(rawValue:))) ?? .low
         self.lastViewedCameraID = defaults.string(forKey: Self.lastViewedCameraKey)
             .flatMap(UUID.init(uuidString:))
     }
@@ -75,6 +90,7 @@ public final class AppPreferences {
 
     static let developerModeKey = "com.reolens.developerMode"
     static let showCameraNameKey = "com.reolens.showCameraNameOnFeed"
+    static let defaultRecordingQualityKey = "com.reolens.defaultRecordingQuality"
     static let lastViewedCameraKey = "com.reolens.lastViewedCameraID"
 
     // MARK: - Non-isolated peeks
