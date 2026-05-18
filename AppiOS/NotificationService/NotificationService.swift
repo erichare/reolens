@@ -1,8 +1,8 @@
 //
 //  NotificationService.swift
 //
-//  Notification Service Extension (0.6.8). Enriches CloudKit motion-
-//  event alert pushes with a detection-specific title and a snapshot
+//  Notification Service Extension. Enriches CloudKit motion-event
+//  alert pushes with a detection-specific title and a snapshot
 //  attachment before iOS shows the banner.
 //
 //  Flow:
@@ -138,11 +138,54 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
 
         let container = CKContainer(identifier: Self.containerID)
         let db = container.privateCloudDatabase
+        fetchWithRetry(db: db, recordID: recordID, attempt: 1, bestAttempt: bestAttempt)
+    }
+
+    /// CloudKit fetch with a single retry on `.unknownItem`.
+    ///
+    /// 0.6.11 — observed in the field: the subscription push arrives
+    /// before the new record has propagated through CloudKit's
+    /// internal replication, so an immediate fetch returns CKError 11
+    /// (`.unknownItem`). A short delayed retry typically resolves it
+    /// without consuming much of the 30 s NSE budget. After two
+    /// failed attempts we fall through to the "Reolens" sentinel
+    /// title + a generic "Camera event" body so the user still gets a
+    /// banner that signals the relay is alive.
+    ///
+    /// Note: `.unknownItem` can also indicate a Development vs.
+    /// Production CloudKit-environment mismatch between the publisher
+    /// (e.g. a release-signed Mac) and the subscriber (e.g. a dev-
+    /// signed iOS build via Xcode). The retry won't fix that — but
+    /// the diagnostic row in Settings now reports the exact error so
+    /// the cause is identifiable.
+    private func fetchWithRetry(
+        db: CKDatabase,
+        recordID: CKRecord.ID,
+        attempt: Int,
+        bestAttempt: UNMutableNotificationContent
+    ) {
         db.fetch(withRecordID: recordID) { [weak self] record, error in
             guard let self else { return }
             if let error {
+                let isUnknownItem = (error as? CKError)?.code == .unknownItem
+                if isUnknownItem, attempt < 2 {
+                    // Brief delay for the new record to propagate.
+                    // The NSE has ~30 s total budget; 1.5 s here
+                    // leaves plenty of headroom for asset download.
+                    self.log.info("NSE fetch returned unknownItem; retrying once after delay")
+                    DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                        guard let self else { return }
+                        self.fetchWithRetry(db: db, recordID: recordID, attempt: attempt + 1, bestAttempt: bestAttempt)
+                    }
+                    return
+                }
                 self.log.warning("NSE record fetch failed: \(error.localizedDescription, privacy: .public)")
                 Self.recordOutcome("fetchError:\(Self.shortDescription(of: error))")
+                // Give the user a banner that signals "we know an
+                // event fired but couldn't enrich it" rather than the
+                // bare subscription default — easier to diagnose,
+                // less alarming than a silent "Motion detected".
+                self.applyFallbackBody(to: bestAttempt, reason: error)
             } else if let record {
                 self.enrich(from: record, content: bestAttempt)
                 if let asset = record[Self.recordKeySnapshot] as? CKAsset,
@@ -152,9 +195,23 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
                 Self.recordOutcome("success")
             } else {
                 Self.recordOutcome("noRecord")
+                self.applyFallbackBody(to: bestAttempt, reason: nil)
             }
             self.deliver(bestAttempt)
         }
+    }
+
+    /// Apply a friendly fallback body when CloudKit enrichment failed.
+    /// "Camera event" beats the bare subscription default ("Motion
+    /// detected") because it doesn't mislead the user into thinking
+    /// the camera saw plain motion when in fact we couldn't tell.
+    /// Title remains the "Reolens" sentinel set at the top of
+    /// `didReceive(...)`.
+    private func applyFallbackBody(
+        to content: UNMutableNotificationContent,
+        reason: (any Error)?
+    ) {
+        content.body = "Camera event — open Reolens for details"
     }
 
     override func serviceExtensionTimeWillExpire() {
@@ -192,12 +249,32 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
 
     /// Compact a CKError for inclusion in the outcome string. We avoid
     /// the full `localizedDescription` because it can be long and
-    /// contains user-account-specific phrasing.
+    /// contains user-account-specific phrasing. Common codes are
+    /// surfaced by symbolic name so the diagnostic row is meaningful
+    /// at-a-glance ("unknownItem" beats "ckError(11)").
     private static func shortDescription(of error: any Error) -> String {
         if let ck = error as? CKError {
-            return "ckError(\(ck.code.rawValue))"
+            return symbolicName(for: ck.code) ?? "ckError(\(ck.code.rawValue))"
         }
         return "\(type(of: error))"
+    }
+
+    private static func symbolicName(for code: CKError.Code) -> String? {
+        switch code {
+        case .unknownItem: return "unknownItem"
+        case .networkUnavailable: return "networkUnavailable"
+        case .networkFailure: return "networkFailure"
+        case .notAuthenticated: return "notAuthenticated"
+        case .quotaExceeded: return "quotaExceeded"
+        case .permissionFailure: return "permissionFailure"
+        case .serviceUnavailable: return "serviceUnavailable"
+        case .requestRateLimited: return "requestRateLimited"
+        case .zoneNotFound: return "zoneNotFound"
+        case .badContainer: return "badContainer"
+        case .missingEntitlement: return "missingEntitlement"
+        case .accountTemporarilyUnavailable: return "accountTemporarilyUnavailable"
+        default: return nil
+        }
     }
 
     // MARK: - Helpers

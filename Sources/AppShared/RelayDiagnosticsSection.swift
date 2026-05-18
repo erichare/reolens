@@ -220,7 +220,7 @@ public struct RelayDiagnosticsSection: View {
         return "No records decoded yet."
     }
 
-    /// 0.6.10 — surfaces whether the Notification Service Extension
+    /// 0.6.11 — surfaces whether the Notification Service Extension
     /// is being invoked and how its CloudKit fetch is faring. The NSE
     /// is what turns the subscription's literal "Motion detected" alert
     /// into "Person detected / Front Door" — when this row is red or
@@ -231,9 +231,9 @@ public struct RelayDiagnosticsSection: View {
         switch telemetry.lastOutcome {
         case "success":
             return .success
-        case "timeExpired", "noRecord", "noRecordID", "noMutableCopy":
+        case "timeExpired", "noRecord", "noRecordID", "noMutableCopy", "notCKNotification":
             return .warning
-        case let s? where s.hasPrefix("fetchError"):
+        case let s? where s.hasPrefix("fetchError:"):
             return .failure
         default:
             return .warning
@@ -245,11 +245,19 @@ public struct RelayDiagnosticsSection: View {
             return "Extension not yet invoked. The banner will say only “Motion detected” until the first push arrives."
         }
         let n = telemetry.invocationCount
-        let outcome = telemetry.lastOutcome.map { DiagnosticsFormatter.humanize($0) } ?? "unknown"
+        let outcome = telemetry.lastOutcome ?? "unknown"
+        let humanized = DiagnosticsFormatter.humanizeNSEOutcome(outcome)
+        let countText = "\(n) invocation\(n == 1 ? "" : "s")"
+        let summary: String
         if let at = telemetry.lastInvocationAt {
-            return "\(n) invocation\(n == 1 ? "" : "s") · last \(outcome.lowercased()) \(DiagnosticsFormatter.relative(from: at))"
+            summary = "\(countText) · last \(humanized.lowercased()) \(DiagnosticsFormatter.relative(from: at))"
+        } else {
+            summary = "\(countText) · last outcome: \(humanized)"
         }
-        return "\(n) invocation\(n == 1 ? "" : "s") · last outcome: \(outcome)"
+        if let hint = DiagnosticsFormatter.nseHint(for: outcome) {
+            return "\(summary)\n\(hint)"
+        }
+        return summary
     }
     #endif
 
@@ -337,6 +345,57 @@ enum DiagnosticsFormatter {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
         return formatter.localizedString(for: date, relativeTo: now)
+    }
+
+    /// 0.6.11 — friendlier presentation of NSE outcome strings. The
+    /// raw strings come from `NotificationService.recordOutcome`; e.g.
+    /// "fetchError:unknownItem" or "timeExpired". This converts each
+    /// known token into a short, user-friendly phrase.
+    static func humanizeNSEOutcome(_ raw: String) -> String {
+        if raw.hasPrefix("fetchError:") {
+            let suffix = String(raw.dropFirst("fetchError:".count))
+            switch suffix {
+            case "unknownItem":
+                return "Record not found in iCloud"
+            case "notAuthenticated":
+                return "iCloud account not available"
+            case "networkUnavailable", "networkFailure":
+                return "Network unavailable"
+            case "permissionFailure":
+                return "Permission denied"
+            case "missingEntitlement":
+                return "Missing entitlement"
+            default:
+                return "Fetch error (\(suffix))"
+            }
+        }
+        switch raw {
+        case "success": return "Enriched"
+        case "timeExpired": return "Timed out"
+        case "noRecord": return "Record empty"
+        case "noRecordID": return "No record ID in push"
+        case "noMutableCopy": return "Mutable copy failed"
+        case "notCKNotification": return "Not a CloudKit push"
+        default: return humanize(raw)
+        }
+    }
+
+    /// Hint text shown beneath the NSE outcome when the outcome
+    /// strongly suggests a specific cause/fix. Returns nil when no
+    /// actionable hint applies.
+    static func nseHint(for raw: String) -> String? {
+        if raw == "fetchError:unknownItem" {
+            return "Likely a Development/Production iCloud environment mismatch — " +
+                "make sure the iOS build and the publishing Mac are signed for the same environment " +
+                "(TestFlight/Release on both, or Xcode-Debug on both)."
+        }
+        if raw == "fetchError:notAuthenticated" {
+            return "Sign in to iCloud in the device's Settings app, then re-open Reolens."
+        }
+        if raw == "fetchError:missingEntitlement" {
+            return "The extension was signed without the iCloud container entitlement — re-archive and reinstall."
+        }
+        return nil
     }
 
     /// Render an outcome rawValue (e.g. "noEntitlement",

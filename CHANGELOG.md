@@ -7,6 +7,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.11] — 2026-05-18
+
+Two iOS-only follow-ups to the 0.6.9 notification work.
+
+The first: iPhone users were seeing **two banners for one physical
+motion event**. A Reolink camera fires a `motionStart` event AND an
+`ai:<tag>` event within ~1 s of each other when AI classification
+succeeds. Pre-0.6.11 both events flowed independently through
+`EventNotifier.notify(...)` on macOS, each became a separate CKRecord
+with a different `detection` field, each fired its own subscription
+push, and iPhone stacked two notifications. New `dispatchRelay(...)`
+helper in [Sources/AppShared/EventNotifier.swift](Sources/AppShared/EventNotifier.swift)
+collapses the pair: AI events relay immediately (and cancel any
+in-flight motion relay for the same channel); motion events are
+deferred by 2.5 s and cancelled if AI for the same channel arrives in
+the window. Net effect — one banner per physical event, with the
+richer AI classification when one was available.
+
+The second: an iOS dev build receiving a push from a production-
+signed Mac publisher was getting un-enriched banners because the
+NSE's CloudKit fetch returned **CKError.unknownItem** — same record
+ID, different CloudKit environment. 0.6.11 adds:
+
+- A **sentinel title** ("Reolens") set at the top of `didReceive(...)`
+  so the user can see at-a-glance whether the extension is even being
+  invoked. If the banner title isn't "Reolens" or richer, the NSE
+  itself isn't running.
+- **One automatic retry** on `unknownItem` after a 1.5 s delay to
+  cover read-after-write replication lag inside CloudKit, before
+  giving up and applying a fallback body.
+- A **friendlier fallback body** when the fetch fails: "Camera event —
+  open Reolens for details" rather than the bare subscription default
+  "Motion detected", which mislabeled the event class.
+- **App-Group telemetry** on every NSE invocation: count, last
+  outcome, last invocation timestamp. Read by the host app and
+  surfaced as a new "Notification extension" row in Settings → Push
+  diagnostics, with a plain-English diagnosis (e.g. "Record not found
+  in iCloud — likely a Development/Production iCloud environment
+  mismatch").
+
+Also fixes a layout regression on iPhone where
+`RecordingPlayerSheet`'s macOS-sized
+`.frame(minWidth: 720, idealWidth: 880, …)` was applied
+unconditionally, overflowing the sheet on iPhone (~390 pt wide). The
+quality picker clipped to a single character at the left edge and the
+AVPlayer surface was offset off-screen. The frame is now gated
+`#if os(macOS)`.
+
+### Added
+
+- `EventNotifier.dispatchRelay(...)` — per-channel AI-priority gate
+  with deferred motion relay and AI cancellation
+  ([Sources/AppShared/EventNotifier.swift](Sources/AppShared/EventNotifier.swift)).
+- `NSETelemetry` struct + `RelayDiagnostics.nseTelemetry()` reader
+  exposing invocation count / last outcome / last invocation date
+  written by the NSE through the App Group `UserDefaults`
+  ([Sources/AppShared/RelayDiagnostics.swift](Sources/AppShared/RelayDiagnostics.swift)).
+- "Notification extension" row in the iOS Push diagnostics section
+  with humanized outcome strings and an actionable hint for the
+  unknownItem case
+  ([Sources/AppShared/RelayDiagnosticsSection.swift](Sources/AppShared/RelayDiagnosticsSection.swift)).
+
+### Changed
+
+- NSE sets `bestAttempt.title = "Reolens"` immediately on entry as a
+  visible sentinel and writes invocation telemetry to the App Group
+  on every push
+  ([AppiOS/NotificationService/NotificationService.swift](AppiOS/NotificationService/NotificationService.swift)).
+- NSE retries once on CKError.unknownItem with a 1.5 s delay before
+  applying a fallback body.
+- NSE outcome strings now surface common CKError codes by symbolic
+  name (`unknownItem`, `notAuthenticated`, `networkUnavailable`, …)
+  rather than raw integer codes.
+
+### Fixed
+
+- iPhone now sees one banner per physical motion event when AI fires
+  alongside motion (previously two).
+- iPhone recording-player sheet no longer applies a macOS-sized
+  `.frame(...)` that clipped the toolbar quality picker to a single
+  character and offset the AVPlayer surface
+  ([Sources/AppShared/Playback/RecordingPlayerSheet.swift](Sources/AppShared/Playback/RecordingPlayerSheet.swift)).
+
 ## [0.6.9] — 2026-05-18
 
 Fourth (and hopefully final) layer of the iOS push-notification saga.

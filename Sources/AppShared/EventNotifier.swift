@@ -145,7 +145,7 @@ public final class EventNotifier {
     /// yet it must not download a snapshot for every repeated push in a
     /// motion burst.
     private var lastRelayedAt: [String: Date] = [:]
-    /// 0.6.10 — per-channel "last AI relay" timestamp. A Reolink camera
+    /// 0.6.11 — per-channel "last AI relay" timestamp. A Reolink camera
     /// typically fires a `motionStart` event AND an `ai:<tag>` event
     /// within ~1 s of each other for the same physical motion. Before
     /// this guard both relayed as separate CKRecords and iOS users got
