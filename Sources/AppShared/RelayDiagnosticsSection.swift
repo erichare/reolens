@@ -14,6 +14,7 @@ import SwiftUI
 /// supported yet — see the 0.7.0 roadmap.
 public struct RelayDiagnosticsSection: View {
     @State private var state: RelayDiagnosticsState = RelayDiagnosticsState()
+    @State private var nseTelemetry: NSETelemetry?
     @State private var lastRefreshedAt: Date = .distantPast
     @State private var showingResetConfirm: Bool = false
 
@@ -56,6 +57,11 @@ public struct RelayDiagnosticsSection: View {
             label: "Schema decode",
             badge: decodeBadge,
             detail: decodeDetail
+        )
+        DiagnosticsRow(
+            label: "Notification extension",
+            badge: nseBadge,
+            detail: nseDetail
         )
         footerHelp(
             "Push notifications on iPhone / iPad ride through Apple's CloudKit on your own iCloud account. " +
@@ -119,6 +125,7 @@ public struct RelayDiagnosticsSection: View {
 
     private func reload() async {
         state = await RelayDiagnostics.shared.snapshot()
+        nseTelemetry = await RelayDiagnostics.shared.nseTelemetry()
         lastRefreshedAt = Date()
     }
 
@@ -211,6 +218,38 @@ public struct RelayDiagnosticsSection: View {
             return "Recent records decoded cleanly."
         }
         return "No records decoded yet."
+    }
+
+    /// 0.6.10 — surfaces whether the Notification Service Extension
+    /// is being invoked and how its CloudKit fetch is faring. The NSE
+    /// is what turns the subscription's literal "Motion detected" alert
+    /// into "Person detected / Front Door" — when this row is red or
+    /// missing the user is seeing the un-enriched default banner.
+    private var nseBadge: DiagnosticsBadge {
+        guard let telemetry = nseTelemetry else { return .pending }
+        if telemetry.invocationCount == 0 { return .pending }
+        switch telemetry.lastOutcome {
+        case "success":
+            return .success
+        case "timeExpired", "noRecord", "noRecordID", "noMutableCopy":
+            return .warning
+        case let s? where s.hasPrefix("fetchError"):
+            return .failure
+        default:
+            return .warning
+        }
+    }
+
+    private var nseDetail: String {
+        guard let telemetry = nseTelemetry else {
+            return "Extension not yet invoked. The banner will say only “Motion detected” until the first push arrives."
+        }
+        let n = telemetry.invocationCount
+        let outcome = telemetry.lastOutcome.map { DiagnosticsFormatter.humanize($0) } ?? "unknown"
+        if let at = telemetry.lastInvocationAt {
+            return "\(n) invocation\(n == 1 ? "" : "s") · last \(outcome.lowercased()) \(DiagnosticsFormatter.relative(from: at))"
+        }
+        return "\(n) invocation\(n == 1 ? "" : "s") · last outcome: \(outcome)"
     }
     #endif
 

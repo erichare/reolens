@@ -42,8 +42,12 @@ public struct RecordingPlayerSheet: View {
     }
 
     public var body: some View {
-        platformChrome
-            .frame(minWidth: 720, idealWidth: 880, minHeight: 480, idealHeight: 560)
+        // The frame() lower-bound only applies on macOS — iOS sheets
+        // are sized by the system presentation chrome. Forcing
+        // minWidth: 720 on iPhone (~390 pt) overflows the sheet, which
+        // clips the toolbar quality picker to a single character and
+        // pushes the AVPlayer surface off-axis.
+        sizedChrome
             .task(id: recording.id) {
                 startedAt = Date()
                 engine.start()
@@ -70,6 +74,16 @@ public struct RecordingPlayerSheet: View {
                 shareSheetContent
             }
             .overlay(alignment: .center) { exportOverlay }
+    }
+
+    @ViewBuilder
+    private var sizedChrome: some View {
+        #if os(macOS)
+        platformChrome
+            .frame(minWidth: 720, idealWidth: 880, minHeight: 480, idealHeight: 560)
+        #else
+        platformChrome
+        #endif
     }
 
     @ViewBuilder

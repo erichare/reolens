@@ -145,6 +145,22 @@ public final class EventNotifier {
     /// yet it must not download a snapshot for every repeated push in a
     /// motion burst.
     private var lastRelayedAt: [String: Date] = [:]
+    /// 0.6.10 — per-channel "last AI relay" timestamp. A Reolink camera
+    /// typically fires a `motionStart` event AND an `ai:<tag>` event
+    /// within ~1 s of each other for the same physical motion. Before
+    /// this guard both relayed as separate CKRecords and iOS users got
+    /// two banners for one event ("Motion detected" + "Person detected").
+    /// We collapse to the AI event when one is available.
+    private var lastAIRelayAt: [Int: Date] = [:]
+    /// In-flight deferred motion relays keyed by channel. A motion event
+    /// is delayed by `aiCoFireWindow` so a follow-up AI event can cancel
+    /// it (AI wins — it's the richer classification). If no AI arrives,
+    /// the deferred task fires the motion relay normally.
+    private var pendingMotionRelay: [Int: Task<Void, Never>] = [:]
+    /// How long to wait after a motion event before relaying. Long
+    /// enough to catch the AI follow-up that Reolink hubs send a beat
+    /// later, short enough that the iPhone push isn't perceptibly late.
+    private static let aiCoFireWindow: TimeInterval = 2.5
 
     private init() {
         // Default `enabled` to true; the OS permission state is what
@@ -448,7 +464,7 @@ public final class EventNotifier {
 
         #if os(macOS)
         if relayAllowed {
-            await relayToCloudKit(
+            await dispatchRelay(
                 event: event,
                 cameraID: cameraID,
                 cameraName: cameraName,
@@ -700,6 +716,70 @@ public final class EventNotifier {
         let publisher = CloudKitMotionEventPublisher()
         await publisher.publish(payload)
     }
+    #endif
+
+    /// macOS-only relay dispatcher that collapses a co-fired
+    /// `motionStart` + `ai:<tag>` pair to a single CloudKit record.
+    ///
+    /// Strategy:
+    ///   * AI event: relay immediately; cancel any pending deferred
+    ///     motion relay for the same channel; record `lastAIRelayAt`.
+    ///   * Motion event: if AI just relayed for this channel, skip.
+    ///     Otherwise, defer the relay by `aiCoFireWindow`. If an AI
+    ///     event arrives in that window it cancels the deferred task.
+    ///
+    /// Net effect: the iPhone receiver sees one banner per physical
+    /// event ("Person detected" when AI was available, "Motion detected"
+    /// when only motion fired) instead of two stacked banners.
+    #if os(macOS)
+    private func dispatchRelay(
+        event: BaichuanEvent,
+        cameraID: UUID,
+        cameraName: String,
+        snapshotFileURL: URL?
+    ) async {
+        let channel = Int(event.channelID)
+        switch event.kind {
+        case .ai:
+            if let pending = pendingMotionRelay[channel] {
+                pending.cancel()
+                pendingMotionRelay.removeValue(forKey: channel)
+            }
+            lastAIRelayAt[channel] = Date()
+            await relayToCloudKit(
+                event: event,
+                cameraID: cameraID,
+                cameraName: cameraName,
+                snapshotFileURL: snapshotFileURL
+            )
+        case .motionStart:
+            if let lastAI = lastAIRelayAt[channel],
+               Date().timeIntervalSince(lastAI) < Self.aiCoFireWindow {
+                log.debug("Skipping motion relay on channel \(channel) — AI relayed within co-fire window")
+                return
+            }
+            pendingMotionRelay[channel]?.cancel()
+            let capturedEvent = event
+            let capturedCameraID = cameraID
+            let capturedCameraName = cameraName
+            let capturedSnapshot = snapshotFileURL
+            let delaySeconds = Self.aiCoFireWindow
+            pendingMotionRelay[channel] = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
+                if Task.isCancelled { return }
+                await self?.relayToCloudKit(
+                    event: capturedEvent,
+                    cameraID: capturedCameraID,
+                    cameraName: capturedCameraName,
+                    snapshotFileURL: capturedSnapshot
+                )
+                self?.pendingMotionRelay.removeValue(forKey: channel)
+            }
+        case .motionStop, .other:
+            return
+        }
+    }
+
     #endif
 
     /// Decision tree for a Baichuan event. Three outcomes:

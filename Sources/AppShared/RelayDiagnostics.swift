@@ -98,6 +98,39 @@ public struct RelayDiagnosticsState: Codable, Sendable, Equatable {
     }
 }
 
+/// Read-only snapshot of the iOS Notification Service Extension's
+/// per-invocation telemetry. The NSE writes flat keys to the App Group
+/// `UserDefaults`; this struct is the AppShared-side reader.
+///
+/// - `invocationCount`: how many times `didReceive(...)` has fired
+///   since install (or since the last `RelayDiagnostics.reset()`).
+/// - `lastOutcome`: short tag describing the result of the most
+///   recent invocation. Values written by the NSE today:
+///   `"success"`, `"fetchError:<short>"`, `"timeExpired"`,
+///   `"notCKNotification"`, `"noRecordID"`, `"noRecord"`,
+///   `"noMutableCopy"`.
+/// - `lastInvocationAt`: wall-clock time of the most recent
+///   invocation. Used to render a "(2s ago)" relative timestamp.
+public struct NSETelemetry: Sendable, Equatable {
+    public static let keyCount = "nse.invocationCount"
+    public static let keyLastOutcome = "nse.lastOutcome"
+    public static let keyLastDate = "nse.lastInvocationDate"
+
+    public let invocationCount: Int
+    public let lastOutcome: String?
+    public let lastInvocationAt: Date?
+
+    public init(
+        invocationCount: Int,
+        lastOutcome: String?,
+        lastInvocationAt: Date?
+    ) {
+        self.invocationCount = invocationCount
+        self.lastOutcome = lastOutcome
+        self.lastInvocationAt = lastInvocationAt
+    }
+}
+
 /// Outcome enum for `recordPublisherSave`. Strings stay forward-stable
 /// across versions; persistence uses the raw value so a 0.7 device can
 /// still read a 0.6 device's defaults.
@@ -253,6 +286,29 @@ public actor RelayDiagnostics {
     public func reset() {
         state = RelayDiagnosticsState()
         defaults.removeObject(forKey: storageKey)
+        defaults.removeObject(forKey: NSETelemetry.keyCount)
+        defaults.removeObject(forKey: NSETelemetry.keyLastOutcome)
+        defaults.removeObject(forKey: NSETelemetry.keyLastDate)
+    }
+
+    /// Read the iOS Notification Service Extension telemetry written
+    /// by `AppiOS/NotificationService/NotificationService.swift`. The
+    /// NSE writes flat App Group `UserDefaults` keys (not part of the
+    /// `RelayDiagnosticsState` JSON blob) so it stays independent of
+    /// the AppShared codable schema. Returns `nil` when no invocation
+    /// has been recorded yet.
+    public func nseTelemetry() -> NSETelemetry? {
+        let count = defaults.integer(forKey: NSETelemetry.keyCount)
+        let lastOutcome = defaults.string(forKey: NSETelemetry.keyLastOutcome)
+        let lastEpoch = defaults.object(forKey: NSETelemetry.keyLastDate) as? Double
+        guard count > 0 || lastOutcome != nil || lastEpoch != nil else {
+            return nil
+        }
+        return NSETelemetry(
+            invocationCount: count,
+            lastOutcome: lastOutcome,
+            lastInvocationAt: lastEpoch.map { Date(timeIntervalSince1970: $0) }
+        )
     }
 
     // MARK: - Persistence

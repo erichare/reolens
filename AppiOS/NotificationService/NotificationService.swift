@@ -61,6 +61,19 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     private static let recordKeySnapshot = "snapshot"
     private static let recordKeyCameraName = "cameraName"
 
+    /// App Group used for cross-process telemetry. Must match the
+    /// `application-groups` entitlement on both the host iOS app and
+    /// the NSE bundle. Mirror of `SharedContainer.appGroupID`.
+    private static let appGroupID = "group.com.reolens.Reolens"
+
+    /// UserDefaults keys for NSE telemetry. Read by `RelayDiagnostics`
+    /// in the host app so the user can see whether the extension is
+    /// being invoked and how its CloudKit fetch is faring without
+    /// crawling unified logs.
+    private static let telemetryKeyCount = "nse.invocationCount"
+    private static let telemetryKeyLastOutcome = "nse.lastOutcome"
+    private static let telemetryKeyLastDate = "nse.lastInvocationDate"
+
     private let log = Logger(
         subsystem: "com.reolens.Reolens",
         category: "NotificationService"
@@ -73,13 +86,22 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         _ request: UNNotificationRequest,
         withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void
     ) {
+        Self.bumpInvocationCount()
         self.contentHandler = contentHandler
         self.bestAttemptContent = request.content.mutableCopy() as? UNMutableNotificationContent
 
         guard let bestAttempt = bestAttemptContent else {
+            Self.recordOutcome("noMutableCopy")
             contentHandler(request.content)
             return
         }
+
+        // Sentinel: even if the CloudKit fetch below fails or times
+        // out, "Reolens" as the title proves the NSE ran. If the user
+        // ever sees a "Motion detected" banner with no Reolens title,
+        // the NSE itself isn't being invoked (extension wiring problem,
+        // not a fetch problem).
+        bestAttempt.title = "Reolens"
 
         // CloudKit subscription pushes arrive as plist-encoded
         // dictionaries in `UNNotificationContent.userInfo`. Anything
@@ -92,6 +114,7 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             let notification = CKNotification(fromRemoteNotificationDictionary: raw) as? CKQueryNotification
         else {
             log.info("Not a CKQueryNotification; delivering unchanged")
+            Self.recordOutcome("notCKNotification")
             contentHandler(bestAttempt)
             return
         }
@@ -108,6 +131,7 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         // actor hop needed for the non-Sendable mutable content.
         guard let recordID = notification.recordID else {
             log.info("No recordID on CKQueryNotification; delivering unenriched")
+            Self.recordOutcome("noRecordID")
             deliver(bestAttempt)
             return
         }
@@ -118,12 +142,16 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             guard let self else { return }
             if let error {
                 self.log.warning("NSE record fetch failed: \(error.localizedDescription, privacy: .public)")
+                Self.recordOutcome("fetchError:\(Self.shortDescription(of: error))")
             } else if let record {
                 self.enrich(from: record, content: bestAttempt)
                 if let asset = record[Self.recordKeySnapshot] as? CKAsset,
                    let assetURL = asset.fileURL {
                     Self.attach(snapshotURL: assetURL, to: bestAttempt, log: self.log)
                 }
+                Self.recordOutcome("success")
+            } else {
+                Self.recordOutcome("noRecord")
             }
             self.deliver(bestAttempt)
         }
@@ -134,10 +162,42 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         // whatever we've enriched so far — worst case, the user sees
         // the subscription's default "Motion detected" banner.
         log.info("NSE time will expire; flushing best-effort content")
+        Self.recordOutcome("timeExpired")
         if let handler = contentHandler, let content = bestAttemptContent {
             handler(content)
             contentHandler = nil
         }
+    }
+
+    // MARK: - Telemetry
+
+    /// Increment the invocation counter in the App Group `UserDefaults`.
+    /// Synchronous; runs on whatever queue iOS invoked the NSE on.
+    /// Failures (e.g. App Group not provisioned) are intentionally
+    /// silent — telemetry is best-effort.
+    private static func bumpInvocationCount() {
+        guard let defaults = UserDefaults(suiteName: appGroupID) else { return }
+        let current = defaults.integer(forKey: telemetryKeyCount)
+        defaults.set(current + 1, forKey: telemetryKeyCount)
+        defaults.set(Date().timeIntervalSince1970, forKey: telemetryKeyLastDate)
+    }
+
+    /// Record the final outcome string for the most recent NSE
+    /// invocation. Read by `RelayDiagnostics` to surface in Settings.
+    private static func recordOutcome(_ outcome: String) {
+        guard let defaults = UserDefaults(suiteName: appGroupID) else { return }
+        defaults.set(outcome, forKey: telemetryKeyLastOutcome)
+        defaults.set(Date().timeIntervalSince1970, forKey: telemetryKeyLastDate)
+    }
+
+    /// Compact a CKError for inclusion in the outcome string. We avoid
+    /// the full `localizedDescription` because it can be long and
+    /// contains user-account-specific phrasing.
+    private static func shortDescription(of error: any Error) -> String {
+        if let ck = error as? CKError {
+            return "ckError(\(ck.code.rawValue))"
+        }
+        return "\(type(of: error))"
     }
 
     // MARK: - Helpers
