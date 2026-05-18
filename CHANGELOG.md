@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.6] — 2026-05-18
+
 Fixes the *third* layer of the silently-broken iOS push notification
 saga. 0.6.4 fixed the macOS CloudKit-entitlement probe and 0.6.5
 fixed the missing `com.apple.application-identifier` entitlement —
