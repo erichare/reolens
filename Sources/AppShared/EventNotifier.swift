@@ -119,6 +119,18 @@ public final class EventNotifier {
     nonisolated public static let userInfoChannelKey = "channelID"
     nonisolated public static let userInfoEventTimeKey = "eventTime"
 
+    // `UNUserNotificationCenter.current()` requires a real app or
+    // extension bundle. In a Swift Package test process `Bundle.main`
+    // is the toolchain's `swift-pm` helper, which has no bundle
+    // identifier — touching UN there raises an
+    // `NSInternalInconsistencyException` ("bundleProxyForCurrentProcess
+    // is nil") that crashes the test binary. Every UN entry point in
+    // this file guards on this so the singleton is safe to construct
+    // from unit tests without faking out the notification subsystem.
+    nonisolated static var notificationsAvailable: Bool {
+        Bundle.main.bundleIdentifier != nil
+    }
+
     /// Notification freshness threshold for routing taps. Taps on an
     /// event posted within this window go to the camera's live view;
     /// older taps go to the recording browser, where the captured clip
@@ -157,7 +169,9 @@ public final class EventNotifier {
             loaded[tag] = stored ?? true
         }
         self.notifyPerTag = loaded
-        Task { await refreshPermissionStatus() }
+        if Self.notificationsAvailable {
+            Task { await refreshPermissionStatus() }
+        }
     }
 
     // MARK: - Permission
@@ -186,6 +200,7 @@ public final class EventNotifier {
     /// captured `CheckedContinuation` back to the awaiting MainActor
     /// (which is what `cont.resume` does internally).
     public func refreshPermissionStatus() async {
+        guard Self.notificationsAvailable else { return }
         let status = await withCheckedContinuation { (cont: CheckedContinuation<UNAuthorizationStatus, Never>) in
             let handler: @Sendable (UNNotificationSettings) -> Void = { settings in
                 cont.resume(returning: settings.authorizationStatus)
@@ -200,6 +215,7 @@ public final class EventNotifier {
     /// false and tells the caller to send the user to System Settings.
     @discardableResult
     public func requestPermission() async -> Bool {
+        guard Self.notificationsAvailable else { return false }
         let center = UNUserNotificationCenter.current()
         let granted: Bool
         do {
