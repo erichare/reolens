@@ -15,6 +15,12 @@ public struct BaichuanEvent: Sendable, Hashable {
         case ai(String)      // raw AI tag, e.g. "people", "vehicle", "dog_cat"
         case other
     }
+
+    public init(channelID: UInt8, kind: Kind, raw: String) {
+        self.channelID = channelID
+        self.kind = kind
+        self.raw = raw
+    }
 }
 
 extension BaichuanClient {
