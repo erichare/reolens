@@ -141,23 +141,32 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         fetchWithRetry(db: db, recordID: recordID, attempt: 1, bestAttempt: bestAttempt)
     }
 
-    /// CloudKit fetch with a single retry on `.unknownItem`.
+    /// Delay schedule for retries on `.unknownItem`. The total elapsed
+    /// time before giving up is the sum of these (~8.5 s) plus the
+    /// roughly-1 s per attempt RTT, comfortably under the NSE's 30 s
+    /// budget and still leaving room to download the snapshot asset
+    /// after the record is found.
+    ///
+    /// Why so generous: in the field on production TestFlight + DMG
+    /// builds we observed the host app's `didReceiveRemoteNotification`
+    /// fetch succeed while the NSE's parallel fetch returned
+    /// `.unknownItem`. Same record, same recordID, same iCloud account
+    /// — the NSE just races CloudKit's internal replication. The host
+    /// app wins because its fetch happens a couple of seconds later
+    /// after the iOS push-delivery wake path lands. The NSE has to
+    /// wait it out.
+    private static let unknownItemRetryDelays: [TimeInterval] = [1.0, 2.5, 5.0]
+
+    /// CloudKit fetch with retry on `.unknownItem`.
     ///
     /// 0.6.11 — observed in the field: the subscription push arrives
     /// before the new record has propagated through CloudKit's
     /// internal replication, so an immediate fetch returns CKError 11
-    /// (`.unknownItem`). A short delayed retry typically resolves it
-    /// without consuming much of the 30 s NSE budget. After two
-    /// failed attempts we fall through to the "Reolens" sentinel
-    /// title + a generic "Camera event" body so the user still gets a
+    /// (`.unknownItem`). We retry with exponential backoff
+    /// (`unknownItemRetryDelays`) before giving up. After the last
+    /// attempt fails we fall through to the "Reolens" sentinel title
+    /// + a generic "Camera event" body so the user still gets a
     /// banner that signals the relay is alive.
-    ///
-    /// Note: `.unknownItem` can also indicate a Development vs.
-    /// Production CloudKit-environment mismatch between the publisher
-    /// (e.g. a release-signed Mac) and the subscriber (e.g. a dev-
-    /// signed iOS build via Xcode). The retry won't fix that — but
-    /// the diagnostic row in Settings now reports the exact error so
-    /// the cause is identifiable.
     private func fetchWithRetry(
         db: CKDatabase,
         recordID: CKRecord.ID,
@@ -168,12 +177,10 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             guard let self else { return }
             if let error {
                 let isUnknownItem = (error as? CKError)?.code == .unknownItem
-                if isUnknownItem, attempt < 2 {
-                    // Brief delay for the new record to propagate.
-                    // The NSE has ~30 s total budget; 1.5 s here
-                    // leaves plenty of headroom for asset download.
-                    self.log.info("NSE fetch returned unknownItem; retrying once after delay")
-                    DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                if isUnknownItem, attempt < Self.unknownItemRetryDelays.count + 1 {
+                    let delay = Self.unknownItemRetryDelays[attempt - 1]
+                    self.log.info("NSE fetch returned unknownItem (attempt \(attempt)); retrying in \(delay)s")
+                    DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + delay) { [weak self] in
                         guard let self else { return }
                         self.fetchWithRetry(db: db, recordID: recordID, attempt: attempt + 1, bestAttempt: bestAttempt)
                     }

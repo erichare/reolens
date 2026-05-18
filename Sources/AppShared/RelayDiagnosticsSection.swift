@@ -385,9 +385,17 @@ enum DiagnosticsFormatter {
     /// actionable hint applies.
     static func nseHint(for raw: String) -> String? {
         if raw == "fetchError:unknownItem" {
-            return "Likely a Development/Production iCloud environment mismatch — " +
-                "make sure the iOS build and the publishing Mac are signed for the same environment " +
-                "(TestFlight/Release on both, or Xcode-Debug on both)."
+            // Most common cause in the wild (TestFlight + DMG release):
+            // CloudKit replication lag — the push fires before the
+            // record is readable. The host app's parallel fetch lands
+            // a few seconds later and succeeds. The NSE retries with
+            // backoff but can give up before propagation completes.
+            // The companion-app fallback in `didReceiveRemoteNotification`
+            // still records the event in the in-app history.
+            return "The push arrived faster than CloudKit could replicate the record. " +
+                "If the in-app notification history shows the event, the relay is healthy — " +
+                "the banner just couldn't be enriched in time. (Less common: a " +
+                "Development/Production iCloud environment mismatch between iOS and the publishing Mac.)"
         }
         if raw == "fetchError:notAuthenticated" {
             return "Sign in to iCloud in the device's Settings app, then re-open Reolens."

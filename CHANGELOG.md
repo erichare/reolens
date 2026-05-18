@@ -25,27 +25,40 @@ deferred by 2.5 s and cancelled if AI for the same channel arrives in
 the window. Net effect — one banner per physical event, with the
 richer AI classification when one was available.
 
-The second: an iOS dev build receiving a push from a production-
-signed Mac publisher was getting un-enriched banners because the
-NSE's CloudKit fetch returned **CKError.unknownItem** — same record
-ID, different CloudKit environment. 0.6.11 adds:
+The second: even on production TestFlight + DMG-release builds (so
+no environment mismatch) the NSE was returning **CKError.unknownItem**
+on the same record the host app's parallel fetch found cleanly. Root
+cause is a CloudKit read-after-write replication race — the push
+fires before the new record is readable on the replica the NSE
+process queries, while the host app's fetch lands a few seconds
+later after replication has completed. 0.6.11 ships a four-layer
+fix:
 
 - A **sentinel title** ("Reolens") set at the top of `didReceive(...)`
   so the user can see at-a-glance whether the extension is even being
   invoked. If the banner title isn't "Reolens" or richer, the NSE
   itself isn't running.
-- **One automatic retry** on `unknownItem` after a 1.5 s delay to
-  cover read-after-write replication lag inside CloudKit, before
-  giving up and applying a fallback body.
-- A **friendlier fallback body** when the fetch fails: "Camera event —
-  open Reolens for details" rather than the bare subscription default
-  "Motion detected", which mislabeled the event class.
-- **App-Group telemetry** on every NSE invocation: count, last
-  outcome, last invocation timestamp. Read by the host app and
-  surfaced as a new "Notification extension" row in Settings → Push
-  diagnostics, with a plain-English diagnosis (e.g. "Record not found
-  in iCloud — likely a Development/Production iCloud environment
-  mismatch").
+- **Exponential backoff retries** on `.unknownItem`: 1 s, 2.5 s, 5 s
+  (total ~16 s including RTT), well inside the 30 s NSE budget,
+  enough to ride out most replication lag.
+- A **friendlier fallback body** when the fetch still fails: "Camera
+  event — open Reolens for details" rather than the bare subscription
+  default "Motion detected", which mislabeled the event class.
+- A **host-app local-notification fallback** in
+  `AppDelegate.didReceiveRemoteNotification`: waits ~17 s for the
+  NSE to settle, reads its outcome from the App Group telemetry, and
+  if the NSE didn't report success, removes the un-enriched NSE
+  banner for the same thread and posts a properly-enriched local
+  notification using the record the host app already fetched
+  successfully. iPhone now reliably gets an enriched banner even
+  when the NSE loses the race.
+
+Plus **App-Group telemetry** on every NSE invocation: count, last
+outcome, last invocation timestamp. Read by the host app and
+surfaced as a new "Notification extension" row in Settings → Push
+diagnostics, with a plain-English diagnosis (e.g. "Record not found
+in iCloud — the push arrived faster than CloudKit could replicate
+the record").
 
 Also fixes a layout regression on iPhone where
 `RecordingPlayerSheet`'s macOS-sized
@@ -75,11 +88,19 @@ AVPlayer surface was offset off-screen. The frame is now gated
   visible sentinel and writes invocation telemetry to the App Group
   on every push
   ([AppiOS/NotificationService/NotificationService.swift](AppiOS/NotificationService/NotificationService.swift)).
-- NSE retries once on CKError.unknownItem with a 1.5 s delay before
-  applying a fallback body.
+- NSE retries on CKError.unknownItem with exponential backoff
+  (1 s, 2.5 s, 5 s) before applying a fallback body.
 - NSE outcome strings now surface common CKError codes by symbolic
   name (`unknownItem`, `notAuthenticated`, `networkUnavailable`, …)
   rather than raw integer codes.
+- `AppDelegate.didReceiveRemoteNotification(...)` now posts a local
+  enriched UNNotificationRequest when App-Group telemetry shows the
+  NSE didn't reach a success outcome for this push within ~17 s. The
+  un-enriched NSE banner (if any) is removed via
+  `removeDeliveredNotifications` for matching threadIdentifier
+  before the local post so the user sees one enriched banner instead
+  of two stacked
+  ([AppiOS/Sources/ReolensiOSApp.swift](AppiOS/Sources/ReolensiOSApp.swift)).
 
 ### Fixed
 

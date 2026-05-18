@@ -379,22 +379,68 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 content.attachments = [attachment]
             }
         }
-        // 0.6.7 — `content` is built for parity with the in-app
-        // notification log (and a future Notification Service
-        // Extension that will use it to enrich the system-delivered
-        // alert push). We DO NOT add it as a UNNotificationRequest:
-        // the v2 CKQuerySubscription now delivers the push as a
-        // user-visible alert via APNs (see
-        // CloudKitMotionEventSubscriber.installSubscriptionIfNeeded),
-        // and posting a second local notification here would surface
-        // two banners for the same event. We still feed the
-        // notification log, widget container, and per-camera health
-        // badge below so those features keep working for relayed
-        // events. `content` is intentionally unused at runtime today
-        // — keeping the construction in place so the NSE follow-up
-        // can adopt it without re-deriving the same fields.
-        _ = content
-        log.info("Relayed motion received (channel \(event.channel), detection \(event.detection, privacy: .public)) — alert push handled by APNs")
+        log.info("Relayed motion received (channel \(event.channel), detection \(event.detection, privacy: .public))")
+
+        // 0.6.11 — post the enriched local notification IF the NSE
+        // didn't win the race against CloudKit replication.
+        //
+        // Historical context: 0.6.7 silenced this local post on the
+        // assumption that the NSE would always enrich the alert push
+        // delivered by APNs. In the field on TestFlight + DMG-release
+        // builds we observed the NSE's fetch hit `CKError.unknownItem`
+        // because the push arrives before CloudKit replicates the
+        // new record into the read replica the NSE process queries.
+        // The host app's fetch — which runs a few seconds later in
+        // this method — succeeds, because by then replication has
+        // completed. So the host app has the right data to post a
+        // properly-enriched banner; we just need to detect when the
+        // NSE failed and post our own.
+        //
+        // Coordination is via the App Group `UserDefaults` keys the
+        // NSE writes for telemetry. After the host fetch returns, we
+        // wait up to ~17 s (the NSE's retry budget plus a small
+        // buffer) for the NSE to settle, then check its outcome:
+        //   * Success in the recent window → skip our local post;
+        //     the user already has an enriched NSE banner.
+        //   * Anything else (failure, timeout, no recent invocation)
+        //     → post the enriched local notification. iOS groups it
+        //     with the NSE's fallback banner via threadIdentifier so
+        //     the user sees one entry in Notification Center.
+        let pushArrivalDate = Date()
+        let waitForNSESeconds: TimeInterval = 17
+        try? await Task.sleep(nanoseconds: UInt64(waitForNSESeconds * 1_000_000_000))
+        let nseHandledSuccessfully = AppDelegate.nseHandledRecently(after: pushArrivalDate)
+
+        if !nseHandledSuccessfully {
+            // Remove any un-enriched NSE banner for this channel so
+            // the user doesn't see two banners stack briefly. The
+            // NSE-delivered notification has the same threadIdentifier
+            // ("ch-N") set in `NotificationService.enrich(...)`, so we
+            // can find and pull it.
+            let threadID = "ch-\(event.channel)"
+            let center = UNUserNotificationCenter.current()
+            let delivered = await center.deliveredNotifications()
+            let staleIDs = delivered
+                .filter { $0.request.content.threadIdentifier == threadID }
+                .map(\.request.identifier)
+            if !staleIDs.isEmpty {
+                center.removeDeliveredNotifications(withIdentifiers: staleIDs)
+            }
+
+            let request = UNNotificationRequest(
+                identifier: event.id.uuidString,
+                content: content,
+                trigger: nil
+            )
+            do {
+                try await center.add(request)
+                log.info("Posted enriched local notification (NSE race fallback)")
+            } catch {
+                log.warning("Failed to post enriched local notification: \(error.localizedDescription, privacy: .public)")
+            }
+        } else {
+            log.info("Skipping local post — NSE already delivered enriched banner")
+        }
 
         // 0.6.0 — record the relayed event into the user-facing
         // notification log so iPhone/iPad users see CloudKit-delivered
@@ -431,6 +477,32 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         await MainActor.run {
             CameraNotificationHealth.shared.refresh()
         }
+    }
+
+    /// 0.6.11 — check whether the Notification Service Extension
+    /// successfully enriched the current push within a recent window.
+    ///
+    /// The NSE writes its outcome telemetry to the shared App Group
+    /// `UserDefaults` (keys mirrored from
+    /// `AppiOS/NotificationService/NotificationService.swift`). If the
+    /// last invocation landed after `cutoff` and reported "success",
+    /// the user already has an enriched NSE-delivered banner and the
+    /// host app should skip its local fallback post.
+    ///
+    /// Returns false when:
+    ///   * The App Group isn't accessible (entitlement misconfig),
+    ///   * No NSE invocation has been recorded after `cutoff`,
+    ///   * The most recent outcome isn't "success".
+    nonisolated static func nseHandledRecently(after cutoff: Date) -> Bool {
+        guard let defaults = UserDefaults(suiteName: "group.com.reolens.Reolens") else {
+            return false
+        }
+        let lastInvocationEpoch = defaults.object(forKey: "nse.lastInvocationDate") as? Double
+        guard let lastInvocationEpoch else { return false }
+        let lastInvocation = Date(timeIntervalSince1970: lastInvocationEpoch)
+        guard lastInvocation >= cutoff else { return false }
+        let outcome = defaults.string(forKey: "nse.lastOutcome")
+        return outcome == "success"
     }
 }
 
