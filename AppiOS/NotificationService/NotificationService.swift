@@ -1,7 +1,7 @@
 //
 //  NotificationService.swift
 //
-//  Notification Service Extension (0.6.7). Enriches CloudKit motion-
+//  Notification Service Extension (0.6.8). Enriches CloudKit motion-
 //  event alert pushes with a detection-specific title and a snapshot
 //  attachment before iOS shows the banner.
 //

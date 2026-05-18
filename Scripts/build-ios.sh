@@ -306,7 +306,7 @@ if [[ -n "${AC_API_KEY_ID:-}" && -n "${AC_API_KEY_P8_PATH:-}" ]]; then
     export PROFILE_NAME="${SAVED_PROFILE_NAME}"
     export PLATFORM=IOS
 
-    # 0.6.7 — Notification Service Extension target (NSE). Same
+    # 0.6.8 — Notification Service Extension target (NSE). Same
     # rationale as widgets above: distinct bundle id
     # (com.reolens.Reolens.iOS.NotificationService) requires a
     # distinct provisioning profile. The App ID must already exist
@@ -356,7 +356,7 @@ if [[ -n "${PROFILE_NAME}" ]]; then
             "REOLENS_IOS_WIDGETS_PROFILE_UUID=${WIDGETS_PROFILE_UUID}"
         )
     fi
-    # 0.6.7 — same plumbing as widgets, for the NSE.
+    # 0.6.8 — same plumbing as widgets, for the NSE.
     if [[ -n "${NSE_PROFILE_NAME}" ]]; then
         SIGN_BUILD_SETTINGS+=(
             "REOLENS_IOS_NOTIFICATION_SERVICE_PROFILE_NAME=${NSE_PROFILE_NAME}"
@@ -429,7 +429,7 @@ EXPORT_PROFILE="${PROFILE_UUID:-${PROFILE_NAME:-Reolens iOS App Store}}"
 # "no devices" reason the main app does).
 WIDGETS_BUNDLE_ID="${IOS_WIDGETS_BUNDLE_ID:-com.reolens.Reolens.iOS.Widgets}"
 WIDGETS_PROFILE_FOR_EXPORT="${WIDGETS_PROFILE_UUID:-${WIDGETS_PROFILE_NAME:-Reolens iOS Widgets App Store}}"
-# 0.6.7 — emit a third <key>...</key><string>...</string> pair for
+# 0.6.8 — emit a third <key>...</key><string>...</string> pair for
 # the Notification Service Extension so xcodebuild's -exportArchive
 # step signs the NSE bundle with the dedicated profile. Without it,
 # export falls back to automatic signing for the NSE (which fails

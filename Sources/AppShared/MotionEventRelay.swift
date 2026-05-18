@@ -372,11 +372,11 @@ public actor CloudKitMotionEventSubscriber {
     ///     entirely when the app is suspended or force-quit), so
     ///     motion events from a Mac publisher reliably failed to
     ///     surface on iPhone/iPad.
-    ///   - **v2** (0.6.7) — added `alertBody` so the push is a
+    ///   - **v2** (0.6.8) — added `alertBody` so the push is a
     ///     user-visible alert APNs delivers regardless of app state.
     ///     Banner showed the literal "Motion detected" string with
     ///     no snapshot.
-    ///   - **v3** (0.6.7) — adds `shouldSendMutableContent = true`
+    ///   - **v3** (0.6.8) — adds `shouldSendMutableContent = true`
     ///     so iOS launches the Notification Service Extension before
     ///     showing the banner, and `desiredKeys` so the NSE has the
     ///     record fields inline without needing a CKDatabase fetch
@@ -423,7 +423,7 @@ public actor CloudKitMotionEventSubscriber {
         }
         let container = CKContainer(identifier: containerID)
         let db = container.privateCloudDatabase
-        // 0.6.7 — best-effort delete of legacy v1 subscription so
+        // 0.6.8 — best-effort delete of legacy v1 subscription so
         // users upgrading from <=0.6.6 don't keep a parallel silent-
         // push subscription firing alongside the new alert-push one.
         // Errors are ignored: if the legacy subscription is already

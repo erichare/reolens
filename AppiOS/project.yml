@@ -35,7 +35,7 @@ targets:
       path: Resources/Info.plist
       properties:
         CFBundleDisplayName: Reolens
-        CFBundleShortVersionString: "0.6.7"
+        CFBundleShortVersionString: "0.6.8"
         CFBundleVersion: "16"
         # iOS 11+ requires apps using asset-catalog icons to also
         # declare CFBundleIconName so the OS / App Store knows which
@@ -154,7 +154,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.reolens.Reolens.iOS
         PRODUCT_NAME: Reolens
-        MARKETING_VERSION: "0.6.7"
+        MARKETING_VERSION: "0.6.8"
         CURRENT_PROJECT_VERSION: "16"
         # Same Apple Developer team as the macOS app. Xcode's automatic
         # signing uses this to fetch / create the Apple Distribution
@@ -208,7 +208,7 @@ targets:
       path: Widgets/Info.plist
       properties:
         CFBundleDisplayName: Reolens Widgets
-        CFBundleShortVersionString: "0.6.7"
+        CFBundleShortVersionString: "0.6.8"
         CFBundleVersion: "16"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
@@ -221,7 +221,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.reolens.Reolens.iOS.Widgets
         PRODUCT_NAME: ReolensiOSWidgets
-        MARKETING_VERSION: "0.6.7"
+        MARKETING_VERSION: "0.6.8"
         CURRENT_PROJECT_VERSION: "16"
         DEVELOPMENT_TEAM: 5M9UT7VQ8Q
         CODE_SIGN_STYLE: Automatic
@@ -251,7 +251,7 @@ targets:
           value: io.reolens.widget.cameraSnapshot
           isEnabled: true
   # ------------------------------------------------------------------
-  # Notification Service Extension (0.6.7).
+  # Notification Service Extension (0.6.8).
   #
   # iOS launches this extension before displaying any push that has
   # `mutable-content: 1` set. Our CKQuerySubscription (see
@@ -279,7 +279,7 @@ targets:
       path: NotificationService/Info.plist
       properties:
         CFBundleDisplayName: Reolens Notification Service
-        CFBundleShortVersionString: "0.6.7"
+        CFBundleShortVersionString: "0.6.8"
         CFBundleVersion: "16"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.usernotifications.service
@@ -297,7 +297,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.reolens.Reolens.iOS.NotificationService
         PRODUCT_NAME: ReolensiOSNotificationService
-        MARKETING_VERSION: "0.6.7"
+        MARKETING_VERSION: "0.6.8"
         CURRENT_PROJECT_VERSION: "16"
         DEVELOPMENT_TEAM: 5M9UT7VQ8Q
         CODE_SIGN_STYLE: Automatic
